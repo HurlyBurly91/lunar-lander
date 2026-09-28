@@ -109,3 +109,98 @@ Verify graphical behavior using:
 
 If visual inspection is required, report the screenshot path to the user and stop
 there rather than attempting to inspect the image yourself.
+
+
+## Git and repository workflow
+
+The active repository is the Lunar Lander game on branch `main`.
+Its GitHub remote is `origin`.
+
+### Active project paths
+
+Normal Lunar Lander milestone work may modify:
+
+- AGENTS.md
+- PROJECT.md
+- STATUS.md
+- RUN_PROMPT.txt
+- CMakeLists.txt
+- .gitignore
+- .gitmodules
+- include/
+- src/
+- tests/
+- milestones/
+- records/
+- third_party/
+
+The following are historical coding-agent benchmark material, not the active
+game project:
+
+- codex/
+- opencode/
+- evaluator/
+- _common/
+- benchmark-runs/
+
+Do not inspect, modify, stage, clean, restore, or commit those historical paths
+during normal Lunar Lander milestone work unless explicitly asked to work on
+the benchmark.
+
+Pre-existing modifications in historical benchmark paths are not part of the
+current milestone and must be left alone.
+
+### Staging and commits
+
+Never use:
+
+    git add .
+    git add -A
+
+Stage only explicit active-project paths belonging to the current milestone.
+
+Before committing, inspect:
+
+    git status --short
+    git diff --cached --stat
+    git diff --cached --check
+
+Do not require the entire worktree to be clean, because historical benchmark
+paths may contain unrelated changes.
+
+Each milestone should end in its own commit after its build, tests, and required
+human verification pass.
+
+### SDL3 dependency
+
+SDL3 is a pinned Git submodule at:
+
+    third_party/SDL
+
+It uses the upstream repository:
+
+    https://github.com/libsdl-org/SDL.git
+
+The currently pinned SDL release is 3.4.16.
+
+A fresh checkout must initialize dependencies with:
+
+    git submodule update --init --recursive
+
+Do not replace SDL with a machine-local installation under ~/opt or /usr/local.
+Do not update the SDL revision during unrelated milestones.
+
+### Push policy
+
+After successfully committing a completed milestone or a required follow-up fix,
+push `main` to `origin`:
+
+    git push origin main
+
+Do not leave completed milestone commits only on the local machine.
+
+If a normal push fails, report the exact error. Do not force-push, rewrite
+history, change remotes, or discard work in order to make a push succeed.
+
+Do not begin the next milestone until the current milestone commit and any
+required follow-up fixes have been pushed.

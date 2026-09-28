@@ -1,3 +1,11 @@
 build/
 cmake-build-*/
 .git.benchmark-nested/
+
+/records/*-screenshots/
+
+/benchmark-runs/
+/records/*-screenshots/
+/codex/*/records/
+/opencode/*/records/
+/codex/*/.gitignore
