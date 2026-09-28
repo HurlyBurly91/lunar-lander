@@ -47,3 +47,11 @@ This milestone should make the game visually and mechanically recognizable as
 a Lunar Lander game without changing the world to a circular moon.
 
 Later milestones are intentionally not specified in implementation detail yet.
+
+### M02 — Contextual camera and manual zoom
+
+Add an automatic overview/landing camera plus a player-selectable manual
+mouse-wheel zoom mode.
+
+This milestone changes presentation only. Curved-moon physics remains later
+work.

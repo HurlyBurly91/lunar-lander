@@ -2,26 +2,27 @@
 
 ## Current milestone
 
+M02 — Contextual camera and manual zoom
+
+State: NOT STARTED
+
+Specification:
+
+milestones/M02-contextual-camera.md
+
+## Prior milestone
+
 M01 — Classic lunar terrain
 
 State: COMPLETE
 
-Specification:
+M01 provides deterministic jagged lunar terrain, flat landing sites, terrain
+collision, SDL3 rendering, and terrain-relative HUD altitude.
 
-milestones/M01-classic-lunar-terrain.md
+The M01 follow-up fixed camera-relative terrain sampling so camera motion no
+longer changes the apparent terrain contour.
 
-Record:
+Commits:
 
-records/M01-classic-lunar-terrain.md
-
-## Prior milestone
-
-M00 — Playable SDL3 baseline
-
-State: WORKING BASELINE
-
-The SDL3 game launches and the lander can thrust, rotate, land/crash, restart,
-and display telemetry.
-
-M01 replaced the flat plane with a deterministic jagged terrain and several
-flat landing sites. The curved-moon stage has not been started.
+- 4d20523 — M01: classic lunar terrain
+- 696607f — M01 follow-up: fixed world-space terrain sampling
