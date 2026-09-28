@@ -228,3 +228,172 @@ Agents should therefore:
 
 Do not ask the user to manually push a successfully completed milestone.
 Do not force-push or rewrite history.
+
+## Durable task ledger
+
+`TASKS.md` is the canonical execution state for the current task.
+
+The model/UI todo list is NOT authoritative. It is temporary and may disappear
+after context compaction, `/new`, model changes, crashes, or resumed sessions.
+
+### Prompt ingestion rule
+
+Whenever the user provides a multi-part implementation request, follow-up
+request, bug list, acceptance checklist, or other substantive set of
+requirements:
+
+1. Before changing implementation code, parse the request into `TASKS.md`.
+2. Give every independently verifiable requirement a stable ID.
+3. Split compound requirements into atomic checklist items where useful.
+4. Preserve explicit constraints, non-goals, constants, and "do not" clauses.
+5. Preserve human-verification requirements separately from automated checks.
+6. Only after `TASKS.md` reflects the request may implementation begin.
+
+The UI todo list may mirror `TASKS.md`, but it must never contain requirements
+that are absent from `TASKS.md`.
+
+### Required TASKS.md structure
+
+Use this general structure:
+
+    # Active Task
+
+    Milestone: Mxx
+    Request: Mxx-Rn
+    State: ACTIVE
+
+    ## User requirements
+
+    - [ ] Mxx-Rn-01 ...
+    - [ ] Mxx-Rn-02 ...
+
+    ## Preserve / constraints
+
+    - [ ] Mxx-Rn-P01 ...
+
+    ## Automated verification
+
+    - [ ] Mxx-Rn-V01 ...
+
+    ## Human verification
+
+    - [ ] Mxx-Rn-H01 ...
+
+    ## Derived implementation tasks
+
+    - [ ] Mxx-Rn-D01 ...
+
+    ## Evidence / notes
+
+Requirements originating from the user must not be silently replaced by
+derived implementation tasks.
+
+### Stable task IDs
+
+Task IDs are durable.
+
+Do not renumber existing task IDs when a later prompt adds more work.
+
+A later request should receive a new request number, for example:
+
+    M04-R1
+    M04-R2
+    M04-R3
+
+and new requirements:
+
+    M04-R3-01
+    M04-R3-02
+    ...
+
+If a later user instruction changes an earlier requirement, retain the old
+entry but mark it explicitly:
+
+    - [x] M04-R2-03 SUPERSEDED by M04-R3-02
+
+Do not silently edit history so that the earlier requirement disappears.
+
+### Checklist semantics
+
+Use:
+
+    [ ] pending
+    [~] in progress
+    [x] verified complete
+    [!] blocked
+
+Do not mark an item `[x]` merely because code intended to implement it exists.
+
+A completed item should have evidence when practical, for example:
+
+    - [x] M04-R3-02 Exact camera anchoring
+      Evidence: tests/test_camera.cpp; lander_camera_tests passes
+
+Human-verification items may only be marked complete after the user explicitly
+confirms them.
+
+### Parsing requirements
+
+When converting a user prompt into the ledger:
+
+- do not omit requirements because they appear repetitive
+- do not collapse materially different requirements into one vague bullet
+- preserve numerical constants exactly
+- preserve requested keys, controls, filenames, APIs, and formulas
+- preserve explicit prohibitions
+- distinguish USER requirements from DERIVED implementation work
+- if a requirement is ambiguous, record the ambiguity instead of silently
+  selecting a different interpretation
+
+The durable ledger should contain enough information that another agent can
+continue the task without access to the original chat prompt.
+
+### During implementation
+
+Update `TASKS.md` as work progresses.
+
+Before moving to another major part of the request, update the status of the
+current items.
+
+When new defects or required substeps are discovered, append them under
+"Derived implementation tasks" with new stable IDs.
+
+Do not delete unfinished items merely because the implementation approach
+changed.
+
+### Session startup / resume
+
+Before continuing an existing task, read:
+
+    AGENTS.md
+    PROJECT.md
+    STATUS.md
+    TASKS.md
+    active milestone specification
+
+If `TASKS.md` has `State: ACTIVE`, continue from its open and blocked items.
+
+Do not reconstruct current work solely from conversational memory or the UI
+todo list.
+
+### Completion gate
+
+Before claiming a task is complete:
+
+1. inspect every item in `TASKS.md`
+2. verify no required USER item remains `[ ]`, `[~]`, or `[!]`
+3. verify all automated-verification items have evidence
+4. verify required human items have actually been confirmed by the user
+
+If human verification remains, stop and request it. Do not close the milestone.
+
+### Milestone closeout
+
+When the milestone is accepted:
+
+- transfer relevant implementation decisions and verification evidence into the
+  milestone record under `records/`
+- update STATUS.md
+- set TASKS.md State to COMPLETE
+- preserve the completed checklist rather than deleting it
+- commit and push according to repository Git policy
