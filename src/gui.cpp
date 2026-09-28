@@ -392,16 +392,24 @@ void draw_space(SDL_Renderer* renderer, const Camera& cam,
 // ------------------------------------------------------------------ terrain
 
 // Renders the actual collision surface: the terrain height function
-// sampled across the view, closed into a polygon well below the window.
+// sampled on a fixed 1 m world-space lattice, closed into a polygon well
+// below the window.
 void draw_terrain(SDL_Renderer* renderer, const lander::Terrain& terrain,
                   const Camera& cam) {
     const double world_left = cam.pos.x - kWindowWidth / 2.0 / kScale;
     const double world_right = cam.pos.x + kWindowWidth / 2.0 / kScale;
 
-    // Sample the surface every meter across the view, with a small
-    // overhang so the polygon always covers the window edges.
+    // The sample positions are anchored to the fixed 1 m world-space grid
+    // (the same lattice the value noise is defined on), not to the moving
+    // camera origin: the same world points are sampled every frame, so
+    // camera motion only translates the geometry on screen and the
+    // contour can never deform or wobble. The +-2 m overhang keeps the
+    // polygon covering the window edges no matter where the grid falls.
+    // World coordinates stay floating point through to_screen; SDL does
+    // the final quantization to pixels.
     std::vector<Vec2> surface;
-    for (double x = world_left - 2.0; x <= world_right + 2.0; x += 1.0) {
+    for (double x = std::floor(world_left - 2.0);
+         x <= std::ceil(world_right + 2.0); x += 1.0) {
         surface.push_back(to_screen(x, terrain.height_at(x), cam));
     }
     if (surface.size() < 2) {

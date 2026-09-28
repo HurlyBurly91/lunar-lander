@@ -106,11 +106,12 @@ text-only constraint, the coding model did not inspect the images):
   visible slab; seed 31337 (site at x ≈ [12.7,24.7]) shows the slab
   entering view during descent.
 
-Human visual/play verification (to be confirmed by a human, then noted
-here): open the three artifacts in `records/m01-screenshots/`
-(`seed31337-start.ppm`, `seed31337-descent.ppm`, `seed1234-crash.ppm`)
-and/or run `./build/lander_gui` and check the Human verification list in
-the milestone spec.
+Human visual/play verification: the three artifacts in
+`records/m01-screenshots/` (`seed31337-start.ppm`,
+`seed31337-descent.ppm`, `seed1234-crash.ppm`) were confirmed by a human
+after the follow-up fix below; a human should also watch `./build/lander_gui`
+to confirm the terrain stays fixed in world space while the camera follows
+the lander (no wobbling contour).
 
 ## Problems encountered
 
@@ -121,6 +122,47 @@ the milestone spec.
 2. `write_ppm` pixel-phase bug (latent since M00): discovered because
    known on-screen colors counted zero pixels in screenshots. See What
    changed / GUI.
+
+## Follow-up fix (2026-09-28): terrain wobble while the camera moves
+
+Human play verification found that parts of the terrain visibly wobbled /
+changed contour as the lander moved and the camera followed.
+
+Root cause: `draw_terrain` in `src/gui.cpp` built its surface polyline by
+sampling `Terrain::height_at()` on a 1 m lattice anchored at
+`world_left - 2.0`, where `world_left` is derived from the camera position.
+The camera moves every frame (exponential smoothing), so the whole sampling
+lattice slid continuously through world space; every frame the game sampled
+a different set of sub-meter points of the continuous (piecewise-linear)
+height function, and the resampled polyline deformed slightly each frame.
+Camera motion should only translate fixed world geometry, never change which
+points are sampled.
+
+Fix: anchor the sampling lattice to the fixed 1 m world-space grid (the same
+lattice the value noise is defined on): the loop now runs from
+`floor(world_left - 2.0)` to `ceil(world_right + 2.0)` in exact 1 m steps,
+with world coordinates kept as doubles through `to_screen` and quantized only
+by SDL's rect rendering. The +-2 m overhang still covers the window edges.
+Only the window edge columns enter/leave the sample set as the camera
+moves; all interior samples are stable world points. The 10 m distance-tick
+loop was already anchored to a fixed world grid and is unchanged. Collision
+uses the same `height_at` function, so rendering and collision still agree
+(cross-check: seed 1234 crash y = -3.279 matches `height_at(0)` =
+-3.2787 from the terrain used by the renderer).
+
+Verification (numeric, per the text-only constraint):
+
+- For two camera positions 0.3 m apart, the old lattice shares 0 of its 96
+  sample points (the entire contour was resampled each frame), while the
+  new lattice shares 97 integer world-x samples with max deviation 0.000 px
+  from a pure rigid on-screen translation.
+- `cmake --build build` clean; `ctest --test-dir build` 1/1 passed;
+  `git diff --check` clean.
+- Headless GUI runs (dummy driver) for seeds 31337 (24 and 200 frames) and
+  1234 (600 frames) all exit 0 with the exact same final simulation states
+  as before the fix; regenerated screenshot pixel counts are unchanged
+  apart from lattice-phase rounding (e.g. descent frame: 57014 regolith,
+  340 pad-green, 720 pad-highlight pixels).
 
 ## Follow-ups (out of scope for M01)
 
