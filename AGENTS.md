@@ -44,10 +44,10 @@ Use a deliberately small fictional moon so orbital flight is practical.
 Target near-surface values:
 
 - surface gravity: about 1.62 m/s^2
-- low circular orbit period: about 600 s (10 minutes)
-- moon radius: about 14.77 km
-- circumference: about 92.8 km
-- near-surface circular orbit speed: about 155 m/s
+- nominal near-surface circular orbit period: about 90 s
+- reference moon radius: about 332.4 m
+- circumference: about 2.09 km
+- reference circular orbit speed: about 23.2 m/s
 
 These values can be tuned slightly for gameplay.
 

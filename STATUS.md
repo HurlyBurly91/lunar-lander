@@ -2,34 +2,25 @@
 
 ## Current milestone
 
-M03 — Throttle and camera polish
+M04 — Circular moon and orbital physics
 
 State: NOT STARTED
 
 Specification:
 
-milestones/M03-throttle-camera-polish.md
+milestones/M04-circular-moon-orbital-physics.md
 
 ## Prior milestone
 
-M02 — Contextual camera and manual zoom
+M03 — Throttle and camera polish
 
 State: COMPLETE
 
-M02 added:
+M03 added continuous persistent throttle, throttle HUD feedback, fixed stellar
+background behavior, and corrected camera zoom anchoring so lander framing is
+preserved across AUTO and MANUAL zoom changes.
 
-- AUTO overview / landing camera
-- overview zoom 0.40
-- landing zoom 1.40
-- 18/25 m altitude hysteresis
-- MANUAL camera mode
-- mouse-wheel zoom
-- unified world-to-screen camera transform
+Human verification accepted the M03 controls, HUD, and camera behavior.
 
-Human verification accepted the AUTO overview scale and transition behavior.
-
-Remaining issues discovered during human play testing are now M03:
-
-- binary main thrust makes precise altitude control difficult
-- rapid manual wheel zoom can lose lander framing
-- starfield incorrectly moves with camera translation and zoom
+M04 now changes the underlying world geometry and gravity model from a flat
+surface to a closed circular moon with real orbital flight.

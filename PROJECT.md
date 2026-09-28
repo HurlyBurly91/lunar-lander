@@ -12,7 +12,7 @@ The long-term direction is:
 1. establish recognizable classic Lunar Lander gameplay,
 2. then extend the world into a circular moon,
 3. eventually support near-surface orbital flight with an approximately
-   10-minute low circular orbit.
+   90-second nominal low circular orbit.
 
 Do not implement later stages early.
 
@@ -63,3 +63,11 @@ zoom preserves lander framing, and make the stellar background independent of
 local camera translation and zoom.
 
 This is the final control/camera polish milestone before curved-moon work.
+
+### M04 — Circular moon and orbital physics
+
+Replace the flat world with a closed circular moon using inverse-square radial
+gravity and seamless wrapped terrain.
+
+Target a roughly 90-second nominal near-surface circular-orbit scale so orbital
+flight is useful within short mobile-game sessions.
