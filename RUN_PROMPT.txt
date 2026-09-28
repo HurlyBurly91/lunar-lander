@@ -1,0 +1,10 @@
+Read AGENTS.md, PROJECT.md, STATUS.md, and the active milestone specification.
+
+Implement only the active milestone.
+
+Preserve the existing working vertical slice, build and test repeatedly, and
+continue autonomously until the milestone is complete or genuinely blocked.
+
+Do not implement future milestones.
+
+At completion follow the milestone Closeout section.
