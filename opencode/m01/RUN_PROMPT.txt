@@ -1,0 +1,3 @@
+Read AGENTS.md, PROJECT.md, STATUS.md, and the authoritative milestone.
+Execute the milestone autonomously until every acceptance criterion is satisfied
+or you can demonstrate a genuine external blocker.
