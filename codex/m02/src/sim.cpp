@@ -8,9 +8,44 @@ namespace lander {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kPadHalfWidth = 1.5;
 
 double normalized_angle(double angle) {
     return std::remainder(angle, 2.0 * kPi);
+}
+
+// The landing zone is split into three disjoint slots. Each slot contributes
+// one pad whose center is jittered by the seed within the slot, inset by the
+// pad half-width. Pads are therefore deterministic, seeded, and
+// non-overlapping by construction, with multipliers 1, 2, 3 in slot order.
+std::vector<Pad> generate_pads(std::uint64_t seed) {
+    std::mt19937_64 rng(seed);
+
+    const double slot_bounds[3][2] = {
+        {-6.0, -2.0},
+        {-2.0, 2.0},
+        {2.0, 6.0},
+    };
+    const int multipliers[3] = {1, 2, 3};
+
+    std::vector<Pad> pads;
+    pads.reserve(3);
+
+    for (int i = 0; i < 3; ++i) {
+        std::uniform_real_distribution<double> center_dist(
+            slot_bounds[i][0] + kPadHalfWidth,
+            slot_bounds[i][1] - kPadHalfWidth);
+
+        const double center = center_dist(rng);
+
+        pads.push_back(Pad{
+            .x_min = center - kPadHalfWidth,
+            .x_max = center + kPadHalfWidth,
+            .multiplier = multipliers[i]
+        });
+    }
+
+    return pads;
 }
 
 }
@@ -24,18 +59,7 @@ void Simulation::reset(std::uint64_t seed) {
     seed_ = seed;
     accumulator_ = 0.0;
     state_ = State{};
-
-    std::mt19937_64 rng(seed);
-    std::uniform_real_distribution<double> center_dist(-6.0, 6.0);
-
-    const double center = center_dist(rng);
-
-    pads_.clear();
-    pads_.push_back(Pad{
-        .x_min = center - 1.5,
-        .x_max = center + 1.5,
-        .multiplier = 1
-    });
+    pads_ = generate_pads(seed);
 }
 
 const State& Simulation::state() const noexcept {
@@ -50,7 +74,31 @@ void Simulation::set_state(const State& state) {
     state_ = state;
 }
 
+void Simulation::start_recording() {
+    recorded_frames_.clear();
+    recording_ = true;
+}
+
+std::vector<InputFrame> Simulation::stop_recording() {
+    recording_ = false;
+    auto frames = std::move(recorded_frames_);
+    recorded_frames_.clear();
+    return frames;
+}
+
+void Simulation::replay(const std::vector<InputFrame>& frames) {
+    replaying_ = true;
+    for (const auto& frame : frames) {
+        advance(frame.real_dt, frame.input);
+    }
+    replaying_ = false;
+}
+
 void Simulation::advance(double real_dt, Input input) {
+    if (recording_ && !replaying_) {
+        recorded_frames_.push_back(InputFrame{real_dt, input});
+    }
+
     if (real_dt <= 0.0 || state_.landed || state_.crashed) {
         return;
     }
@@ -81,7 +129,9 @@ void Simulation::step_fixed(Input input) {
     }
 
     if (rotational_direction != 0.0 && state_.fuel > 0.0) {
-        state_.omega += rotational_direction * config_.rotate_accel * dt;
+        const double angular_acceleration =
+            config_.rotation_torque / config_.moment_of_inertia;
+        state_.omega += rotational_direction * angular_acceleration * dt;
         state_.fuel -= config_.rotation_fuel_burn * dt;
     }
 

@@ -73,7 +73,7 @@ int main() {
 
         auto s = sim.state();
         s.x = (pad.x_min + pad.x_max) / 2.0;
-        s.y = 0.001;
+        s.y = 0.0001;
         s.vx = 0.1;
         s.vy = -0.1;
         s.angle = 0.0;
@@ -93,7 +93,7 @@ int main() {
 
         auto s = sim.state();
         s.x = (pad.x_min + pad.x_max) / 2.0;
-        s.y = 0.001;
+        s.y = 0.0001;
         s.vx = 0.0;
         s.vy = -8.0;
         s.angle = 0.0;
@@ -113,7 +113,7 @@ int main() {
 
         auto s = sim.state();
         s.x = (pad.x_min + pad.x_max) / 2.0;
-        s.y = 0.001;
+        s.y = 0.0001;
         s.vx = 0.0;
         s.vy = -0.1;
         s.angle = 2.0 * 3.14159265358979323846 - 0.01;

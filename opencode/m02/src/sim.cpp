@@ -25,17 +25,44 @@ void Simulation::reset(std::uint64_t seed) {
     accumulator_ = 0.0;
     state_ = State{};
 
-    std::mt19937_64 rng(seed);
-    std::uniform_real_distribution<double> center_dist(-6.0, 6.0);
+    constexpr int kPadCount = 3;
+    constexpr double kPadHalfWidth = 1.5;
+    constexpr double kMinPadGap = 0.5;
+    constexpr double kWorldMin = -8.0;
+    constexpr double kWorldMax = 8.0;
+    constexpr double kFreeSpan = (kWorldMax - kWorldMin) -
+        kPadCount * (2.0 * kPadHalfWidth) -
+        (kPadCount - 1) * kMinPadGap;
 
-    const double center = center_dist(rng);
+    std::mt19937_64 rng(seed);
+    std::uniform_real_distribution<double> cut_dist(0.0, kFreeSpan);
+
+    double cuts[kPadCount - 1];
+    for (double& cut : cuts) {
+        cut = cut_dist(rng);
+    }
+    std::sort(cuts, cuts + (kPadCount - 1));
+
+    double gaps[kPadCount];
+    gaps[0] = cuts[0];
+    for (int i = 1; i < kPadCount - 1; ++i) {
+        gaps[i] = cuts[i] - cuts[i - 1];
+    }
+    gaps[kPadCount - 1] = kFreeSpan - cuts[kPadCount - 2];
 
     pads_.clear();
-    pads_.push_back(Pad{
-        .x_min = center - 1.5,
-        .x_max = center + 1.5,
-        .multiplier = 1
-    });
+    double left = kWorldMin + gaps[0];
+    for (int i = 0; i < kPadCount; ++i) {
+        const double center = left + kPadHalfWidth;
+        pads_.push_back(Pad{
+            .x_min = left,
+            .x_max = center + kPadHalfWidth,
+            .multiplier = i + 1
+        });
+        if (i + 1 < kPadCount) {
+            left = center + kPadHalfWidth + kMinPadGap + gaps[i + 1];
+        }
+    }
 }
 
 const State& Simulation::state() const noexcept {
@@ -50,7 +77,32 @@ void Simulation::set_state(const State& state) {
     state_ = state;
 }
 
+void Simulation::start_recording() {
+    frames_.clear();
+    recording_ = true;
+}
+
+std::vector<InputFrame> Simulation::stop_recording() {
+    recording_ = false;
+    auto recorded = std::move(frames_);
+    frames_.clear();
+    return recorded;
+}
+
+void Simulation::replay(const std::vector<InputFrame>& frames) {
+    const bool was_recording = recording_;
+    recording_ = false;
+    for (const auto& frame : frames) {
+        advance(frame.real_dt, frame.input);
+    }
+    recording_ = was_recording;
+}
+
 void Simulation::advance(double real_dt, Input input) {
+    if (recording_) {
+        frames_.push_back(InputFrame{real_dt, input});
+    }
+
     if (real_dt <= 0.0 || state_.landed || state_.crashed) {
         return;
     }
@@ -81,7 +133,9 @@ void Simulation::step_fixed(Input input) {
     }
 
     if (rotational_direction != 0.0 && state_.fuel > 0.0) {
-        state_.omega += rotational_direction * config_.rotate_accel * dt;
+        const double angular_acceleration =
+            config_.rotation_torque / config_.moment_of_inertia;
+        state_.omega += rotational_direction * angular_acceleration * dt;
         state_.fuel -= config_.rotation_fuel_burn * dt;
     }
 

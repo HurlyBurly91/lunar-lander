@@ -13,10 +13,16 @@ struct Input {
     bool operator==(const Input&) const = default;
 };
 
+struct InputFrame {
+    double real_dt{};
+    Input input{};
+};
+
 struct Config {
     double gravity{1.62};
     double main_accel{5.0};
-    double rotate_accel{1.6};
+    double rotation_torque{1.6};
+    double moment_of_inertia{1.0};
     double main_fuel_burn{8.0};
     double rotation_fuel_burn{1.5};
 
@@ -62,6 +68,10 @@ public:
 
     void set_state(const State& state);
 
+    void start_recording();
+    std::vector<InputFrame> stop_recording();
+    void replay(const std::vector<InputFrame>& frames);
+
 private:
     void step_fixed(Input input);
     void resolve_ground_contact();
@@ -71,6 +81,10 @@ private:
     std::vector<Pad> pads_;
     double accumulator_{};
     std::uint64_t seed_{};
+
+    bool recording_{};
+    bool replaying_{};
+    std::vector<InputFrame> recorded_frames_{};
 };
 
 } // namespace lander

@@ -6,6 +6,7 @@ Authoritative milestone:
 
 State:
 
-    READY
+    COMPLETE — all M02 acceptance criteria satisfied;
+    see records/M02-result.md
 
 Do not work on a different milestone.

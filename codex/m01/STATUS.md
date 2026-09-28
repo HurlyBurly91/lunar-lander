@@ -6,6 +6,6 @@ Authoritative milestone:
 
 State:
 
-    READY
+    COMPLETE
 
 Do not work on a different milestone.

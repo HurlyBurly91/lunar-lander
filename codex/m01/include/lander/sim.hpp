@@ -48,6 +48,8 @@ struct State {
     bool crashed{};
     int score{};
     std::uint64_t ticks{};
+
+    bool operator==(const State&) const = default;
 };
 
 class Simulation {
