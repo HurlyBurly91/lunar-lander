@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+branch="$(git branch --show-current)"
+
+if [ "$branch" = "main" ]; then
+    echo "[post-commit] pushing main -> origin..."
+    if ! git push origin main; then
+        echo "[post-commit] WARNING: push failed; commit remains local." >&2
+    fi
+fi

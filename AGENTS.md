@@ -204,3 +204,27 @@ history, change remotes, or discard work in order to make a push succeed.
 
 Do not begin the next milestone until the current milestone commit and any
 required follow-up fixes have been pushed.
+
+## Automatic push
+
+This repository uses a tracked post-commit hook under:
+
+    .githooks/post-commit
+
+and the local repository must have:
+
+    git config core.hooksPath .githooks
+
+Every commit made on `main` is automatically pushed to `origin/main`.
+
+Agents should therefore:
+
+- commit completed milestone work normally
+- allow the post-commit hook to push automatically
+- verify that the push succeeded
+- if the hook reports a push failure, retry with:
+
+      git push origin main
+
+Do not ask the user to manually push a successfully completed milestone.
+Do not force-push or rewrite history.
