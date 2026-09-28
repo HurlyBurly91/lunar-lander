@@ -502,3 +502,27 @@ After human acceptance:
 When the next milestone begins, replace `TASKS.md` with a fresh bounded ledger
 for that milestone rather than carrying forward the previous milestone's
 atomic execution history.
+
+### State transitions after human feedback
+
+If the milestone is in `AWAITING HUMAN VERIFICATION` and human feedback creates
+new required implementation or automated-verification work:
+
+1. persist the feedback as a new request group in `TASKS.md`
+2. set `TASKS.md` State to `ACTIVE`
+3. set `STATUS.md` State to `ACTIVE`
+4. update `STATUS.md` Phase to identify the new active request group
+5. perform the new implementation and automated verification work
+6. when all automated work for that request is complete, return both
+   `TASKS.md` and `STATUS.md` to `AWAITING HUMAN VERIFICATION`
+7. keep all unresolved human-verification items open
+
+Do not leave `STATUS.md` as `AWAITING HUMAN VERIFICATION` while implementation
+or automated-verification work is actively in progress.
+
+A human-verification failure does not complete the previous H-item. Keep it open
+until the user explicitly confirms the corrected behavior.
+
+If the new request supersedes an earlier active requirement, preserve that
+relationship explicitly in `TASKS.md` rather than deleting or silently rewriting
+the earlier requirement.
