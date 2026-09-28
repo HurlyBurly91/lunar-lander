@@ -71,3 +71,25 @@ gravity and seamless wrapped terrain.
 
 Target a roughly 90-second nominal near-surface circular-orbit scale so orbital
 flight is useful within short mobile-game sessions.
+
+### M05 — Binary moon and first contract loop
+
+Status: DEFINED, NOT ACTIVE until M04 closeout.
+
+Use the M04 primary moon as the canonical gravitational calibration body.
+
+Add a 1/9-radius companion derived from the same intrinsic-surface-gravity
+scaling law, giving it a nominal ~30-second reference low circular orbit.
+
+Place the two bodies in a deliberately compact 600 m centre-to-centre circular
+binary and model spacecraft motion in one global inertial frame with gravity
+from both bodies.
+
+Add body-relative landing/takeoff, a system-scale camera view, and the first
+repeating contract loop between a base on each moon.
+
+Specification:
+
+milestones/M05-binary-moon-contract-loop.md
+
+ECS conversion and modular spacecraft remain later work.
