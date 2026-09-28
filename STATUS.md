@@ -2,38 +2,34 @@
 
 ## Current milestone
 
+M03 — Throttle and camera polish
+
+State: NOT STARTED
+
+Specification:
+
+milestones/M03-throttle-camera-polish.md
+
+## Prior milestone
+
 M02 — Contextual camera and manual zoom
 
 State: COMPLETE
 
-M02 adds a presentation-only camera: an AUTO contextual view that eases
-between a wide overview scale at high altitude and a landing-scale view near
-the surface (chosen by the terrain-relative altitude, with hysteresis), and a
-MANUAL mode whose zoom is set with the mouse wheel (M toggles the mode). The
-single world-to-screen transform keeps the fixed world-space terrain rigid
-under both camera motion and zoom.
+M02 added:
 
-Specification:
+- AUTO overview / landing camera
+- overview zoom 0.40
+- landing zoom 1.40
+- 18/25 m altitude hysteresis
+- MANUAL camera mode
+- mouse-wheel zoom
+- unified world-to-screen camera transform
 
-milestones/M02-contextual-camera.md
+Human verification accepted the AUTO overview scale and transition behavior.
 
-Record:
+Remaining issues discovered during human play testing are now M03:
 
-records/M02-contextual-camera.md
-
-## Prior milestone
-
-M01 — Classic lunar terrain
-
-State: COMPLETE
-
-M01 provides deterministic jagged lunar terrain, flat landing sites, terrain
-collision, SDL3 rendering, and terrain-relative HUD altitude.
-
-The M01 follow-up fixed camera-relative terrain sampling so camera motion no
-longer changes the apparent terrain contour.
-
-Commits:
-
-- 4d20523 — M01: classic lunar terrain
-- 696607f — M01 follow-up: fixed world-space terrain sampling
+- binary main thrust makes precise altitude control difficult
+- rapid manual wheel zoom can lose lander framing
+- starfield incorrectly moves with camera translation and zoom

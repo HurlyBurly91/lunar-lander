@@ -55,3 +55,11 @@ mouse-wheel zoom mode.
 
 This milestone changes presentation only. Curved-moon physics remains later
 work.
+
+### M03 — Throttle and camera polish
+
+Add continuous main-engine throttle, correct zoom anchoring so rapid manual
+zoom preserves lander framing, and make the stellar background independent of
+local camera translation and zoom.
+
+This is the final control/camera polish milestone before curved-moon work.
