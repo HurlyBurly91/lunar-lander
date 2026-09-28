@@ -10,6 +10,7 @@
 // This header is intentionally rendering-free (no SDL) so the star behaviour
 // can be tested headlessly.
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -20,6 +21,8 @@ struct Star {
     double y{};  // fixed screen-space position, pixels from the top
     int size{};
     std::uint8_t bright{};
+
+    bool operator==(const Star&) const = default;
 };
 
 struct ScreenPoint {
@@ -62,16 +65,26 @@ inline std::vector<Star> make_stars(std::uint64_t seed, double width,
     return stars;
 }
 
-// Screen position of a star. The camera arguments are part of the signature
-// so a caller can pass its current camera state, but they are intentionally
-// ignored: infinitely-distant stars do not move with camera translation or
-// zoom.
-inline ScreenPoint star_screen_pos(const Star& star, double camera_x,
-                                   double camera_y, double scale) {
+// Screen position of a star. The camera translation and zoom arguments are
+// intentionally ignored: infinitely-distant stars do not move with camera
+// translation or zoom. The camera angle rotates the fixed star pattern around
+// the viewport center so the local horizon stays aligned with the camera.
+inline ScreenPoint star_screen_pos(const Star& star,
+                                   double center_x,
+                                   double center_y,
+                                   double camera_angle,
+                                   double camera_x = 0.0,
+                                   double camera_y = 0.0,
+                                   double scale = 1.0) {
     (void)camera_x;
     (void)camera_y;
     (void)scale;
-    return {star.x, star.y};
+    double dx = star.x - center_x;
+    double dy = star.y - center_y;
+    double c = std::cos(camera_angle);
+    double s = std::sin(camera_angle);
+    return {center_x + dx * c - dy * s,
+            center_y + dx * s + dy * c};
 }
 
 }  // namespace lander

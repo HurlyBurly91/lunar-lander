@@ -1,48 +1,73 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
 namespace lander {
 
-// A flat landing site carved into the terrain. [x_min, x_max] is the flat
-// interval at constant height y; the lander only lands safely on these.
-struct Pad {
-    double x_min{};
-    double x_max{};
-    double y{};
-    int multiplier{1};
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kTwoPi = 2.0 * kPi;
+constexpr double kReferenceRadius = 332.384;
+constexpr double kReferenceCircumference = kTwoPi * kReferenceRadius;
+constexpr double kSpawnAngle = 0.5 * kPi;
 
+struct Pad {
+    double center_arc{};
+    double half_width{6.0};
+    double radius{};
+    int multiplier{1};
     bool operator==(const Pad&) const = default;
 };
 
-// The lunar surface: a deterministic, single-valued height function of x.
-//
-// The base surface is three octaves of 1-D value noise (linearly
-// interpolated hashed lattice values), which yields visibly jagged hills,
-// valleys, and slopes. A small number of landing sites are then flattened
-// into the surface itself, so the drawn terrain is the collision surface.
-//
-// The same seed always produces the identical surface (pads and heights).
 class Terrain {
 public:
     Terrain() = default;
     explicit Terrain(std::uint64_t seed);
 
-    // Height of the surface at horizontal position x. For x inside a
-    // landing site this is the site's flat height; otherwise it is the
-    // jagged base surface.
-    double height_at(double x) const;
+    static constexpr double reference_radius() noexcept { return kReferenceRadius; }
+    static constexpr double circumference() noexcept { return kReferenceCircumference; }
+    static constexpr double spawn_angle() noexcept { return kSpawnAngle; }
 
-    const std::vector<Pad>& pads() const noexcept;
-    std::uint64_t seed() const noexcept;
+    static double normalize_arc(double arc) {
+        double n = std::fmod(arc, kReferenceCircumference);
+        if (n < 0.0) {
+            n += kReferenceCircumference;
+        }
+        return n;
+    }
+
+    static double arc_at_angle(double theta) {
+        double d = std::fmod(theta - kSpawnAngle + kPi, kTwoPi);
+        if (d < 0.0) {
+            d += kTwoPi;
+        }
+        d -= kPi;
+        double arc = d * kReferenceRadius;
+        if (arc < 0.0) {
+            arc += kReferenceCircumference;
+        }
+        return arc;
+    }
+
+    static double angle_at_arc(double arc) {
+        return kSpawnAngle + arc / kReferenceRadius;
+    }
+
+    double surface_radius_at_arc(double arc) const;
+    double surface_radius_at_angle(double theta) const;
+    double base_radius_at_arc(double arc) const;
+    const Pad* pad_at_arc(double arc) const;
+    double max_surface_radius() const;
+
+    const std::vector<Pad>& pads() const noexcept { return pads_; }
+    std::uint64_t seed() const noexcept { return seed_; }
 
 private:
-    // Jagged base surface without the flattened landing sites.
-    double base_height(double x) const;
+    double base_height_at_arc(double arc) const;
 
-    std::uint64_t seed_{};
+    std::uint64_t seed_{0};
     std::vector<Pad> pads_;
 };
 
-} // namespace lander
+}  // namespace lander

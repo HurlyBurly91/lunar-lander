@@ -1,18 +1,18 @@
-// Lunar Lander: a playable game on SDL3 with jagged lunar terrain.
+// Lunar Lander: a playable SDL3 game around a small closed circular moon.
 //
 // This file is intentionally thin over lander::Simulation: all physics
-// (fixed 1/120 s timestep, fuel, landing and crash rules, scoring,
-// determinism) lives in include/lander/sim.hpp and lander::Terrain
-// (include/lander/terrain.hpp) and is covered headlessly by
-// tests/test_sim.cpp. The GUI only
+// (fixed 1/120 s timestep, fuel, radial inverse-square gravity, local-frame
+// landing/crash rules, scoring, determinism) lives in include/lander/sim.hpp
+// and lander::Terrain (include/lander/terrain.hpp) and is covered headlessly
+// by tests/test_sim.cpp. The GUI only
 //   (a) feeds keyboard input into the simulation,
 //   (b) advances it with elapsed real time, and
-//   (c) renders the world, lander, landing sites, and a HUD.
+//   (c) renders the curved world, lander, landing sites, and a HUD.
 //
-// World space: +x right, +y up, the lunar surface is the terrain height
-// function, angle 0 = upright, positive angle = counter-clockwise.
-// Screen space has a top-left origin, so every world point is y-flipped
-// when drawn.
+// World space: global inertial x/y with the moon at the origin, angle 0 =
+// thrust toward +y, positive angle = counter-clockwise. The camera rotates
+// with the local surface frame, so screen up follows the local outward
+// direction.
 
 #include <SDL3/SDL.h>
 
@@ -34,9 +34,6 @@ namespace {
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-
-constexpr double kStartX = 0.0;
-constexpr double kStartY = 20.0;  // matches lander::State::y default
 
 // How fast the main-engine throttle moves while its increase/decrease key is
 // held. One full 0->1 ramp takes ~1.3 s, which is quick enough to react but
@@ -251,11 +248,18 @@ std::string fmt1(double value) {
 
 // The single world-to-screen transform. Every piece of world geometry (the
 // lander, terrain, pads, guides, debris) is drawn through this, so the camera
-// can only rigidly move and scale the fixed world-space terrain, never change
-// its shape. Coordinates stay floating point here; SDL quantizes to pixels.
+// can only rigidly rotate, move, and scale the fixed world-space geometry,
+// never change its shape. Coordinates stay floating point here; SDL
+// quantizes to pixels.
 Vec2 to_screen(double world_x, double world_y, const lander::Camera& cam) {
-    return {kWindowWidth / 2.0 + (world_x - cam.x()) * cam.scale(),
-            kWindowHeight / 2.0 - (world_y - cam.y()) * cam.scale()};
+    const double dx = world_x - cam.center_x();
+    const double dy = world_y - cam.center_y();
+    const double c = std::cos(cam.angle());
+    const double s = std::sin(cam.angle());
+    const double local_x = dx * c + dy * s;
+    const double local_y = -dx * s + dy * c;
+    return {kWindowWidth / 2.0 + local_x * cam.scale(),
+            kWindowHeight / 2.0 - local_y * cam.scale()};
 }
 
 // ------------------------------------------------------------- primitives
@@ -326,18 +330,20 @@ void fill_rect(SDL_Renderer* renderer, int x, int y, int w, int h,
 // ------------------------------------------------------------------- stars
 // The starfield is a cosmetic background generated deterministically from the
 // game seed (see lander/starfield.hpp). The stars are treated as infinitely
-// distant: their screen positions are fixed in the viewport and do not move
-// with camera translation or zoom, so they read as a stable celestial backdrop
-// instead of a nearby parallax layer.
+// distant: they do not move with camera translation or zoom, but they rotate
+// around the viewport center with the local-frame camera so the horizon
+// stays stable while the player rotates or orbits the moon.
 void draw_space(SDL_Renderer* renderer,
-                const std::vector<lander::Star>& stars) {
+                const std::vector<lander::Star>& stars,
+                const lander::Camera& cam) {
     fill_rect(renderer, 0, 0, kWindowWidth, kWindowHeight,
               make_color(8, 10, 22));
     for (const lander::Star& star : stars) {
-        // The camera arguments are intentionally unused: star screen
-        // positions must be independent of camera x/y and scale.
         const lander::ScreenPoint p =
-            lander::star_screen_pos(star, 0.0, 0.0, 1.0);
+            lander::star_screen_pos(star, kWindowWidth / 2.0,
+                                    kWindowHeight / 2.0, cam.angle(),
+                                    cam.center_x(), cam.center_y(),
+                                    cam.scale());
         fill_rect(renderer, static_cast<int>(p.x), static_cast<int>(p.y),
                   star.size, star.size,
                   make_color(star.bright, star.bright,
@@ -347,80 +353,109 @@ void draw_space(SDL_Renderer* renderer,
 
 // ------------------------------------------------------------------ terrain
 
-// Renders the actual collision surface: the terrain height function
-// sampled on a fixed 1 m world-space lattice, closed into a polygon well
-// below the window.
+// Renders the actual collision surface as a closed arc around the moon.
+// Samples are taken on a fixed uniform arc lattice, so camera motion,
+// rotation, and zoom never deform the terrain contour.
 void draw_terrain(SDL_Renderer* renderer, const lander::Terrain& terrain,
-                  const lander::Camera& cam) {
+                  const lander::Camera& cam, const lander::State& state) {
     const double scale = cam.scale();
-    const double world_left = cam.x() - kWindowWidth / 2.0 / scale;
-    const double world_right = cam.x() + kWindowWidth / 2.0 / scale;
+    const double target_r = std::max(1.0, std::hypot(state.x, state.y));
+    double half_angle =
+        (kWindowWidth / 2.0 + 256.0) / scale / target_r;
+    half_angle = std::clamp(half_angle, 0.10, 0.75);
 
-    // The sample positions are anchored to the fixed 1 m world-space grid
-    // (the same lattice the value noise is defined on), not to the moving
-    // camera origin: the same world points are sampled every frame, so
-    // camera motion and zoom only translate and uniformly scale the geometry
-    // on screen, and the contour can never deform or wobble. The +-2 m
-    // overhang keeps the polygon covering the window edges no matter where
-    // the grid falls or how far in the camera is zoomed. World coordinates
-    // stay floating point through to_screen; SDL does the final quantization
-    // to pixels.
-    std::vector<Vec2> surface;
-    for (double x = std::floor(world_left - 2.0);
-         x <= std::ceil(world_right + 2.0); x += 1.0) {
-        surface.push_back(to_screen(x, terrain.height_at(x), cam));
+    const double theta_target = cam.angle() + lander::kPi / 2.0;
+    const double s_target = lander::Terrain::arc_at_angle(theta_target);
+    const double C = lander::Terrain::circumference();
+    const double half_arc = half_angle * lander::Terrain::reference_radius();
+    const int samples = 4096;
+    const double u_start = s_target - half_arc;
+    const double u_end = s_target + half_arc;
+
+    std::vector<Vec2> outer;
+    std::vector<Vec2> inner;
+    for (int i = static_cast<int>(std::floor(u_start / C * samples));
+         i <= static_cast<int>(std::ceil(u_end / C * samples)); ++i) {
+        const double u = i * C / samples;
+        const double theta = lander::Terrain::angle_at_arc(u);
+        const double r = terrain.surface_radius_at_arc(u);
+        outer.push_back(to_screen(std::cos(theta) * r,
+                                  std::sin(theta) * r, cam));
+        inner.push_back(to_screen(std::cos(theta) * (r - 0.75),
+                                  std::sin(theta) * (r - 0.75), cam));
     }
-    if (surface.size() < 2) {
+    if (outer.size() < 2) {
         return;
     }
 
-    const Vec2 bottom_right{static_cast<double>(kWindowWidth) + 256.0,
-                            static_cast<double>(kWindowHeight) + 512.0};
-    const Vec2 bottom_left{-256.0, static_cast<double>(kWindowHeight) + 512.0};
-    std::vector<Vec2> polygon = surface;
-    polygon.push_back(bottom_right);
-    polygon.push_back(bottom_left);
-
-    // Regolith body, then a worn band just under the surface and a
-    // lighter surface line on top.
+    std::vector<Vec2> polygon = outer;
+    polygon.push_back(to_screen(0.0, 0.0, cam));
     fill_poly(renderer, polygon, make_color(66, 70, 82));
-    for (size_t i = 0; i + 1 < surface.size(); ++i) {
-        draw_thick_line(renderer, {surface[i].x, surface[i].y + 9.0},
-                        {surface[i + 1].x, surface[i + 1].y + 9.0}, 8.0,
+
+    for (size_t i = 0; i + 1 < outer.size(); ++i) {
+        draw_thick_line(renderer, inner[i], inner[i + 1], 8.0,
                         make_color(58, 62, 74));
-        draw_thick_line(renderer, surface[i], surface[i + 1], 2.5,
+        draw_thick_line(renderer, outer[i], outer[i + 1], 2.5,
                         make_color(125, 130, 145));
     }
 
-    // Distance ticks every 10 m, dropped from the surface.
-    for (double xw = std::floor((world_left - 2.0) / 10.0) * 10.0;
-         xw <= world_right + 2.0; xw += 10.0) {
-        const Vec2 p = to_screen(xw, terrain.height_at(xw), cam);
-        fill_rect(renderer, static_cast<int>(p.x), static_cast<int>(p.y), 1,
-                  6, make_color(44, 47, 58));
+    const double tick_start =
+        std::ceil(u_start / 10.0) * 10.0;
+    for (double u = tick_start; u <= u_end; u += 10.0) {
+        const double theta = lander::Terrain::angle_at_arc(u);
+        const double r = terrain.surface_radius_at_arc(u);
+        const Vec2 a = to_screen(std::cos(theta) * r,
+                                 std::sin(theta) * r, cam);
+        const Vec2 b = to_screen(std::cos(theta) * (r - 0.5),
+                                 std::sin(theta) * (r - 0.5), cam);
+        draw_thick_line(renderer, a, b, 1.0, make_color(44, 47, 58));
     }
 
-    // Landing sites: a bright slab on the flat section, a highlight edge,
-    // and a faint vertical guide so the site is findable from altitude.
     for (const lander::Pad& pad : terrain.pads()) {
-        const Vec2 left = to_screen(pad.x_min, pad.y, cam);
-        const Vec2 right = to_screen(pad.x_max, pad.y, cam);
-        if (left.x > kWindowWidth || right.x < 0) {
+        const double pad_center = pad.center_arc;
+        const double angular_pad_width =
+            pad.half_width / lander::Terrain::reference_radius();
+        const double angular_distance =
+            std::fabs(lander::Terrain::normalize_arc(
+                          pad_center - s_target + 0.5 * C) -
+                      0.5 * C);
+        if (angular_distance / lander::Terrain::reference_radius() >
+            half_angle + angular_pad_width + 0.10) {
             continue;
         }
-        const double pad_top_screen = to_screen(0.0, pad.y + 0.25, cam).y;
-        fill_poly(renderer, {left, right,
-                             {right.x, pad_top_screen},
-                             {left.x, pad_top_screen}},
-                  make_color(72, 210, 120));
-        fill_rect(renderer, static_cast<int>(left.x),
-                  static_cast<int>(pad_top_screen),
-                  static_cast<int>(right.x - left.x), 2,
-                  make_color(205, 255, 220));
 
-        const double cx = (pad.x_min + pad.x_max) / 2.0;
-        const Vec2 guide_top = to_screen(cx, pad.y + 14.0, cam);
-        const Vec2 guide_bottom = to_screen(cx, pad.y + 0.25, cam);
+        const int segments = 24;
+        for (int i = 0; i < segments; ++i) {
+            const double u0 =
+                pad_center - pad.half_width +
+                (2.0 * pad.half_width * i / segments);
+            const double u1 =
+                pad_center - pad.half_width +
+                (2.0 * pad.half_width * (i + 1) / segments);
+            const double t0 = lander::Terrain::angle_at_arc(u0);
+            const double t1 = lander::Terrain::angle_at_arc(u1);
+            const Vec2 a = to_screen(std::cos(t0) * pad.radius,
+                                     std::sin(t0) * pad.radius, cam);
+            const Vec2 b = to_screen(std::cos(t1) * pad.radius,
+                                     std::sin(t1) * pad.radius, cam);
+            draw_thick_line(renderer, a, b, 4.0, make_color(72, 210, 120));
+            const Vec2 ah = to_screen(std::cos(t0) * (pad.radius + 0.25),
+                                      std::sin(t0) * (pad.radius + 0.25),
+                                      cam);
+            const Vec2 bh = to_screen(std::cos(t1) * (pad.radius + 0.25),
+                                      std::sin(t1) * (pad.radius + 0.25),
+                                      cam);
+            draw_thick_line(renderer, ah, bh, 1.5,
+                            make_color(205, 255, 220), 220);
+        }
+
+        const double tc = lander::Terrain::angle_at_arc(pad_center);
+        const Vec2 guide_top =
+            to_screen(std::cos(tc) * (pad.radius + 14.0),
+                      std::sin(tc) * (pad.radius + 14.0), cam);
+        const Vec2 guide_bottom =
+            to_screen(std::cos(tc) * (pad.radius + 0.25),
+                      std::sin(tc) * (pad.radius + 0.25), cam);
         draw_thick_line(renderer, guide_top, guide_bottom, 1.0,
                         make_color(205, 255, 220), 70);
     }
@@ -506,21 +541,34 @@ void draw_lander(SDL_Renderer* renderer, const lander::State& s,
 // Small debris field at the impact point; purely cosmetic and deterministic
 // from the game seed and the tick the crash happened on.
 void draw_debris(SDL_Renderer* renderer, const lander::State& s,
-                 const lander::Camera& cam, std::uint64_t seed,
-                 const lander::Terrain& terrain) {
+                  const lander::Camera& cam, std::uint64_t seed,
+                  const lander::Terrain& terrain) {
     std::uint64_t state = seed ^ (s.ticks * 0x9E3779B97F4A7C15ULL);
-    const double ground = terrain.height_at(s.x);
+    const double theta =
+        s.x == 0.0 && s.y == 0.0 ? 0.0 : std::atan2(s.y, s.x);
+    const double surface = terrain.surface_radius_at_angle(theta);
+    const double up_x = std::cos(theta);
+    const double up_y = std::sin(theta);
+    const double right_x = std::sin(theta);
+    const double right_y = -std::cos(theta);
     for (int i = 0; i < 7; ++i) {
         const double u1 =
-            static_cast<double>(lander::splitmix64_next(state) >> 11) * 0x1.0p-53;
+            static_cast<double>(lander::splitmix64_next(state) >> 11) *
+            0x1.0p-53;
         const double u2 =
-            static_cast<double>(lander::splitmix64_next(state) >> 11) * 0x1.0p-53;
+            static_cast<double>(lander::splitmix64_next(state) >> 11) *
+            0x1.0p-53;
         const double u3 =
-            static_cast<double>(lander::splitmix64_next(state) >> 11) * 0x1.0p-53;
-        const double angle = u1 * 6.283185307179586;
-        const double dist = 0.3 + 1.1 * u2;
-        const Vec2 p = to_screen(s.x + std::cos(angle) * dist,
-                                 ground + 0.05 + u3 * 0.25, cam);
+            static_cast<double>(lander::splitmix64_next(state) >> 11) *
+            0x1.0p-53;
+        const double angle = u1 * lander::kTwoPi;
+        const double radial = 0.05 + u3 * 0.25;
+        const double tangential = std::cos(angle) * (0.3 + 1.1 * u2);
+        const double wx =
+            up_x * (surface + radial) + right_x * tangential;
+        const double wy =
+            up_y * (surface + radial) + right_y * tangential;
+        const Vec2 p = to_screen(wx, wy, cam);
         const int size = 2 + static_cast<int>(u3 * 3);
         fill_rect(renderer, static_cast<int>(p.x), static_cast<int>(p.y),
                   size, size, make_color(140, 90, 78));
@@ -548,15 +596,20 @@ void draw_hud(SDL_Renderer* renderer, const lander::State& s,
                   static_cast<unsigned long long>(seed));
     draw_text(renderer, seed_line, 18, 46, 2, dim);
 
-    // Altitude relative to the terrain directly below the lander.
+    // Altitude and velocity are shown in the local surface frame: altitude
+    // is radial height above the terrain, radial velocity is negative while
+    // descending, and tangential velocity is positive clockwise.
     const double alt_m =
-        std::max(0.0, s.y - terrain.height_at(s.x));
+        std::max(0.0, lander::altitude_at(terrain, s));
+    const lander::LocalVelocity lv = lander::local_velocity(s);
     const int throttle_pct =
         static_cast<int>(std::lround(std::clamp(throttle, 0.0, 1.0) * 100.0));
     const std::string alt = "ALT   " + fmt1(alt_m) + " M";
-    const std::string vel =
-        "VEL  " + fmt1(s.vx) + " " + fmt1(s.vy) + " M/S";
-    const std::string ang = "ANG   " + fmt1(s.angle * 180.0 / 3.14159265358979) +
+    const std::string vel = "VEL T " + fmt1(lv.tangential) +
+                            " R " + fmt1(lv.radial) + " M/S";
+    const std::string ang = "ANG   " +
+                            fmt1(lander::local_attitude_angle(s) * 180.0 /
+                                 lander::kPi) +
                             " DEG";
     const std::string thr = "THR   " + std::to_string(throttle_pct) + "%";
     const std::string fuel = "FUEL  " + fmt1(s.fuel) + " / 100";
@@ -726,6 +779,8 @@ void print_usage() {
         "  --frames N       render exactly N frames, then exit\n"
         "  --fps N          cap the frame rate to N frames/second\n"
         "  --screenshot F   save the final frame to F as a PPM image\n"
+        "  --orbit-demo     start in a terrain-clearing circular orbit\n"
+        "                   (developer mode)\n"
         "  --help           show this message\n"
         "Controls: Up/W increase throttle, Down/S decrease throttle, X\n"
         "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual),\n"
@@ -741,6 +796,7 @@ int main(int argc, char** argv) {
     int max_frames = 0;
     int fps_cap = 0;
     std::string screenshot_path;
+    bool orbit_demo = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -756,6 +812,8 @@ int main(int argc, char** argv) {
             fps_cap = std::atoi(argv[++i]);
         } else if (arg == "--screenshot" && i + 1 < argc) {
             screenshot_path = argv[++i];
+        } else if (arg == "--orbit-demo") {
+            orbit_demo = true;
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", arg.c_str());
             print_usage();
@@ -793,16 +851,14 @@ int main(int argc, char** argv) {
     SDL_SetRenderVSync(renderer, 1);
 
     lander::Simulation sim;
-    sim.reset(seed);
     // The camera owns the framing anchor: it follows the raw lander position
-    // and derives its own centre so the lander stays at the configured screen
-    // position at every scale (the terrain below it stays in view when zoomed
-    // in, and the ground never drops out when zoomed out).
+    // and rotates with the local surface frame, so the lander stays at the
+    // configured screen position at every scale and screen up follows the
+    // local outward direction.
     lander::CameraParams cam_params;
     cam_params.window_width = kWindowWidth;
     cam_params.window_height = kWindowHeight;
     lander::Camera cam(cam_params);
-    cam.snap(kStartX, kStartY);
     std::vector<lander::Star> stars =
         lander::make_stars(seed, kWindowWidth, kWindowHeight);
 
@@ -813,6 +869,29 @@ int main(int argc, char** argv) {
     bool pending_cam_toggle = false;
     Uint64 prev_ticks = SDL_GetTicks();
     int frame = 0;
+
+    auto start_mission = [&]() {
+        sim.reset(seed);
+        throttle = 0.0;
+        paused = false;
+        if (orbit_demo) {
+            const double orbit_radius =
+                sim.terrain().max_surface_radius() + 20.0;
+            const double circular_speed =
+                std::sqrt(sim.config().mu / orbit_radius);
+            lander::State orbit{};
+            orbit.x = 0.0;
+            orbit.y = orbit_radius;
+            orbit.vx = circular_speed;
+            orbit.vy = 0.0;
+            orbit.angle = 0.0;
+            orbit.fuel = sim.config().fuel;
+            sim.set_state(orbit);
+        }
+        const lander::State& state = sim.state();
+        cam.snap(state.x, state.y);
+    };
+    start_mission();
 
     while (running) {
         SDL_Event event;
@@ -827,19 +906,13 @@ int main(int argc, char** argv) {
                         break;
                     case SDL_SCANCODE_R:
                         // Retry the same seed: the pad layout is identical.
-                        sim.reset(seed);
-                        throttle = 0.0;
-                        cam.snap(kStartX, kStartY);
-                        paused = false;
+                        start_mission();
                         break;
                     case SDL_SCANCODE_N: {
                         seed = random_seed();
-                        sim.reset(seed);
-                        throttle = 0.0;
                         stars = lander::make_stars(seed, kWindowWidth,
                                                    kWindowHeight);
-                        cam.snap(kStartX, kStartY);
-                        paused = false;
+                        start_mission();
                         break;
                     }
                     case SDL_SCANCODE_X:
@@ -910,11 +983,12 @@ int main(int argc, char** argv) {
 
         const lander::State& s = sim.state();
         // The camera follows the raw lander position and chooses its scale
-        // from the lander's altitude above the terrain directly below it. It
-        // runs even while paused so the mode toggle and wheel stay responsive;
-        // with the lander frozen the position target is constant, so the
-        // camera simply holds.
-        const double altitude = s.y - sim.terrain().height_at(s.x);
+        // from the lander's radial altitude above the terrain directly below
+        // it. It runs even while paused so the mode toggle and wheel stay
+        // responsive; with the lander frozen the position target is constant,
+        // so the camera simply holds.
+        const double altitude =
+            std::max(0.0, lander::altitude_at(sim.terrain(), s));
         cam.update(dt, s.x, s.y, altitude, pending_wheel,
                    pending_cam_toggle);
         pending_wheel = 0;
@@ -927,8 +1001,8 @@ int main(int argc, char** argv) {
                 ? std::clamp(throttle, 0.0, 1.0)
                 : 0.0;
 
-        draw_space(renderer, stars);
-        draw_terrain(renderer, sim.terrain(), cam);
+        draw_space(renderer, stars, cam);
+        draw_terrain(renderer, sim.terrain(), cam, s);
         draw_lander(renderer, s, thrust_level, cam);
         if (s.crashed) {
             draw_debris(renderer, s, cam, seed, sim.terrain());

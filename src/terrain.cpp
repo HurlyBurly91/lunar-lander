@@ -1,136 +1,139 @@
 #include "lander/terrain.hpp"
 
 #include <algorithm>
-#include <cmath>
+#include <array>
 
 namespace lander {
 
 namespace {
 
-constexpr std::uint64_t kMixIncrement = 0x9E3779B97F4A7C15ULL;
-constexpr std::uint64_t kMixMulA = 0xBF58476D1CE4E5B9ULL;
-constexpr std::uint64_t kMixMulB = 0x94D049BB133111EBULL;
-
-// SplitMix64: the same deterministic integer-only PRNG family used by
-// src/sim.cpp, so terrain generation stays reproducible for a given seed.
 class Rng {
 public:
-    explicit Rng(std::uint64_t seed) : state_(seed) {}
+    explicit Rng(std::uint64_t seed)
+        : state_(seed == 0 ? 0x9E3779B97F4A7C15ULL : seed) {}
 
-    std::uint64_t next() {
-        std::uint64_t z = (state_ += kMixIncrement);
-        z = (z ^ (z >> 30)) * kMixMulA;
-        z = (z ^ (z >> 27)) * kMixMulB;
-        return z ^ (z >> 31);
-    }
-
-    // Uniform double in [0, 1).
     double uniform() {
-        return static_cast<double>(next() >> 11) * 0x1.0p-53;
+        state_ =
+            state_ ^ (state_ << 13) ^
+            state_ >> 7 ^
+            state_ ^ (state_ << 17);
+        return (state_ >> 11) * 0x1p-53;
     }
 
 private:
     std::uint64_t state_;
 };
 
-// Deterministic pseudo-random value in [0, 1) for an integer lattice cell,
-// derived from the cell index and a per-octave salt.
-double cell_value(std::int64_t cell, std::uint64_t salt) {
-    std::uint64_t z =
-        static_cast<std::uint64_t>(cell) * kMixIncrement ^ salt;
-    z = (z ^ (z >> 30)) * kMixMulA;
-    z = (z ^ (z >> 27)) * kMixMulB;
-    z = (z ^ (z >> 31));
-    return static_cast<double>(z >> 11) * 0x1.0p-53;
+double cell_value(std::uint64_t salt, int cell) {
+    std::uint64_t x =
+        salt ^
+        static_cast<std::uint64_t>(cell) * 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (x >> 11) * 0x1p-53;
 }
 
-// 1-D value noise: linear interpolation between hashed lattice values.
-// Linear (not smooth) interpolation keeps the surface visibly jagged.
-double vnoise(double x, std::uint64_t salt) {
-    const std::int64_t i0 = static_cast<std::int64_t>(std::floor(x));
-    const double t = x - static_cast<double>(i0);
-    const double v0 = cell_value(i0, salt);
-    const double v1 = cell_value(i0 + 1, salt);
-    return v0 * (1.0 - t) + v1 * t;
+double smooth_step(double t) {
+    t = t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t;
+    return t * t * (3.0 - 2.0 * t);
 }
 
-// Landing site geometry.
-constexpr double kSiteHalfWidth = 6.0;  // 12 m wide: plenty for the lander.
-constexpr double kSiteRange = 150.0;    // centers drawn from [-150, 150]
-constexpr double kSiteMinSpacing = 100.0;
-constexpr int kSiteCount = 3;
-constexpr int kMaxPlacementsPerSite = 200;
+double periodic_value_noise(double arc, int cells, std::uint64_t salt) {
+    double C = kReferenceCircumference;
+    double x = arc / C * static_cast<double>(cells);
+    double i0 = std::floor(x);
+    double t = smooth_step(x - i0);
+    int c0 = static_cast<int>(std::fmod(i0, static_cast<double>(cells)));
+    int c1 = c0 + 1;
+    if (c0 < 0) {
+        c0 += cells;
+    }
+    if (c1 >= cells) {
+        c1 -= cells;
+    }
+    return cell_value(salt, c0) * (1.0 - t) + cell_value(salt, c1) * t;
+}
 
-} // namespace
+}  // namespace
 
 Terrain::Terrain(std::uint64_t seed) : seed_(seed) {
-    Rng rng(seed_);
+    Rng rng(seed);
+    double base[3] = {
+        0.0,
+        0.38 * kReferenceCircumference,
+        0.76 * kReferenceCircumference,
+    };
 
-    // Place a few sites, each far enough from the ones already placed that
-    // sites never overlap. The rejection loop is deterministic: the RNG is
-    // drawn in the same order for a given seed, so the result is identical.
-    std::vector<double> centers;
-    for (int i = 0; i < kSiteCount; ++i) {
-        bool placed = false;
-        for (int attempt = 0; attempt < kMaxPlacementsPerSite && !placed;
-             ++attempt) {
-            const double center =
-                -kSiteRange + 2.0 * kSiteRange * rng.uniform();
-            bool too_close = false;
-            for (const double other : centers) {
-                if (std::abs(other - center) < kSiteMinSpacing) {
-                    too_close = true;
-                    break;
-                }
-            }
-            if (!too_close) {
-                centers.push_back(center);
-                placed = true;
-            }
+    for (int i = 0; i < 3; ++i) {
+        double center = base[i];
+        if (i != 0) {
+            center += (rng.uniform() - 0.5) * 0.08 * kReferenceCircumference;
         }
-    }
+        center = normalize_arc(center);
 
-    // Each site is flattened to the base-surface height at its center, so
-    // it reads as a deliberate plateau carved into the terrain.
-    for (const double center : centers) {
         Pad pad;
-        pad.x_min = center - kSiteHalfWidth;
-        pad.x_max = center + kSiteHalfWidth;
-        pad.y = base_height(center);
+        pad.center_arc = center;
+        pad.half_width = 6.0;
+        pad.radius = base_radius_at_arc(center);
         pad.multiplier = 1;
         pads_.push_back(pad);
     }
+
     std::sort(pads_.begin(), pads_.end(),
-              [](const Pad& a, const Pad& b) { return a.x_min < b.x_min; });
+              [](const Pad& a, const Pad& b) {
+                  return a.center_arc < b.center_arc;
+              });
 }
 
-double Terrain::base_height(double x) const {
-    // Three octaves of value noise: broad undulation, medium hills, fine
-    // jaggedness. Scales and amplitudes are fixed; only the seed varies.
-    const double u =
-        2.0 * vnoise(x / 120.0, seed_ * kMixIncrement + 0x01) - 1.0;
-    const double m =
-        2.0 * vnoise(x / 28.0, seed_ * kMixIncrement + 0x02) - 1.0;
-    const double f =
-        2.0 * vnoise(x / 6.5, seed_ * kMixIncrement + 0x03) - 1.0;
-    return 9.0 * u + 4.0 * m + 1.6 * f;
+double Terrain::base_height_at_arc(double arc) const {
+    arc = normalize_arc(arc);
+    std::uint64_t salt = seed_ ^ 0xA5A489058670D2B2ULL;
+    double h = 9.0 * periodic_value_noise(arc, 17, salt ^ 1);
+    h += 4.0 * periodic_value_noise(arc, 75, salt ^ 7);
+    h += 1.6 * periodic_value_noise(arc, 321, salt ^ 13);
+    return h;
 }
 
-double Terrain::height_at(double x) const {
+double Terrain::base_radius_at_arc(double arc) const {
+    return kReferenceRadius + base_height_at_arc(arc);
+}
+
+const Pad* Terrain::pad_at_arc(double arc) const {
+    arc = normalize_arc(arc);
+    const double C = kReferenceCircumference;
     for (const Pad& pad : pads_) {
-        if (x >= pad.x_min && x <= pad.x_max) {
-            return pad.y;
+        double delta = normalize_arc(arc - pad.center_arc);
+        double distance = std::min(delta, C - delta);
+        if (distance <= pad.half_width) {
+            return &pad;
         }
     }
-    return base_height(x);
+    return nullptr;
 }
 
-const std::vector<Pad>& Terrain::pads() const noexcept {
-    return pads_;
+double Terrain::surface_radius_at_arc(double arc) const {
+    arc = normalize_arc(arc);
+    if (const Pad* pad = pad_at_arc(arc)) {
+        return pad->radius;
+    }
+    return base_radius_at_arc(arc);
 }
 
-std::uint64_t Terrain::seed() const noexcept {
-    return seed_;
+double Terrain::surface_radius_at_angle(double theta) const {
+    return surface_radius_at_arc(arc_at_angle(theta));
 }
 
-} // namespace lander
+double Terrain::max_surface_radius() const {
+    double best = -1.0e300;
+    const int samples = 2048;
+    for (int i = 0; i < samples; ++i) {
+        double arc = i * kReferenceCircumference / samples;
+        best = std::max(best, surface_radius_at_arc(arc));
+    }
+    return best;
+}
+
+}  // namespace lander
