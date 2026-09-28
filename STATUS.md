@@ -4,23 +4,32 @@
 
 M04 — Circular moon and orbital physics
 
-State: NOT STARTED
+State: ACTIVE
+
+Phase: PRESENTATION FOLLOW-UP
 
 Specification:
 
 milestones/M04-circular-moon-orbital-physics.md
+
+Execution ledger:
+
+TASKS.md
+
+The underlying M04 curved-world and orbital physics are implemented and have
+passed automated orbital verification.
+
+Current follow-up work is presentation-side:
+
+- exact player camera anchoring through rotating local frames
+- fixed-step render interpolation / high-resolution render timing
+- fixed screen-space starfield behavior
+
+Orbital constants and the integrator are not currently suspected of causing the
+observed GUI stutter.
 
 ## Prior milestone
 
 M03 — Throttle and camera polish
 
 State: COMPLETE
-
-M03 added continuous persistent throttle, throttle HUD feedback, fixed stellar
-background behavior, and corrected camera zoom anchoring so lander framing is
-preserved across AUTO and MANUAL zoom changes.
-
-Human verification accepted the M03 controls, HUD, and camera behavior.
-
-M04 now changes the underlying world geometry and gravity model from a flat
-surface to a closed circular moon with real orbital flight.

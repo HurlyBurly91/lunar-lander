@@ -64,7 +64,8 @@ resources, economy, etc. are only ideas for after the core game works.
 - Make small, testable changes.
 - Run/build the game frequently.
 - Prefer straightforward code over frameworks.
-- Do not create elaborate milestone documents.
+- Keep milestone documents scoped to the active vertical slice.
+- Do not create speculative future architecture or implementation plans.
 - Do not stop for review after every small implementation step.
 - If something already works, preserve it unless changing it is necessary for
   the current stage.
@@ -124,7 +125,9 @@ Normal Lunar Lander milestone work may modify:
 - PROJECT.md
 - STATUS.md
 - RUN_PROMPT.txt
+- TASKS.md
 - CMakeLists.txt
+- .githooks/
 - .gitignore
 - .gitmodules
 - include/
@@ -229,89 +232,155 @@ Agents should therefore:
 Do not ask the user to manually push a successfully completed milestone.
 Do not force-push or rewrite history.
 
-## Durable task ledger
+## Durable task state
 
-`TASKS.md` is the canonical execution state for the current task.
+The repository uses several deliberately separate durable-state layers.
 
-The model/UI todo list is NOT authoritative. It is temporary and may disappear
-after context compaction, `/new`, model changes, crashes, or resumed sessions.
+They are not interchangeable.
+
+### State architecture
+
+    AGENTS.md
+        durable procedural memory
+        how work is done
+
+    PROJECT.md
+        durable product intent
+        where the project is going
+
+    STATUS.md
+        minimal current pointer
+        which milestone and phase are active
+
+    milestones/Mxx-*.md
+        stable task semantics / milestone contract
+        what success means
+
+    TASKS.md
+        bounded high-fidelity execution state
+        what must happen now
+
+    records/Mxx-*.md
+        compressed retrospective provenance
+        what actually happened and why
+
+    RUN_PROMPT.txt
+        reconstruction procedure
+        how a fresh agent restores the current state
+
+`TASKS.md` is the canonical live execution state.
+
+The UI/model todo list is temporary and non-authoritative.
+
+### Bounded working-state rule
+
+`TASKS.md` is durable working memory, not a permanent append-only event log.
+
+It contains only the active milestone's current execution state and the
+requirement/evidence history needed to finish that milestone correctly.
+
+At milestone closeout:
+
+1. preserve the final requirement IDs and relevant supersession relationships
+   in the milestone record
+2. preserve requirement -> implementation links where useful
+3. preserve requirement -> test/evidence links
+4. preserve human-verification results
+5. write the resulting retrospective state to `records/Mxx-*.md`
+6. mark the current TASKS ledger complete
+7. reset `TASKS.md` when the next milestone begins
+
+Do not carry all atomic tasks from completed milestones into the next
+milestone's working context.
+
+Git history preserves lower-level intermediate mutations when needed.
+
+Historical records are durable memory but are NOT loaded automatically on every
+session. Read a prior record only when needed to understand a dependency,
+rationale, regression, or previous design decision.
+
+### Authority and precedence
+
+For current work, interpret state in this order:
+
+1. latest explicit user instruction
+2. `TASKS.md` representation of that instruction
+3. active milestone specification
+4. `PROJECT.md`
+
+`AGENTS.md` supplies operating invariants and workflow rules across all of
+those layers.
+
+If a new user instruction changes an earlier active requirement, preserve the
+relationship explicitly rather than silently rewriting history, for example:
+
+    - [x] M04-R1-07 SUPERSEDED by M04-R2-03
+
+If a user instruction changes stable milestone semantics rather than merely
+implementation details, update the active milestone specification as well.
+
+### STATUS.md states
+
+Use a small explicit state vocabulary:
+
+    NOT STARTED
+    ACTIVE
+    AWAITING HUMAN VERIFICATION
+    BLOCKED
+    COMPLETE
+
+`STATUS.md` should remain a small pointer, not a second task ledger.
+
+It should identify:
+
+- active milestone
+- state
+- optional current phase
+- milestone specification
+- `TASKS.md` as the live execution ledger
+
+Do not copy the full checklist into STATUS.md.
 
 ### Prompt ingestion rule
 
-Whenever the user provides a multi-part implementation request, follow-up
-request, bug list, acceptance checklist, or other substantive set of
-requirements:
+Whenever the user provides a substantive multi-part implementation request,
+follow-up request, bug list, changed requirement, acceptance checklist, or
+other execution-relevant instruction:
 
-1. Before changing implementation code, parse the request into `TASKS.md`.
-2. Give every independently verifiable requirement a stable ID.
-3. Split compound requirements into atomic checklist items where useful.
-4. Preserve explicit constraints, non-goals, constants, and "do not" clauses.
-5. Preserve human-verification requirements separately from automated checks.
-6. Only after `TASKS.md` reflects the request may implementation begin.
+1. determine whether it changes the active milestone contract or only the
+   current execution state
+2. before changing implementation code, persist it to `TASKS.md`
+3. allocate a stable request ID if it represents a new request group
+4. give independently verifiable requirements stable IDs
+5. split materially distinct requirements into atomic entries
+6. preserve constants, formulas, controls, filenames, APIs, and explicit
+   prohibitions
+7. preserve automated and human verification separately
+8. only then begin implementation
 
-The UI todo list may mirror `TASKS.md`, but it must never contain requirements
-that are absent from `TASKS.md`.
+The UI todo list may mirror `TASKS.md`, but must not contain required work that
+is absent from `TASKS.md`.
 
-### Required TASKS.md structure
+### Stable IDs
 
-Use this general structure:
-
-    # Active Task
-
-    Milestone: Mxx
-    Request: Mxx-Rn
-    State: ACTIVE
-
-    ## User requirements
-
-    - [ ] Mxx-Rn-01 ...
-    - [ ] Mxx-Rn-02 ...
-
-    ## Preserve / constraints
-
-    - [ ] Mxx-Rn-P01 ...
-
-    ## Automated verification
-
-    - [ ] Mxx-Rn-V01 ...
-
-    ## Human verification
-
-    - [ ] Mxx-Rn-H01 ...
-
-    ## Derived implementation tasks
-
-    - [ ] Mxx-Rn-D01 ...
-
-    ## Evidence / notes
-
-Requirements originating from the user must not be silently replaced by
-derived implementation tasks.
-
-### Stable task IDs
-
-Task IDs are durable.
-
-Do not renumber existing task IDs when a later prompt adds more work.
-
-A later request should receive a new request number, for example:
+Within an active milestone, request groups use:
 
     M04-R1
     M04-R2
     M04-R3
 
-and new requirements:
+Atomic entries use:
 
-    M04-R3-01
-    M04-R3-02
-    ...
+    M04-R2-01      user requirement
+    M04-R2-P01     preserve / constraint
+    M04-R2-V01     automated verification
+    M04-R2-H01     human verification
+    M04-R2-D01     derived implementation task
 
-If a later user instruction changes an earlier requirement, retain the old
-entry but mark it explicitly:
+Do not renumber IDs after they have been assigned.
 
-    - [x] M04-R2-03 SUPERSEDED by M04-R3-02
-
-Do not silently edit history so that the earlier requirement disappears.
+Requirements originating from the user must not be replaced by derived
+implementation tasks.
 
 ### Checklist semantics
 
@@ -322,78 +391,114 @@ Use:
     [x] verified complete
     [!] blocked
 
-Do not mark an item `[x]` merely because code intended to implement it exists.
+Do not mark an item `[x]` merely because code intended to satisfy it exists.
 
-A completed item should have evidence when practical, for example:
+Completion requires evidence appropriate to the requirement.
 
-    - [x] M04-R3-02 Exact camera anchoring
-      Evidence: tests/test_camera.cpp; lander_camera_tests passes
+Example:
 
-Human-verification items may only be marked complete after the user explicitly
-confirms them.
+    - [x] M04-R2-03 Exact camera anchoring
+      Source: USER
+      Files: include/lander/camera.hpp
+      Evidence: tests/test_camera.cpp::full_revolution_anchor
 
-### Parsing requirements
+Useful metadata may include:
 
-When converting a user prompt into the ledger:
+    Source:
+    Files:
+    Evidence:
+    Depends:
+    Supersedes:
+    Notes:
 
-- do not omit requirements because they appear repetitive
-- do not collapse materially different requirements into one vague bullet
-- preserve numerical constants exactly
-- preserve requested keys, controls, filenames, APIs, and formulas
-- preserve explicit prohibitions
-- distinguish USER requirements from DERIVED implementation work
-- if a requirement is ambiguous, record the ambiguity instead of silently
-  selecting a different interpretation
+Do not add metadata mechanically when it provides no value.
 
-The durable ledger should contain enough information that another agent can
-continue the task without access to the original chat prompt.
+Human-verification items may only be marked complete after explicit user
+confirmation.
+
+### Requirement traceability
+
+When practical, preserve the chain:
+
+    user observation / requirement
+        ->
+    stable requirement ID
+        ->
+    implementation artifact
+        ->
+    executable test or other evidence
+        ->
+    verification result
+
+A test's existence alone is weaker evidence than a successful execution.
+Record actual verification results when practical.
 
 ### During implementation
 
-Update `TASKS.md` as work progresses.
+Update `TASKS.md` as execution proceeds.
 
-Before moving to another major part of the request, update the status of the
-current items.
+Before moving to another major requirement group, persist the current state.
 
-When new defects or required substeps are discovered, append them under
-"Derived implementation tasks" with new stable IDs.
+If implementation reveals a necessary subtask not explicitly requested, append
+it under `Derived implementation tasks` with a stable D-ID.
 
-Do not delete unfinished items merely because the implementation approach
-changed.
+Do not delete an unfinished requirement merely because the implementation
+approach changed.
 
-### Session startup / resume
+Do not use the conversation transcript or model todo list as the sole durable
+record of unfinished work.
 
-Before continuing an existing task, read:
+### Session startup and resume
 
-    AGENTS.md
-    PROJECT.md
-    STATUS.md
-    TASKS.md
-    active milestone specification
+A fresh or resumed agent should reconstruct current state semantically:
 
-If `TASKS.md` has `State: ACTIVE`, continue from its open and blocked items.
+1. read `AGENTS.md` for operating invariants
+2. read `STATUS.md` to identify the active milestone and phase
+3. read the active milestone specification for stable requirements and
+   acceptance criteria
+4. read `TASKS.md` for current unresolved execution state, dependencies,
+   relevant completed verification, and pending human verification
+5. read `PROJECT.md` for product-level direction and constraints
 
-Do not reconstruct current work solely from conversational memory or the UI
-todo list.
+Do not automatically load historical milestone records.
+
+Retrieve a historical record only when needed to understand a dependency,
+rationale, regression, or prior design decision.
+
+If the current user message changes requirements, persist that change to
+`TASKS.md` before implementation.
 
 ### Completion gate
 
-Before claiming a task is complete:
+Before claiming the current request or milestone is complete:
 
-1. inspect every item in `TASKS.md`
-2. verify no required USER item remains `[ ]`, `[~]`, or `[!]`
-3. verify all automated-verification items have evidence
-4. verify required human items have actually been confirmed by the user
+1. inspect every required item in `TASKS.md`
+2. verify no applicable USER requirement remains `[ ]`, `[~]`, or `[!]`
+3. verify automated-verification items have execution evidence
+4. verify preservation constraints still hold
+5. verify required human items have actually been confirmed by the user
 
-If human verification remains, stop and request it. Do not close the milestone.
+If required human verification remains:
+
+- set STATUS to `AWAITING HUMAN VERIFICATION`
+- keep the relevant human items open
+- stop and request human verification
+- do not close the milestone
 
 ### Milestone closeout
 
-When the milestone is accepted:
+After human acceptance:
 
-- transfer relevant implementation decisions and verification evidence into the
-  milestone record under `records/`
-- update STATUS.md
-- set TASKS.md State to COMPLETE
-- preserve the completed checklist rather than deleting it
-- commit and push according to repository Git policy
+1. write/update `records/Mxx-*.md`
+2. preserve the final requirement IDs relevant to what shipped
+3. preserve important supersession relationships
+4. preserve implementation decisions and rationale
+5. preserve automated execution evidence
+6. preserve human-verification results
+7. update `STATUS.md` to `COMPLETE`
+8. set the active `TASKS.md` ledger to `COMPLETE`
+9. commit and push according to repository Git policy
+
+When the next milestone begins, replace `TASKS.md` with a fresh bounded ledger
+for that milestone rather than carrying forward the previous milestone's
+atomic execution history.

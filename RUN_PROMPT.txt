@@ -1,10 +1,42 @@
-Read AGENTS.md, PROJECT.md, STATUS.md, and the active milestone specification.
+Read AGENTS.md first to establish repository operating invariants.
 
-Implement only the active milestone.
+Read STATUS.md to identify the active milestone, its state, and its current
+phase.
 
-Preserve the existing working vertical slice, build and test repeatedly, and
-continue autonomously until the milestone is complete or genuinely blocked.
+Read the milestone specification referenced by STATUS.md to establish stable
+requirements, scope, non-goals, and acceptance criteria.
+
+Read TASKS.md to reconstruct the current unresolved execution state,
+dependencies, completed verification relevant to current work, and pending
+human verification.
+
+Read PROJECT.md for project-level direction and constraints.
+
+Do not reconstruct current execution state from conversation history, model
+memory, or the UI todo list when durable repository state exists.
+
+Do not automatically read historical records. Retrieve a record under records/
+only when it is needed to understand a dependency, rationale, regression, or
+prior design decision.
+
+If the current user instruction introduces, changes, or supersedes substantive
+requirements, persist that change to TASKS.md before changing implementation
+code.
+
+Implement only the active milestone and current TASKS.md requirements.
+
+Preserve the existing working vertical slice. Build and test repeatedly.
+
+Update TASKS.md as execution progresses and attach verification evidence when
+practical.
+
+Continue autonomously until all automatically verifiable current requirements
+are complete or the task is genuinely blocked.
+
+If human verification is required, set STATUS.md to AWAITING HUMAN VERIFICATION,
+leave the applicable H-items open in TASKS.md, and stop for the user.
 
 Do not implement future milestones.
 
-At completion follow the milestone Closeout section.
+At accepted milestone completion, follow the milestone Closeout section and the
+bounded TASKS.md archival/reset procedure in AGENTS.md.

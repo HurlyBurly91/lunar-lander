@@ -224,17 +224,31 @@ Camera transformations must not modify terrain geometry.
 
 ## Starfield
 
-Stars remain effectively infinitely distant.
+For the current game presentation, use a deterministic fixed screen-space
+starfield.
 
-They must still have:
+Star screen position must depend only on:
 
-- no translational parallax from local lander/camera movement
-- no zoom parallax
+    seed
+    star index
+    viewport size
 
-If the camera rotates to maintain local radial-up orientation, the starfield
-should respond only to camera rotation, as an inertial distant background would.
+It must not depend on:
 
-Do not reintroduce the old camera-position parallax behavior.
+    camera position
+    camera zoom
+    camera rotation
+    lander position
+    lander velocity
+    moon longitude
+
+The local-frame camera may rotate world geometry around the moon, but the
+starfield remains visually fixed behind it.
+
+This intentionally prioritizes stable game presentation over a physically exact
+rotating view of an inertial celestial sphere.
+
+Do not reintroduce translational, zoom, or rotational starfield parallax.
 
 ## HUD
 
@@ -338,7 +352,7 @@ Verify manually:
 - local "up" remains visually sensible around the moon
 - camera zoom and framing remain stable
 - terrain does not wobble while the camera rotates/translates/zooms
-- starfield does not translate with the lander
+- starfield remains fixed in screen space during translation, zoom, and local-frame camera rotation
 - throttle still feels correct
 - a sufficiently fast tangential trajectory can enter sustained orbit
 - orbiting the body feels roughly on the intended ~90-second gameplay scale
@@ -397,7 +411,7 @@ M04 is complete when:
 - gravity is radial and inverse-square
 - landing works using local radial/tangential physics
 - the camera remains usable around the full moon
-- the starfield behaves as an inertial distant background
+- the starfield remains a deterministic fixed screen-space background
 - real free-flight circular orbits are possible
 - the nominal orbital scale is about 90 seconds
 - automated orbital regression tests pass
