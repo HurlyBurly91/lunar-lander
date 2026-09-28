@@ -48,3 +48,12 @@ add_executable(lander_tests
 target_link_libraries(lander_tests PRIVATE lander)
 
 add_test(NAME lander_tests COMMAND lander_tests)
+
+# Presentation-only camera logic (M02), tested headlessly and apart from any
+# rendering or SDL dependency.
+add_executable(lander_camera_tests
+    tests/test_camera.cpp
+)
+target_link_libraries(lander_camera_tests PRIVATE lander)
+
+add_test(NAME lander_camera_tests COMMAND lander_camera_tests)

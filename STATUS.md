@@ -4,11 +4,22 @@
 
 M02 — Contextual camera and manual zoom
 
-State: NOT STARTED
+State: COMPLETE
+
+M02 adds a presentation-only camera: an AUTO contextual view that eases
+between a wide overview scale at high altitude and a landing-scale view near
+the surface (chosen by the terrain-relative altitude, with hysteresis), and a
+MANUAL mode whose zoom is set with the mouse wheel (M toggles the mode). The
+single world-to-screen transform keeps the fixed world-space terrain rigid
+under both camera motion and zoom.
 
 Specification:
 
 milestones/M02-contextual-camera.md
+
+Record:
+
+records/M02-contextual-camera.md
 
 ## Prior milestone
 

@@ -16,6 +16,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lander/camera.hpp"
 #include "lander/sim.hpp"
 
 #include <algorithm>
@@ -32,7 +33,6 @@ namespace {
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-constexpr double kScale = 14.0;  // pixels per meter
 
 constexpr double kStartX = 0.0;
 constexpr double kStartY = 20.0;  // matches lander::State::y default
@@ -243,21 +243,13 @@ std::string fmt1(double value) {
 
 // ------------------------------------------------------------------- camera
 
-struct Camera {
-    Vec2 pos{kStartX, 21.0};
-
-    void snap(const Vec2& target) { pos = target; }
-
-    void update(const Vec2& target, double dt) {
-        const double alpha = 1.0 - std::exp(-4.0 * dt);
-        pos.x += (target.x - pos.x) * alpha;
-        pos.y += (target.y - pos.y) * alpha;
-    }
-};
-
-Vec2 to_screen(double world_x, double world_y, const Camera& cam) {
-    return {kWindowWidth / 2.0 + (world_x - cam.pos.x) * kScale,
-            kWindowHeight / 2.0 - (world_y - cam.pos.y) * kScale};
+// The single world-to-screen transform. Every piece of world geometry (the
+// lander, terrain, pads, guides, debris) is drawn through this, so the camera
+// can only rigidly move and scale the fixed world-space terrain, never change
+// its shape. Coordinates stay floating point here; SDL quantizes to pixels.
+Vec2 to_screen(double world_x, double world_y, const lander::Camera& cam) {
+    return {kWindowWidth / 2.0 + (world_x - cam.x()) * cam.scale(),
+            kWindowHeight / 2.0 - (world_y - cam.y()) * cam.scale()};
 }
 
 // ------------------------------------------------------------- primitives
@@ -366,18 +358,20 @@ std::vector<Star> make_stars(std::uint64_t seed) {
     return stars;
 }
 
-void draw_space(SDL_Renderer* renderer, const Camera& cam,
+void draw_space(SDL_Renderer* renderer, const lander::Camera& cam,
                 const std::vector<Star>& stars) {
     fill_rect(renderer, 0, 0, kWindowWidth, kWindowHeight,
               make_color(8, 10, 22));
     // Stars drift at 25% of the camera speed and wrap, so the sky extends
     // forever in every direction.
     for (const Star& star : stars) {
-        double sx = std::fmod(star.x - cam.pos.x * kScale * 0.25, kWindowWidth);
+        double sx = std::fmod(star.x - cam.x() * cam.scale() * 0.25,
+                              kWindowWidth);
         if (sx < 0) {
             sx += kWindowWidth;
         }
-        double sy = std::fmod(star.y - cam.pos.y * kScale * 0.25, kWindowHeight);
+        double sy = std::fmod(star.y - cam.y() * cam.scale() * 0.25,
+                              kWindowHeight);
         if (sy < 0) {
             sy += kWindowHeight;
         }
@@ -395,18 +389,20 @@ void draw_space(SDL_Renderer* renderer, const Camera& cam,
 // sampled on a fixed 1 m world-space lattice, closed into a polygon well
 // below the window.
 void draw_terrain(SDL_Renderer* renderer, const lander::Terrain& terrain,
-                  const Camera& cam) {
-    const double world_left = cam.pos.x - kWindowWidth / 2.0 / kScale;
-    const double world_right = cam.pos.x + kWindowWidth / 2.0 / kScale;
+                  const lander::Camera& cam) {
+    const double scale = cam.scale();
+    const double world_left = cam.x() - kWindowWidth / 2.0 / scale;
+    const double world_right = cam.x() + kWindowWidth / 2.0 / scale;
 
     // The sample positions are anchored to the fixed 1 m world-space grid
     // (the same lattice the value noise is defined on), not to the moving
     // camera origin: the same world points are sampled every frame, so
-    // camera motion only translates the geometry on screen and the
-    // contour can never deform or wobble. The +-2 m overhang keeps the
-    // polygon covering the window edges no matter where the grid falls.
-    // World coordinates stay floating point through to_screen; SDL does
-    // the final quantization to pixels.
+    // camera motion and zoom only translate and uniformly scale the geometry
+    // on screen, and the contour can never deform or wobble. The +-2 m
+    // overhang keeps the polygon covering the window edges no matter where
+    // the grid falls or how far in the camera is zoomed. World coordinates
+    // stay floating point through to_screen; SDL does the final quantization
+    // to pixels.
     std::vector<Vec2> surface;
     for (double x = std::floor(world_left - 2.0);
          x <= std::ceil(world_right + 2.0); x += 1.0) {
@@ -477,7 +473,7 @@ void draw_terrain(SDL_Renderer* renderer, const lander::Terrain& terrain,
 // on-screen orientation honest under the y-flip: positive angle =
 // counter-clockwise on screen.
 void draw_lander(SDL_Renderer* renderer, const lander::State& s,
-                 bool thrusting, const Camera& cam) {
+                 bool thrusting, const lander::Camera& cam) {
     const double c = std::cos(s.angle);
     const double sn = std::sin(s.angle);
     auto local = [&](double lx, double ly) {
@@ -540,7 +536,7 @@ void draw_lander(SDL_Renderer* renderer, const lander::State& s,
 // Small debris field at the impact point; purely cosmetic and deterministic
 // from the game seed and the tick the crash happened on.
 void draw_debris(SDL_Renderer* renderer, const lander::State& s,
-                 const Camera& cam, std::uint64_t seed,
+                 const lander::Camera& cam, std::uint64_t seed,
                  const lander::Terrain& terrain) {
     std::uint64_t state = seed ^ (s.ticks * 0x9E3779B97F4A7C15ULL);
     const double ground = terrain.height_at(s.x);
@@ -564,7 +560,8 @@ void draw_debris(SDL_Renderer* renderer, const lander::State& s,
 // --------------------------------------------------------------------- HUD
 
 void draw_hud(SDL_Renderer* renderer, const lander::State& s,
-              std::uint64_t seed, const lander::Terrain& terrain) {
+              std::uint64_t seed, const lander::Terrain& terrain,
+              const lander::Camera& cam) {
     const Color panel(12, 14, 26);
     const Color white(228, 233, 244);
     const Color dim(130, 138, 156);
@@ -622,9 +619,21 @@ void draw_hud(SDL_Renderer* renderer, const lander::State& s,
 
     // Control help along the bottom.
     draw_text(renderer, "UP/SPACE THRUST   LEFT/RIGHT ROTATE", 18,
-              kWindowHeight - 44, 1, dim);
-    draw_text(renderer, "R RETRY   N NEW SEED   P PAUSE   ESC QUIT", 18,
-              kWindowHeight - 28, 1, dim);
+              kWindowHeight - 56, 1, dim);
+    draw_text(renderer, "M CAMERA   WHEEL ZOOM   P PAUSE", 18,
+              kWindowHeight - 40, 1, dim);
+    draw_text(renderer, "R RETRY   N NEW SEED   ESC QUIT", 18,
+              kWindowHeight - 24, 1, dim);
+
+    // Camera indicator, top-right. In MANUAL the current zoom is shown.
+    std::string cam_line =
+        cam.mode() == lander::CameraMode::kAuto ? "CAM AUTO"
+                                               : "CAM MANUAL " + fmt1(cam.zoom()) + "X";
+    const Color cam_color =
+        cam.mode() == lander::CameraMode::kAuto ? dim : green;
+    const int cam_x =
+        kWindowWidth - 8 - static_cast<int>(cam_line.size()) * 6;
+    draw_text(renderer, cam_line, cam_x, 16, 1, cam_color);
 }
 
 void draw_overlay(SDL_Renderer* renderer, const lander::State& s,
@@ -727,8 +736,9 @@ void print_usage() {
         "  --fps N          cap the frame rate to N frames/second\n"
         "  --screenshot F   save the final frame to F as a PPM image\n"
         "  --help           show this message\n"
-        "Controls: Up/Space/W thrust, Left/Right/A/D rotate, R retry same\n"
-        "seed, N new seed, P pause, Esc/Q quit.\n");
+        "Controls: Up/Space/W thrust, Left/Right/A/D rotate, M camera\n"
+        "mode (Auto/Manual), mouse wheel zoom (Manual), R retry same seed,\n"
+        "N new seed, P pause, Esc/Q quit.\n");
 }
 
 }  // namespace
@@ -792,12 +802,23 @@ int main(int argc, char** argv) {
 
     lander::Simulation sim;
     sim.reset(seed);
-    Camera cam;
-    cam.snap({kStartX, 0.55 * kStartY + 10.0});
+    lander::Camera cam;
+    // Frame the camera so the lander sits a fixed fraction down from the top
+    // of the screen. The downward reach then scales with the zoom, so the
+    // terrain below the lander stays in view at every scale (the lander is
+    // never pushed off the top when zoomed in, and the ground is never lost
+    // off the bottom when zoomed out).
+    const double lander_top_fraction = cam.params().lander_top_fraction;
+    const auto frame_target_y = [&](double lander_y, double scale) {
+        return lander_y - (0.5 - lander_top_fraction) * (kWindowHeight / scale);
+    };
+    cam.snap(kStartX, frame_target_y(kStartY, cam.params().base_scale));
     std::vector<Star> stars = make_stars(seed);
 
     bool paused = false;
     bool running = true;
+    int pending_wheel = 0;
+    bool pending_cam_toggle = false;
     Uint64 prev_ticks = SDL_GetTicks();
     int frame = 0;
 
@@ -815,23 +836,34 @@ int main(int argc, char** argv) {
                     case SDL_SCANCODE_R:
                         // Retry the same seed: the pad layout is identical.
                         sim.reset(seed);
-                        cam.snap({kStartX, 0.55 * kStartY + 10.0});
+                        cam.snap(kStartX,
+                                 frame_target_y(kStartY,
+                                                cam.params().base_scale));
                         paused = false;
                         break;
                     case SDL_SCANCODE_N: {
                         seed = random_seed();
                         sim.reset(seed);
                         stars = make_stars(seed);
-                        cam.snap({kStartX, 0.55 * kStartY + 10.0});
+                        cam.snap(kStartX, kStartY);
                         paused = false;
                         break;
                     }
+                    case SDL_SCANCODE_M:
+                        // Toggle between the automatic and the manual camera.
+                        pending_cam_toggle = true;
+                        break;
                     case SDL_SCANCODE_P:
                         paused = !paused;
                         break;
                     default:
                         break;
                 }
+            } else if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+                // Accumulate vertical scroll notches; the camera consumes the
+                // sum once per frame. Positive y scrolls away from the user.
+                pending_wheel +=
+                    static_cast<int>(std::lround(event.wheel.y));
             }
         }
 
@@ -865,9 +897,17 @@ int main(int argc, char** argv) {
         }
 
         const lander::State& s = sim.state();
-        if (!paused) {
-            cam.update({s.x, 0.55 * s.y + 10.0}, dt);
-        }
+        // The camera follows the lander and chooses its scale from the
+        // lander's altitude above the terrain directly below it. It runs
+        // even while paused so the mode toggle and wheel stay responsive;
+        // with the lander frozen the position target is constant, so the
+        // camera simply holds.
+        const double altitude = s.y - sim.terrain().height_at(s.x);
+        const double target_y = frame_target_y(s.y, cam.scale());
+        cam.update(dt, s.x, target_y, altitude, pending_wheel,
+                   pending_cam_toggle);
+        pending_wheel = 0;
+        pending_cam_toggle = false;
 
         const bool thrusting =
             input.main_thrust && s.fuel > 0.0 && !s.landed && !s.crashed;
@@ -878,7 +918,7 @@ int main(int argc, char** argv) {
         if (s.crashed) {
             draw_debris(renderer, s, cam, seed, sim.terrain());
         }
-        draw_hud(renderer, s, seed, sim.terrain());
+        draw_hud(renderer, s, seed, sim.terrain(), cam);
         draw_overlay(renderer, s, paused);
         SDL_RenderPresent(renderer);
 
