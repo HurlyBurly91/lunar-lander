@@ -9,6 +9,7 @@
 #include "lander/camera.hpp"
 #include "lander/sim.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -30,10 +31,12 @@ bool close(double a, double b, double eps) {
 }
 
 // Advance a camera for `frames` fixed steps at 60 Hz with a constant
-// altitude and no wheel input.
-void settle(lander::Camera& cam, double altitude, int frames) {
+// altitude and no wheel input. The followed target defaults to the spawn
+// point, a fixed world location (not the moving camera centre).
+void settle(lander::Camera& cam, double altitude, int frames,
+            double target_x = 0.0, double target_y = 20.0) {
     for (int i = 0; i < frames; ++i) {
-        cam.update(1.0 / 60.0, cam.x(), cam.y(), altitude, 0, false);
+        cam.update(1.0 / 60.0, target_x, target_y, altitude, 0, false);
     }
 }
 
@@ -62,6 +65,29 @@ bool same_heights(const std::vector<double>& a,
         }
     }
     return true;
+}
+
+// The same world-to-screen transform the GUI uses. The lander is expected to
+// sit at a fixed anchor: horizontally centred, and lander_top_fraction down
+// from the top of the window.
+struct ScreenPos {
+    double x{};
+    double y{};
+};
+
+ScreenPos to_screen(double world_x, double world_y,
+                    const lander::Camera& cam) {
+    const lander::CameraParams& p = cam.params();
+    return {p.window_width / 2.0 + (world_x - cam.x()) * cam.scale(),
+            p.window_height / 2.0 - (world_y - cam.y()) * cam.scale()};
+}
+
+double anchor_y(const lander::CameraParams& p) {
+    return p.lander_top_fraction * p.window_height;
+}
+
+double anchor_x(const lander::CameraParams& p) {
+    return p.window_width / 2.0;
 }
 
 }  // namespace
@@ -237,6 +263,231 @@ int main() {
               "camera updates leave the simulation state unchanged");
         check(same_heights(sample_heights(sim.terrain()), before_heights),
               "camera updates leave the terrain unchanged");
+    }
+
+    // -- Rapid manual zoom keeps the followed target at its screen anchor. --
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, true);  // -> MANUAL
+        settle(cam, 10.0, 120);  // let the focus converge on the target
+
+        double max_dx = 0.0;
+        double max_dy = 0.0;
+        for (int i = 0; i < 300; ++i) {
+            // Aggressively alternate large wheel steps, including bursts of
+            // several notches consumed by a single update.
+            const int wheel = (i % 2 == 0) ? (i % 4 == 0 ? 5 : -5)
+                                           : (i % 3 == 0 ? 3 : -3);
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, wheel, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dx = std::max(max_dx, std::abs(p.x - anchor_x(params)));
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(max_dx < 1.0,
+              "rapid manual zoom keeps the lander horizontally anchored");
+        check(max_dy < 1.0,
+              "rapid manual zoom keeps the lander at its vertical anchor");
+
+        settle(cam, 10.0, 120);  // no wheel: the anchor must not drift
+        const ScreenPos settled = to_screen(0.0, 20.0, cam);
+        check(std::abs(settled.x - anchor_x(params)) < 1.0 &&
+                  std::abs(settled.y - anchor_y(params)) < 1.0,
+              "repeated zoom-in/zoom-out does not accumulate framing error");
+    }
+
+    // -- AUTO zoom transitions also keep the lander anchored. ---------------
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        settle(cam, 60.0, 240);  // settled at the overview scale
+
+        // Drop below the landing threshold and let AUTO ease to the landing
+        // scale. The zoom changes continuously, but the followed target must
+        // stay at its screen anchor throughout.
+        double max_dy = 0.0;
+        for (int i = 0; i < 240; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(close(cam.zoom(), params.landing_zoom, 0.01),
+              "AUTO transitions to the landing scale when low");
+        check(max_dy < 1.0,
+              "AUTO zoom transitions do not lose the lander's framing");
+    }
+
+    // -- A moving target is still followed (normal smoothing is retained). --
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        settle(cam, 10.0, 120);  // converge on the spawn point
+
+        // The target moves away horizontally; the camera must keep closing
+        // the gap rather than being frozen by the zoom-anchor fix. A first-
+        // order follow has a small steady-state lag proportional to the
+        // target's speed, so the assertion allows for that.
+        double target_x = 0.0;
+        for (int i = 0; i < 120; ++i) {
+            target_x += 0.05;  // 3 m/s over 2 s
+            cam.update(1.0 / 60.0, target_x, 20.0, 10.0, 0, false);
+        }
+        check(cam.x() > 0.0,
+              "the camera continues to follow a moving target");
+        check(std::abs(cam.x() - target_x) < 2.0,
+              "follow smoothing keeps the camera near a moving target");
+        const ScreenPos p = to_screen(target_x, 20.0, cam);
+        check(std::abs(p.y - anchor_y(params)) < 1.0,
+              "following a moving target keeps the vertical anchor");
+    }
+
+    // -- A single wheel step changes the scale but not the lander's screen y.
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, true);  // -> MANUAL
+        settle(cam, 10.0, 120);
+
+        const ScreenPos before = to_screen(0.0, 20.0, cam);
+        check(std::abs(before.y - anchor_y(params)) < 1e-6,
+              "before a single zoom step the lander is at its vertical anchor");
+
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, +1, false);
+        const ScreenPos after_up = to_screen(0.0, 20.0, cam);
+        check(std::abs(after_up.y - before.y) < 1e-6,
+              "a single wheel-up step leaves the lander's screen y unchanged");
+        check(std::abs(after_up.y - anchor_y(params)) < 1e-6,
+              "after wheel-up the lander remains at the configured fraction");
+
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, -1, false);
+        const ScreenPos after_down = to_screen(0.0, 20.0, cam);
+        check(std::abs(after_down.y - before.y) < 1e-6,
+              "a single wheel-down step leaves the lander's screen y unchanged");
+        check(std::abs(after_down.y - anchor_y(params)) < 1e-6,
+              "after wheel-down the lander remains at the configured fraction");
+    }
+
+    // -- A burst of wheel-up events to the 4.0X clamp keeps the anchor. -----
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, true);  // -> MANUAL
+        settle(cam, 10.0, 120);
+
+        double max_dy = 0.0;
+        for (int i = 0; i < 200; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, +1, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(close(cam.zoom(), params.zoom_max, 1e-9),
+              "repeated wheel-up reaches the 4.0X clamp");
+        check(max_dy < 1e-6,
+              "the wheel-up burst to 4.0X keeps the vertical anchor exactly");
+
+        for (int i = 0; i < 60; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, +1, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(max_dy < 1e-6,
+              "holding at 4.0X does not slowly recover from a displacement");
+    }
+
+    // -- A burst of wheel-down events to the 0.2X clamp keeps the anchor. ---
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, true);  // -> MANUAL
+        settle(cam, 10.0, 120);
+
+        double max_dy = 0.0;
+        for (int i = 0; i < 400; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, -1, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(close(cam.zoom(), params.zoom_min, 1e-9),
+              "repeated wheel-down reaches the 0.2X clamp");
+        check(max_dy < 1e-6,
+              "the wheel-down burst to 0.2X keeps the vertical anchor exactly");
+
+        for (int i = 0; i < 60; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, -1, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(max_dy < 1e-6,
+              "holding at 0.2X does not slowly recover from a displacement");
+    }
+
+    // -- Alternating rapid zoom in/out does not accumulate framing error. ---
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, true);  // -> MANUAL
+        settle(cam, 10.0, 120);
+
+        double max_dy = 0.0;
+        for (int i = 0; i < 1000; ++i) {
+            const int wheel = (i % 2 == 0) ? +5 : -5;
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, wheel, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(max_dy < 1e-6,
+              "alternating rapid zoom in/out does not accumulate vertical error");
+
+        settle(cam, 10.0, 120);
+        const ScreenPos settled = to_screen(0.0, 20.0, cam);
+        check(std::abs(settled.y - anchor_y(params)) < 1e-6,
+              "after rapid zooming, the settled vertical anchor is exact");
+    }
+
+    // -- AUTO zoom interpolation keeps the vertical anchor in both directions.
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        settle(cam, 60.0, 240);  // settled at the overview scale
+
+        double max_dy = 0.0;
+        for (int i = 0; i < 240; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 10.0, 0, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(close(cam.zoom(), params.landing_zoom, 0.01),
+              "AUTO eases to the landing scale when low");
+        check(max_dy < 1e-6,
+              "AUTO overview -> landing interpolation keeps the anchor");
+
+        for (int i = 0; i < 240; ++i) {
+            cam.update(1.0 / 60.0, 0.0, 20.0, 60.0, 0, false);
+            const ScreenPos p = to_screen(0.0, 20.0, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(close(cam.zoom(), params.overview_zoom, 0.01),
+              "AUTO eases back to the overview scale when high");
+        check(max_dy < 1e-6,
+              "AUTO landing -> overview interpolation keeps the anchor");
+    }
+
+    // -- A vertically moving target keeps the exact screen-y anchor. --------
+    {
+        lander::Camera cam(params);
+        cam.snap(0.0, 20.0);
+        settle(cam, 10.0, 120);
+
+        double target_y = 20.0;
+        double max_dy = 0.0;
+        for (int i = 0; i < 120; ++i) {
+            target_y -= 0.05;  // 3 m/s descent over 2 s
+            cam.update(1.0 / 60.0, 0.0, target_y, 10.0, 0, false);
+            const ScreenPos p = to_screen(0.0, target_y, cam);
+            max_dy = std::max(max_dy, std::abs(p.y - anchor_y(params)));
+        }
+        check(max_dy < 1e-6,
+              "a moving target's screen y stays at the configured anchor");
     }
 
     if (failures == 0) {

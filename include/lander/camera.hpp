@@ -2,8 +2,14 @@
 
 // A presentation-only camera for the Lunar Lander GUI.
 //
-// The camera has a world-space centre (x, y) and a zoom (a multiplier on a
-// base pixels-per-meter scale). It offers two modes:
+// The camera has a smoothed world-space *horizontal focus* (eased toward the
+// caller's target x each update) and an exact *vertical framing anchor*
+// derived from the latest target y, plus a *zoom* (a multiplier on a base
+// pixels-per-meter scale). From those it derives its world-space centre, so
+// the whole view can be expressed as a single rigid transform (centre +
+// scale) applied to the fixed world-space terrain.
+//
+// It offers two modes:
 //
 //   * AUTO   - the default. Chooses an overview scale at high altitude and a
 //              landing scale near the surface, based on the followed target's
@@ -12,11 +18,19 @@
 //   * MANUAL - the player sets the zoom with the mouse wheel; the camera
 //              still follows the target's position.
 //
-// The caller decides where the camera should look (target_x / target_y) each
-// update; the camera eases smoothly toward that point. In the GUI the target
-// is the lander, with a zoom-proportional vertical bias so the lander sits at
-// a fixed fraction from the top of the screen and the terrain below it stays
-// in view at every zoom level (see gui.cpp).
+// Framing: the camera places the followed target's world y at a fixed screen
+// anchor - horizontally centred and a fixed fraction (lander_top_fraction)
+// down from the top of the window - and it knows the window size to do so.
+// That anchor is what makes the view useful: the terrain below the lander
+// stays in view at every zoom level, and the lander is never pushed off the
+// top when zoomed in.
+//
+// The horizontal focus eases toward the target (retained position-follow
+// smoothing), but the vertical centre is recomputed directly from the latest
+// target y and the *current* scale on every update. A zoom change therefore
+// re-centres the view immediately in the same frame, so the lander's screen
+// y is invariant at every scale and repeated rapid wheel events cannot
+// accumulate framing error.
 //
 // This class is pure presentation logic: it is driven by the target's
 // position, altitude, and a small amount of input, and it never writes to the
@@ -52,8 +66,10 @@ struct CameraParams {
     double follow_rate = 4.0;            // 1/s, position smoothing
     double zoom_rate = 3.0;              // 1/s, AUTO zoom smoothing
     double wheel_step = 0.12;            // fraction of zoom change per notch
-    double lander_top_fraction = 0.30;   // GUI framing: lander at this fraction
-                                         // down from the top of the screen
+    double lander_top_fraction = 0.30;   // lander at this fraction down from
+                                          // the top of the screen
+    double window_width = 1280.0;        // viewport size used to place the
+    double window_height = 720.0;        // framing anchor (match the window)
 };
 
 class Camera {
@@ -61,27 +77,33 @@ public:
     Camera() = default;
     explicit Camera(const CameraParams& params) : params_(params) {}
 
-    // Place the camera exactly on (x, y) with a neutral zoom and restart in
-    // AUTO. Used when the game is started or reset; the caller supplies the
-    // already-framed target point.
+    // Place the horizontal focus and vertical anchor exactly on (x, y) with a
+    // neutral zoom and restart in AUTO. Used when the game is started or
+    // reset; the caller supplies the raw world point of the followed target.
+    // The derived centre then frames that point at the fixed screen anchor
+    // for the current (neutral) scale.
     void snap(double x, double y) {
         mode_ = CameraMode::kAuto;
         wants_landing_ = true;
         zoom_ = 1.0;
-        pos_x_ = x;
-        pos_y_ = y;
+        focus_x_ = x;
+        target_y_ = y;
     }
 
     CameraMode mode() const { return mode_; }
     double zoom() const { return zoom_; }
-    double x() const { return pos_x_; }
-    double y() const { return pos_y_; }
+    // World-space centre of the view. The x is the smoothed horizontal focus
+    // (retained follow behaviour); the y is the latest target y shifted down
+    // by a framing offset that scales with the *current* zoom, so the lander
+    // stays at its fixed screen anchor at every scale.
+    double x() const { return focus_x_; }
+    double y() const { return target_y_ - framing_offset_y(); }
 
     // Which scale AUTO is currently easing toward. Exposed for tests.
     bool auto_wants_landing() const { return wants_landing_; }
 
     // Tunable parameters, exposed read-only so the GUI can share the same
-    // values (e.g. the lander framing fraction) without duplicating them.
+    // values (e.g. the viewport size) without duplicating them.
     const CameraParams& params() const { return params_; }
 
     // Effective pixels-per-meter at the current zoom. This is the single
@@ -89,7 +111,8 @@ public:
     double scale() const { return params_.base_scale * zoom_; }
 
     // Advance the camera by dt seconds.
-    //   target_x / target_y: the world point the camera should ease toward.
+    //   target_x / target_y: the world point (the followed lander) that the
+    //                       focus should ease toward.
     //   altitude: the followed target's height above local terrain, metres.
     //   wheel_delta: mouse-wheel notches accumulated since the last update
     //                (positive = up = zoom in, negative = down = zoom out);
@@ -132,17 +155,29 @@ public:
             }
         }
 
-        // Ease the centre toward the caller-supplied point. The vertical
-        // framing bias (so the ground stays in view) is already baked into
-        // target_y by the caller and scales with the current zoom.
+        // The vertical anchor always uses the latest target y (never a
+        // smoothed copy), while the horizontal focus eases toward the target
+        // x. Both depend only on the target and dt - never on the zoom - and
+        // y() recomputes its framing offset from the current scale on every
+        // access, so a zoom change re-centres the view immediately in the
+        // same frame.
+        target_y_ = target_y;
         if (dt > 0.0) {
             const double a = 1.0 - std::exp(-params_.follow_rate * dt);
-            pos_x_ += (target_x - pos_x_) * a;
-            pos_y_ += (target_y - pos_y_) * a;
+            focus_x_ += (target_x - focus_x_) * a;
         }
     }
 
 private:
+    // The downward (world) offset from the target y that places the target at
+    // the fixed screen anchor. It grows as the zoom decreases, so the view
+    // keeps a constant *world* reach below the lander and the terrain never
+    // leaves the frame at any scale.
+    double framing_offset_y() const {
+        return (0.5 - params_.lander_top_fraction) *
+               (params_.window_height / scale());
+    }
+
     static double clamp(double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     }
@@ -151,8 +186,8 @@ private:
     CameraMode mode_ = CameraMode::kAuto;
     bool wants_landing_ = true;
     double zoom_ = 1.0;
-    double pos_x_ = 0.0;
-    double pos_y_ = 20.0;
+    double focus_x_ = 0.0;
+    double target_y_ = 20.0;
 };
 
 }  // namespace lander

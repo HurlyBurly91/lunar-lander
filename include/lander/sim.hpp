@@ -8,7 +8,11 @@
 namespace lander {
 
 struct Input {
-    bool main_thrust{};
+    // Normalised main-engine throttle: 0.0 = engine off, 1.0 = full thrust.
+    // It scales both the main-engine acceleration and the main-engine fuel
+    // burn linearly (see Simulation::step_fixed). Values outside [0, 1] are
+    // clamped before use, so callers cannot change the physics.
+    double main_throttle{};
     bool rotate_left{};
     bool rotate_right{};
 

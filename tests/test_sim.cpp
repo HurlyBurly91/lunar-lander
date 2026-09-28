@@ -99,7 +99,7 @@ int main() {
         sim.reset(99);
 
         for (int i = 0; i < 5000; ++i) {
-            sim.advance(1.0 / 120.0, {.main_thrust = true});
+            sim.advance(1.0 / 120.0, {.main_throttle = 1.0});
         }
 
         check(sim.state().fuel >= 0.0,
@@ -113,7 +113,7 @@ int main() {
         const lander::State fresh = sim.state();
         const auto fresh_pads = sim.pads();
 
-        sim.advance(0.5, {.main_thrust = true, .rotate_left = true});
+        sim.advance(0.5, {.main_throttle = 1.0, .rotate_left = true});
         lander::State injected = sim.state();
         injected.fuel = 12.5;
         injected.score = 42;
@@ -232,7 +232,7 @@ int main() {
         const auto before_pads = sim.pads();
         for (int i = 0; i < 120; ++i) {
             sim.advance(1.0 / 120.0,
-                        {.main_thrust = true, .rotate_left = true,
+                        {.main_throttle = 1.0, .rotate_left = true,
                          .rotate_right = true});
         }
         check(sim.state() == before,
@@ -334,6 +334,181 @@ int main() {
             check(sim.terrain().height_at(0.0) < 20.0,
                   "spawn point must start above the terrain");
         }
+    }
+
+    {
+        // Throttle 0 produces no main-engine acceleration or main-engine fuel
+        // burn: only gravity acts, and the fuel gauge is untouched.
+        const lander::Config config{};
+        lander::Simulation sim(config);
+        sim.reset(1);
+        lander::State s{};
+        s.x = 0.0;
+        s.y = 1000.0;
+        s.fuel = 50.0;
+        sim.set_state(s);
+        const lander::State before = sim.state();
+
+        sim.advance(config.fixed_dt, {.main_throttle = 0.0});
+        const lander::State& after = sim.state();
+
+        check(close(after.vy, before.vy - config.gravity * config.fixed_dt,
+                    1e-9),
+              "throttle 0 applies no main-engine acceleration");
+        check(close(after.vx, before.vx, 1e-9),
+              "throttle 0 leaves horizontal velocity unchanged");
+        check(close(after.fuel, before.fuel, 1e-9),
+              "throttle 0 burns no main-engine fuel");
+        check(close(after.omega, before.omega, 1e-9),
+              "throttle 0 does not spin the lander");
+    }
+
+    {
+        // Throttle 1 preserves the existing full-thrust behaviour.
+        const lander::Config config{};
+        lander::Simulation sim(config);
+        sim.reset(1);
+        lander::State s{};
+        s.x = 0.0;
+        s.y = 1000.0;
+        s.fuel = 50.0;
+        sim.set_state(s);
+        const lander::State before = sim.state();
+
+        sim.advance(config.fixed_dt, {.main_throttle = 1.0});
+        const lander::State& after = sim.state();
+
+        check(
+            close(after.vy,
+                  before.vy +
+                      (config.main_accel - config.gravity) * config.fixed_dt,
+                  1e-9),
+            "throttle 1 preserves the full main-engine acceleration");
+        check(close(after.fuel, before.fuel - config.main_fuel_burn *
+                                              config.fixed_dt,
+                    1e-9),
+              "throttle 1 burns the full main-engine fuel rate");
+    }
+
+    {
+        // Throttle 0.5 produces approximately half the main-engine
+        // acceleration and burns approximately half the main-engine fuel.
+        const lander::Config config{};
+        lander::Simulation sim(config);
+        sim.reset(1);
+        lander::State s{};
+        s.x = 0.0;
+        s.y = 1000.0;
+        s.fuel = 50.0;
+        sim.set_state(s);
+        const lander::State before = sim.state();
+
+        sim.advance(config.fixed_dt, {.main_throttle = 0.5});
+        const lander::State& after = sim.state();
+
+        check(
+            close(after.vy,
+                  before.vy +
+                      (0.5 * config.main_accel - config.gravity) *
+                          config.fixed_dt,
+                  1e-9),
+            "throttle 0.5 applies half the main-engine acceleration");
+        check(close(after.fuel, before.fuel - 0.5 * config.main_fuel_burn *
+                                              config.fixed_dt,
+                    1e-9),
+              "throttle 0.5 burns half the main-engine fuel");
+    }
+
+    {
+        // Out-of-range throttle values are clamped to [0, 1].
+        const lander::Config config{};
+
+        lander::Simulation hi(config);
+        hi.reset(1);
+        lander::State s{};
+        s.x = 0.0;
+        s.y = 1000.0;
+        s.fuel = 50.0;
+        hi.set_state(s);
+        hi.advance(config.fixed_dt, {.main_throttle = 2.0});
+        check(close(hi.state().vy,
+                    (-config.gravity + config.main_accel) * config.fixed_dt,
+                    1e-9),
+              "throttle > 1 is clamped to full thrust");
+        check(close(hi.state().fuel, 50.0 - config.main_fuel_burn *
+                                             config.fixed_dt,
+                    1e-9),
+              "throttle > 1 burns at most the full fuel rate");
+
+        lander::Simulation lo(config);
+        lo.reset(1);
+        lo.set_state(s);
+        lo.advance(config.fixed_dt, {.main_throttle = -1.0});
+        check(close(lo.state().vy, -config.gravity * config.fixed_dt, 1e-9),
+              "throttle < 0 is clamped to engine off");
+        check(close(lo.state().fuel, 50.0, 1e-9),
+              "throttle < 0 burns no main-engine fuel");
+    }
+
+    {
+        // Rotation behaviour is independent of the main-engine throttle.
+        const lander::Config config{};
+
+        lander::Simulation off(config);
+        off.reset(1);
+        lander::State s{};
+        s.x = 0.0;
+        s.y = 1000.0;
+        s.fuel = 50.0;
+        off.set_state(s);
+        off.advance(config.fixed_dt, {.main_throttle = 0.0,
+                                     .rotate_left = true});
+
+        lander::Simulation full(config);
+        full.reset(1);
+        full.set_state(s);
+        full.advance(config.fixed_dt, {.main_throttle = 1.0,
+                                      .rotate_left = true});
+
+        check(close(off.state().omega, -config.rotate_accel * config.fixed_dt,
+                    1e-9),
+              "rotation acceleration is unchanged at throttle 0");
+        check(close(full.state().omega, off.state().omega, 1e-9),
+              "rotation is independent of the main-engine throttle");
+        check(close(full.state().angle, off.state().angle, 1e-9),
+              "angle is independent of the main-engine throttle");
+    }
+
+    {
+        // Fixed-timestep determinism is preserved with a non-zero throttle.
+        const lander::Config config{};
+        lander::Simulation a(config);
+        lander::Simulation b(config);
+        a.reset(42);
+        b.reset(42);
+
+        lander::State s{};
+        s.x = 0.0;
+        s.y = 1000.0;
+        s.fuel = 50.0;
+        a.set_state(s);
+        b.set_state(s);
+
+        const lander::Input input{.main_throttle = 0.3};
+        for (int i = 0; i < 60; ++i) {
+            a.advance(1.0 / 60.0, input);
+        }
+        for (int i = 0; i < 30; ++i) {
+            b.advance(1.0 / 30.0, input);
+        }
+
+        check(close(a.state().x, b.state().x, 1e-7) &&
+                  close(a.state().y, b.state().y, 1e-7) &&
+                  close(a.state().vx, b.state().vx, 1e-7) &&
+                  close(a.state().vy, b.state().vy, 1e-7) &&
+                  close(a.state().fuel, b.state().fuel, 1e-7) &&
+                  close(a.state().angle, b.state().angle, 1e-7),
+              "throttle behaviour must be independent of advance frequency");
     }
 
     return failures == 0 ? 0 : 1;

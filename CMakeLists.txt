@@ -57,3 +57,17 @@ add_executable(lander_camera_tests
 target_link_libraries(lander_camera_tests PRIVATE lander)
 
 add_test(NAME lander_camera_tests COMMAND lander_camera_tests)
+
+# Presentation-only starfield logic (M03): deterministic and independent of
+# camera translation/zoom, tested headlessly with no SDL dependency.
+add_executable(lander_starfield_tests
+    tests/test_starfield.cpp
+)
+target_include_directories(lander_starfield_tests PRIVATE include)
+target_compile_options(lander_starfield_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_starfield_tests COMMAND lander_starfield_tests)

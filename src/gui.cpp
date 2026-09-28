@@ -18,6 +18,7 @@
 
 #include "lander/camera.hpp"
 #include "lander/sim.hpp"
+#include "lander/starfield.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -36,6 +37,11 @@ constexpr int kWindowHeight = 720;
 
 constexpr double kStartX = 0.0;
 constexpr double kStartY = 20.0;  // matches lander::State::y default
+
+// How fast the main-engine throttle moves while its increase/decrease key is
+// held. One full 0->1 ramp takes ~1.3 s, which is quick enough to react but
+// slow enough to set a fine hover value deliberately.
+constexpr double kThrottleRamp = 0.75;
 
 struct Vec2 {
     double x{};
@@ -318,66 +324,22 @@ void fill_rect(SDL_Renderer* renderer, int x, int y, int w, int h,
 }
 
 // ------------------------------------------------------------------- stars
-// Cosmetic background, generated deterministically from the game seed with a
-// SplitMix64 stream that is deliberately separate from the simulation's own
-// RNG (it must never influence physics).
-
-struct Star {
-    double x{};
-    double y{};
-    int size{};
-    Uint8 bright{};
-};
-
-std::uint64_t splitmix64_next(std::uint64_t& state) {
-    state += 0x9E3779B97F4A7C15ULL;
-    std::uint64_t z = state;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
-std::vector<Star> make_stars(std::uint64_t seed) {
-    std::uint64_t state = seed * 0x9E3779B97F4A7C15ULL ^ 0xA5A4801A5A480193ULL;
-    std::vector<Star> stars;
-    stars.reserve(140);
-    for (int i = 0; i < 140; ++i) {
-        const double u1 =
-            static_cast<double>(splitmix64_next(state) >> 11) * 0x1.0p-53;
-        const double u2 =
-            static_cast<double>(splitmix64_next(state) >> 11) * 0x1.0p-53;
-        const double u3 =
-            static_cast<double>(splitmix64_next(state) >> 11) * 0x1.0p-53;
-        Star s;
-        s.x = u1 * kWindowWidth;
-        s.y = u2 * kWindowHeight;
-        s.size = u3 < 0.15 ? 2 : 1;
-        s.bright = static_cast<Uint8>(90 + static_cast<int>(u3 * 140));
-        stars.push_back(s);
-    }
-    return stars;
-}
-
-void draw_space(SDL_Renderer* renderer, const lander::Camera& cam,
-                const std::vector<Star>& stars) {
+// The starfield is a cosmetic background generated deterministically from the
+// game seed (see lander/starfield.hpp). The stars are treated as infinitely
+// distant: their screen positions are fixed in the viewport and do not move
+// with camera translation or zoom, so they read as a stable celestial backdrop
+// instead of a nearby parallax layer.
+void draw_space(SDL_Renderer* renderer,
+                const std::vector<lander::Star>& stars) {
     fill_rect(renderer, 0, 0, kWindowWidth, kWindowHeight,
               make_color(8, 10, 22));
-    // Stars drift at 25% of the camera speed and wrap, so the sky extends
-    // forever in every direction.
-    for (const Star& star : stars) {
-        double sx = std::fmod(star.x - cam.x() * cam.scale() * 0.25,
-                              kWindowWidth);
-        if (sx < 0) {
-            sx += kWindowWidth;
-        }
-        double sy = std::fmod(star.y - cam.y() * cam.scale() * 0.25,
-                              kWindowHeight);
-        if (sy < 0) {
-            sy += kWindowHeight;
-        }
-        SDL_Rect r{static_cast<int>(sx), static_cast<int>(sy), star.size,
-                   star.size};
-        fill_rect(renderer, r.x, r.y, r.w, r.h,
+    for (const lander::Star& star : stars) {
+        // The camera arguments are intentionally unused: star screen
+        // positions must be independent of camera x/y and scale.
+        const lander::ScreenPoint p =
+            lander::star_screen_pos(star, 0.0, 0.0, 1.0);
+        fill_rect(renderer, static_cast<int>(p.x), static_cast<int>(p.y),
+                  star.size, star.size,
                   make_color(star.bright, star.bright,
                              std::min<Uint8>(255, star.bright + 20)));
     }
@@ -473,7 +435,7 @@ void draw_terrain(SDL_Renderer* renderer, const lander::Terrain& terrain,
 // on-screen orientation honest under the y-flip: positive angle =
 // counter-clockwise on screen.
 void draw_lander(SDL_Renderer* renderer, const lander::State& s,
-                 bool thrusting, const lander::Camera& cam) {
+                  double thrust_level, const lander::Camera& cam) {
     const double c = std::cos(s.angle);
     const double sn = std::sin(s.angle);
     auto local = [&](double lx, double ly) {
@@ -486,17 +448,25 @@ void draw_lander(SDL_Renderer* renderer, const lander::State& s,
     const Color shade = crashed ? make_color(104, 42, 36)
                                 : make_color(148, 154, 170);
 
-    if (thrusting) {
+    if (thrust_level > 0.0) {
         // Flame length flickers deterministically off the simulation tick
-        // counter, so replays of the same state look identical.
+        // counter, so replays of the same state look identical. The flicker is
+        // scaled by the throttle: full throttle gives the original flame
+        // extent, low throttle gives a short puff.
         const double flick = 0.5 + 0.5 * std::sin(0.7 * s.ticks) +
                              0.3 * std::sin(1.3 * s.ticks + 1.0);
-        const double len = 0.7 + 0.9 * flick;
-        fill_poly(renderer, {local(-0.2, 0.18), local(0.0, 0.18 - len),
-                             local(0.2, 0.18)},
+        const double full_len = 0.7 + 0.9 * flick;
+        const double len = thrust_level * full_len;
+        const double width_scale = 0.35 + 0.65 * thrust_level;
+        const double outer_half = 0.2 * width_scale;
+        const double inner_half = 0.1 * width_scale;
+        fill_poly(renderer, {local(-outer_half, 0.18),
+                             local(0.0, 0.18 - len),
+                             local(outer_half, 0.18)},
                   make_color(255, 138, 38));
-        fill_poly(renderer, {local(-0.1, 0.18),
-                             local(0.0, 0.18 - len * 0.55), local(0.1, 0.18)},
+        fill_poly(renderer, {local(-inner_half, 0.18),
+                             local(0.0, 0.18 - len * 0.55),
+                             local(inner_half, 0.18)},
                   make_color(255, 228, 120));
     }
 
@@ -542,11 +512,11 @@ void draw_debris(SDL_Renderer* renderer, const lander::State& s,
     const double ground = terrain.height_at(s.x);
     for (int i = 0; i < 7; ++i) {
         const double u1 =
-            static_cast<double>(splitmix64_next(state) >> 11) * 0x1.0p-53;
+            static_cast<double>(lander::splitmix64_next(state) >> 11) * 0x1.0p-53;
         const double u2 =
-            static_cast<double>(splitmix64_next(state) >> 11) * 0x1.0p-53;
+            static_cast<double>(lander::splitmix64_next(state) >> 11) * 0x1.0p-53;
         const double u3 =
-            static_cast<double>(splitmix64_next(state) >> 11) * 0x1.0p-53;
+            static_cast<double>(lander::splitmix64_next(state) >> 11) * 0x1.0p-53;
         const double angle = u1 * 6.283185307179586;
         const double dist = 0.3 + 1.1 * u2;
         const Vec2 p = to_screen(s.x + std::cos(angle) * dist,
@@ -561,7 +531,7 @@ void draw_debris(SDL_Renderer* renderer, const lander::State& s,
 
 void draw_hud(SDL_Renderer* renderer, const lander::State& s,
               std::uint64_t seed, const lander::Terrain& terrain,
-              const lander::Camera& cam) {
+              double throttle, const lander::Camera& cam) {
     const Color panel(12, 14, 26);
     const Color white(228, 233, 244);
     const Color dim(130, 138, 156);
@@ -569,7 +539,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::State& s,
     const Color red(255, 92, 80);
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    fill_rect(renderer, 8, 8, 330, 232, panel, 160);
+    fill_rect(renderer, 8, 8, 330, 264, panel, 160);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
     draw_text(renderer, "LUNAR LANDER", 18, 16, 3, white);
@@ -581,30 +551,51 @@ void draw_hud(SDL_Renderer* renderer, const lander::State& s,
     // Altitude relative to the terrain directly below the lander.
     const double alt_m =
         std::max(0.0, s.y - terrain.height_at(s.x));
+    const int throttle_pct =
+        static_cast<int>(std::lround(std::clamp(throttle, 0.0, 1.0) * 100.0));
     const std::string alt = "ALT   " + fmt1(alt_m) + " M";
     const std::string vel =
         "VEL  " + fmt1(s.vx) + " " + fmt1(s.vy) + " M/S";
     const std::string ang = "ANG   " + fmt1(s.angle * 180.0 / 3.14159265358979) +
                             " DEG";
+    const std::string thr = "THR   " + std::to_string(throttle_pct) + "%";
     const std::string fuel = "FUEL  " + fmt1(s.fuel) + " / 100";
     draw_text(renderer, alt, 18, 74, 2, white);
     draw_text(renderer, vel, 18, 94, 2, white);
     draw_text(renderer, ang, 18, 114, 2, white);
-    draw_text(renderer, fuel, 18, 134, 2, white);
+    draw_text(renderer, thr, 18, 134, 2, white);
+
+    // Commanded-throttle bar beside the THR readout. It shows the persistent
+    // player throttle setting, not inferred thrust, flame size, or motion.
+    constexpr int kThrBarX = 146;
+    constexpr int kThrBarY = 138;
+    constexpr int kThrBarWidth = 154;
+    constexpr int kThrBarHeight = 8;
+    fill_rect(renderer, kThrBarX, kThrBarY, kThrBarWidth, kThrBarHeight,
+              make_color(40, 44, 60));
+    const double throttle_frac = std::clamp(throttle, 0.0, 1.0);
+    const int thr_bar_w =
+        static_cast<int>(std::lround(kThrBarWidth * throttle_frac));
+    if (thr_bar_w > 0) {
+        fill_rect(renderer, kThrBarX, kThrBarY, thr_bar_w, kThrBarHeight,
+                  green);
+    }
+
+    draw_text(renderer, fuel, 18, 154, 2, white);
 
     // Fuel bar.
-    fill_rect(renderer, 18, 158, 180, 12, make_color(40, 44, 60));
+    fill_rect(renderer, 18, 178, 180, 12, make_color(40, 44, 60));
     const double frac =
         std::max(0.0, std::min(1.0, s.fuel / 100.0));
     const int bar_w = static_cast<int>(180 * frac);
     if (bar_w > 0) {
-        fill_rect(renderer, 18, 158, bar_w, 12,
+        fill_rect(renderer, 18, 178, bar_w, 12,
                   frac > 0.25 ? make_color(90, 200, 130) : red);
     }
 
     char score_line[32];
     std::snprintf(score_line, sizeof score_line, "SCORE %d", s.score);
-    draw_text(renderer, score_line, 18, 182, 2, white);
+    draw_text(renderer, score_line, 18, 202, 2, white);
 
     std::string status = "IN FLIGHT";
     Color status_color = white;
@@ -615,14 +606,14 @@ void draw_hud(SDL_Renderer* renderer, const lander::State& s,
         status = "CRASHED";
         status_color = red;
     }
-    draw_text(renderer, status, 18, 208, 2, status_color);
+    draw_text(renderer, status, 18, 228, 2, status_color);
 
     // Control help along the bottom.
-    draw_text(renderer, "UP/SPACE THRUST   LEFT/RIGHT ROTATE", 18,
+    draw_text(renderer, "UP/W INCREASE   DOWN/S DECREASE   X CUTOFF", 18,
               kWindowHeight - 56, 1, dim);
-    draw_text(renderer, "M CAMERA   WHEEL ZOOM   P PAUSE", 18,
+    draw_text(renderer, "LEFT/RIGHT ROTATE   M CAMERA", 18,
               kWindowHeight - 40, 1, dim);
-    draw_text(renderer, "R RETRY   N NEW SEED   ESC QUIT", 18,
+    draw_text(renderer, "WHEEL ZOOM   P PAUSE   R/N   ESC", 18,
               kWindowHeight - 24, 1, dim);
 
     // Camera indicator, top-right. In MANUAL the current zoom is shown.
@@ -736,9 +727,10 @@ void print_usage() {
         "  --fps N          cap the frame rate to N frames/second\n"
         "  --screenshot F   save the final frame to F as a PPM image\n"
         "  --help           show this message\n"
-        "Controls: Up/Space/W thrust, Left/Right/A/D rotate, M camera\n"
-        "mode (Auto/Manual), mouse wheel zoom (Manual), R retry same seed,\n"
-        "N new seed, P pause, Esc/Q quit.\n");
+        "Controls: Up/W increase throttle, Down/S decrease throttle, X\n"
+        "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual),\n"
+        "mouse wheel zoom (Manual), R retry same seed, N new seed, P pause,\n"
+        "Esc/Q quit.\n");
 }
 
 }  // namespace
@@ -802,21 +794,21 @@ int main(int argc, char** argv) {
 
     lander::Simulation sim;
     sim.reset(seed);
-    lander::Camera cam;
-    // Frame the camera so the lander sits a fixed fraction down from the top
-    // of the screen. The downward reach then scales with the zoom, so the
-    // terrain below the lander stays in view at every scale (the lander is
-    // never pushed off the top when zoomed in, and the ground is never lost
-    // off the bottom when zoomed out).
-    const double lander_top_fraction = cam.params().lander_top_fraction;
-    const auto frame_target_y = [&](double lander_y, double scale) {
-        return lander_y - (0.5 - lander_top_fraction) * (kWindowHeight / scale);
-    };
-    cam.snap(kStartX, frame_target_y(kStartY, cam.params().base_scale));
-    std::vector<Star> stars = make_stars(seed);
+    // The camera owns the framing anchor: it follows the raw lander position
+    // and derives its own centre so the lander stays at the configured screen
+    // position at every scale (the terrain below it stays in view when zoomed
+    // in, and the ground never drops out when zoomed out).
+    lander::CameraParams cam_params;
+    cam_params.window_width = kWindowWidth;
+    cam_params.window_height = kWindowHeight;
+    lander::Camera cam(cam_params);
+    cam.snap(kStartX, kStartY);
+    std::vector<lander::Star> stars =
+        lander::make_stars(seed, kWindowWidth, kWindowHeight);
 
     bool paused = false;
     bool running = true;
+    double throttle = 0.0;
     int pending_wheel = 0;
     bool pending_cam_toggle = false;
     Uint64 prev_ticks = SDL_GetTicks();
@@ -836,19 +828,24 @@ int main(int argc, char** argv) {
                     case SDL_SCANCODE_R:
                         // Retry the same seed: the pad layout is identical.
                         sim.reset(seed);
-                        cam.snap(kStartX,
-                                 frame_target_y(kStartY,
-                                                cam.params().base_scale));
+                        throttle = 0.0;
+                        cam.snap(kStartX, kStartY);
                         paused = false;
                         break;
                     case SDL_SCANCODE_N: {
                         seed = random_seed();
                         sim.reset(seed);
-                        stars = make_stars(seed);
+                        throttle = 0.0;
+                        stars = lander::make_stars(seed, kWindowWidth,
+                                                   kWindowHeight);
                         cam.snap(kStartX, kStartY);
                         paused = false;
                         break;
                     }
+                    case SDL_SCANCODE_X:
+                        // Immediate main-engine cutoff.
+                        throttle = 0.0;
+                        break;
                     case SDL_SCANCODE_M:
                         // Toggle between the automatic and the manual camera.
                         pending_cam_toggle = true;
@@ -881,10 +878,25 @@ int main(int argc, char** argv) {
         const auto key = [&](SDL_Scancode sc) {
             return keys != nullptr && sc < numkeys && keys[sc];
         };
+        // Persistent main-engine throttle: it ramps while its key is held,
+        // holds when the key is released, and is cut instantly by X. It is
+        // independent of the camera mode.
+        const bool throttle_up =
+            key(SDL_SCANCODE_UP) || key(SDL_SCANCODE_W);
+        const bool throttle_down =
+            key(SDL_SCANCODE_DOWN) || key(SDL_SCANCODE_S);
+        if (!paused) {
+            if (throttle_up) {
+                throttle += kThrottleRamp * dt;
+            }
+            if (throttle_down) {
+                throttle -= kThrottleRamp * dt;
+            }
+            throttle = std::clamp(throttle, 0.0, 1.0);
+        }
+
         lander::Input input;
-        input.main_thrust =
-            key(SDL_SCANCODE_UP) || key(SDL_SCANCODE_SPACE) ||
-            key(SDL_SCANCODE_W);
+        input.main_throttle = throttle;
         // The simulation's rotate_left decreases the angle (a clockwise
         // turn), so the visually-left keys drive rotate_right and vice
         // versa. This keeps the on-screen feel natural without touching
@@ -897,28 +909,31 @@ int main(int argc, char** argv) {
         }
 
         const lander::State& s = sim.state();
-        // The camera follows the lander and chooses its scale from the
-        // lander's altitude above the terrain directly below it. It runs
-        // even while paused so the mode toggle and wheel stay responsive;
+        // The camera follows the raw lander position and chooses its scale
+        // from the lander's altitude above the terrain directly below it. It
+        // runs even while paused so the mode toggle and wheel stay responsive;
         // with the lander frozen the position target is constant, so the
         // camera simply holds.
         const double altitude = s.y - sim.terrain().height_at(s.x);
-        const double target_y = frame_target_y(s.y, cam.scale());
-        cam.update(dt, s.x, target_y, altitude, pending_wheel,
+        cam.update(dt, s.x, s.y, altitude, pending_wheel,
                    pending_cam_toggle);
         pending_wheel = 0;
         pending_cam_toggle = false;
 
-        const bool thrusting =
-            input.main_thrust && s.fuel > 0.0 && !s.landed && !s.crashed;
+        // The flame is only present when the engine can actually burn, and
+        // its size follows the throttle rather than a binary on/off state.
+        const double thrust_level =
+            (s.fuel > 0.0 && !s.landed && !s.crashed)
+                ? std::clamp(throttle, 0.0, 1.0)
+                : 0.0;
 
-        draw_space(renderer, cam, stars);
+        draw_space(renderer, stars);
         draw_terrain(renderer, sim.terrain(), cam);
-        draw_lander(renderer, s, thrusting, cam);
+        draw_lander(renderer, s, thrust_level, cam);
         if (s.crashed) {
             draw_debris(renderer, s, cam, seed, sim.terrain());
         }
-        draw_hud(renderer, s, seed, sim.terrain(), cam);
+        draw_hud(renderer, s, seed, sim.terrain(), throttle, cam);
         draw_overlay(renderer, s, paused);
         SDL_RenderPresent(renderer);
 

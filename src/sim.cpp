@@ -30,6 +30,13 @@ double normalize_angle(double angle) {
     return normalized - kPi;
 }
 
+// Clamp a main-engine throttle to the physical [0, 1] range. The simulation
+// clamps defensively (in addition to the GUI clamping it) so that an
+// out-of-range value from any caller can never change the physics.
+double clamp01(double v) {
+    return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+}
+
 } // namespace
 
 Simulation::Simulation(Config config)
@@ -98,14 +105,19 @@ void Simulation::step_fixed(Input input) {
 
     const double dt = config_.fixed_dt;
 
+    // Main-engine throttle: a normalised 0..1 value (0 = off, 1 = full) that
+    // scales both the acceleration and the fuel burn linearly. It is clamped
+    // so out-of-range input cannot change the physics.
+    const double throttle = clamp01(input.main_throttle);
+
     // Fuel: both the main engine and the rotation thrusters burn fuel.
     // Fuel is consumed in steps and clamped at zero.
-    const bool main_active = input.main_thrust && state_.fuel > 0.0;
+    const bool main_active = throttle > 0.0 && state_.fuel > 0.0;
     const bool rotate_active =
         (input.rotate_left || input.rotate_right) && state_.fuel > 0.0;
 
     if (main_active) {
-        state_.fuel -= config_.main_fuel_burn * dt;
+        state_.fuel -= config_.main_fuel_burn * throttle * dt;
         if (state_.fuel < 0.0) {
             state_.fuel = 0.0;
         }
@@ -117,14 +129,14 @@ void Simulation::step_fixed(Input input) {
         }
     }
 
-    // Accelerations: gravity pulls down; main thrust acts along the
-    // lander's local upward axis, which for angle 0 = upright and positive
-    // angle = counter-clockwise is (-sin(angle), cos(angle)).
+    // Accelerations: gravity pulls down; main thrust acts along the lander's
+    // local upward axis, scaled by the throttle, which for angle 0 = upright
+    // and positive angle = counter-clockwise is (-sin(angle), cos(angle)).
     double ax = 0.0;
     double ay = -config_.gravity;
     if (main_active) {
-        ax += -config_.main_accel * std::sin(state_.angle);
-        ay += config_.main_accel * std::cos(state_.angle);
+        ax += -config_.main_accel * throttle * std::sin(state_.angle);
+        ay += config_.main_accel * throttle * std::cos(state_.angle);
     }
 
     double angular_accel = 0.0;
