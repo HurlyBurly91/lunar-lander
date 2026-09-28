@@ -12,7 +12,7 @@ struct Config {
     double mu{178976.334};
     double main_accel{4.0};
     double rotate_accel{1.2};
-    double fuel{100.0};
+    double fuel{1000.0};
     double fuel_burn{8.0};
     double safe_vertical_speed{2.0};
     double safe_horizontal_speed{1.0};
@@ -45,6 +45,20 @@ struct LocalVelocity {
     double tangential{};
 };
 
+// Presentation-only interpolation between two authoritative fixed-step
+// states. It never modifies either input and is not used by physics,
+// collision, fuel use, or scoring.
+State interpolated_state(const State& previous, const State& current,
+                         double alpha, bool snap_to_current);
+
+// Presentation-only flame animation, driven by a continuous presentation
+// clock in seconds (not the integer simulation tick counter). These helpers
+// never affect physics, fuel, thrust, collision, or authoritative
+// determinism. flame_flick is the smooth per-time variation term;
+// flame_length maps it to a flame length scaled by the throttle level.
+double flame_flick(double t);
+double flame_length(double thrust_level, double t);
+
 bool operator==(const Input& lhs, const Input& rhs);
 bool operator==(const Config& lhs, const Config& rhs);
 
@@ -63,6 +77,7 @@ public:
     void reset(std::uint64_t seed);
     void advance(double elapsed, const Input& input);
     const State& state() const noexcept { return state_; }
+    const State& previous_state() const noexcept { return previous_; }
     const Config& config() const noexcept { return config_; }
     const Terrain& terrain() const noexcept { return terrain_; }
     std::uint64_t seed() const noexcept { return seed_; }
@@ -71,12 +86,16 @@ public:
     void set_state(const State& state);
     void set_config(const Config& config) { config_ = config; }
 
+    void circularize();
+    void refuel();
+
 private:
     void step_fixed(const Input& input);
     void resolve_ground_contact();
 
     Config config_;
     State state_;
+    State previous_{};
     Terrain terrain_{0};
     std::uint64_t seed_{0};
     double accumulator_{0.0};

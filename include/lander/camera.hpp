@@ -92,25 +92,17 @@ public:
         target_y_ = target_y;
         update_angle(target_x, target_y);
 
+        // The player-follow anchor is exact: the target is placed at the
+        // configured screen position without follow lag. The local-frame
+        // basis itself rotates with the target, so smoothing the focus in that
+        // rotating frame would accumulate horizontal drift during an orbit.
         const double c = std::cos(angle_);
         const double s = std::sin(angle_);
-        const double right_x = c;
-        const double right_y = s;
         const double up_x = -s;
         const double up_y = c;
         const double offset = framing_offset();
-
-        const double target_right = target_x * right_x + target_y * right_y;
-        const double target_up = target_x * up_x + target_y * up_y;
-        double focus_right = focus_x_ * right_x + focus_y_ * right_y;
-
-        if (dt > 0.0) {
-            const double a = 1.0 - std::exp(-params_.follow_rate * dt);
-            focus_right += (target_right - focus_right) * a;
-        }
-
-        focus_x_ = right_x * focus_right + up_x * (target_up - offset);
-        focus_y_ = right_y * focus_right + up_y * (target_up - offset);
+        focus_x_ = target_x_ - up_x * offset;
+        focus_y_ = target_y_ - up_y * offset;
     }
 
 private:

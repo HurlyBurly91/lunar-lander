@@ -2,10 +2,11 @@
 
 // A small, deterministic, cosmetic starfield for the Lunar Lander GUI.
 //
-// The stars are treated as infinitely distant: a star's screen position is
-// fixed in viewport/celestial background space and is independent of camera
-// translation and zoom. The generation stream is deliberately separate from
-// the simulation's RNG, so it never influences physics.
+// The stars form a fixed screen-space celestial backdrop: a star's screen
+// position is a pure function of the seed, the star index, and the viewport
+// size. It does not depend on camera position, zoom, camera rotation, lander
+// state, or moon longitude. The generation stream is deliberately separate
+// from the simulation's RNG, so it never influences physics.
 //
 // This header is intentionally rendering-free (no SDL) so the star behaviour
 // can be tested headlessly.
@@ -65,26 +66,23 @@ inline std::vector<Star> make_stars(std::uint64_t seed, double width,
     return stars;
 }
 
-// Screen position of a star. The camera translation and zoom arguments are
-// intentionally ignored: infinitely-distant stars do not move with camera
-// translation or zoom. The camera angle rotates the fixed star pattern around
-// the viewport center so the local horizon stays aligned with the camera.
+// Screen position of a star. All camera arguments are intentionally ignored:
+// the starfield is a fixed screen-space backdrop and must not translate,
+// scale, or rotate with the local-frame camera.
 inline ScreenPoint star_screen_pos(const Star& star,
-                                   double center_x,
-                                   double center_y,
-                                   double camera_angle,
-                                   double camera_x = 0.0,
-                                   double camera_y = 0.0,
-                                   double scale = 1.0) {
+                                    double center_x,
+                                    double center_y,
+                                    double camera_angle,
+                                    double camera_x = 0.0,
+                                    double camera_y = 0.0,
+                                    double scale = 1.0) {
+    (void)center_x;
+    (void)center_y;
+    (void)camera_angle;
     (void)camera_x;
     (void)camera_y;
     (void)scale;
-    double dx = star.x - center_x;
-    double dy = star.y - center_y;
-    double c = std::cos(camera_angle);
-    double s = std::sin(camera_angle);
-    return {center_x + dx * c - dy * s,
-            center_y + dx * s + dy * c};
+    return {star.x, star.y};
 }
 
 }  // namespace lander

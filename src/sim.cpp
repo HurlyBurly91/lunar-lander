@@ -79,6 +79,66 @@ double altitude_at(const Terrain& terrain, const State& state) {
     return radial_distance(state) - surface_radius_at(terrain, state);
 }
 
+State interpolated_state(const State& previous, const State& current,
+                         double alpha, bool snap_to_current) {
+    if (snap_to_current || alpha <= 0.0) {
+        return current;
+    }
+    if (alpha >= 1.0) {
+        return current;
+    }
+
+    State out = current;
+
+    // Interpolate the moon-centred polar coordinates instead of taking a
+    // straight chord between two inertial positions. Both are presentation
+    // only, but the polar form keeps orbital angle progression monotonic at
+    // render cadences that do not divide the 120 Hz physics cadence evenly.
+    const double previous_radius = radial_distance(previous);
+    const double current_radius = radial_distance(current);
+    if (previous_radius < 1.0e-9 || current_radius < 1.0e-9) {
+        out.x = previous.x + (current.x - previous.x) * alpha;
+        out.y = previous.y + (current.y - previous.y) * alpha;
+    } else {
+        const double previous_theta = std::atan2(previous.y, previous.x);
+        const double current_theta = std::atan2(current.y, current.x);
+        const double theta_delta = std::atan2(
+            std::sin(current_theta - previous_theta),
+            std::cos(current_theta - previous_theta));
+        const double theta = previous_theta + theta_delta * alpha;
+        const double radius =
+            previous_radius + (current_radius - previous_radius) * alpha;
+        out.x = std::cos(theta) * radius;
+        out.y = std::sin(theta) * radius;
+    }
+
+    const double angle_delta =
+        std::atan2(std::sin(current.angle - previous.angle),
+                   std::cos(current.angle - previous.angle));
+    out.angle = normalize_angle(previous.angle + angle_delta * alpha);
+    return out;
+}
+
+double flame_flick(double t) {
+    // t is the continuous presentation clock in seconds. Two incommensurate
+    // sine terms give a smooth, lively flicker. The frequencies stay well
+    // below the 60 Hz sampling rate (the earlier tick-derived 24.8 Hz would
+    // alias at 60 Hz) so the flame reads as a smooth animation, not a
+    // staircase.
+    const double a = kTwoPi * 7.0 * t;
+    const double b = kTwoPi * 11.0 * t + 1.0;
+    return 0.5 + 0.5 * std::sin(a) + 0.3 * std::sin(b);
+}
+
+double flame_length(double thrust_level, double t) {
+    // Preserves the original magnitude mapping (full throttle -> original
+    // flame extent, low throttle -> short puff) and the ~[0.43, 1.87] length
+    // range, but drives the variation from continuous time instead of the
+    // integer tick counter.
+    const double full_len = 0.7 + 0.9 * flame_flick(t);
+    return thrust_level * full_len;
+}
+
 Simulation::Simulation(const Config& config) : config_(config) {}
 
 void Simulation::reset(std::uint64_t seed) {
@@ -92,6 +152,7 @@ void Simulation::reset(std::uint64_t seed) {
     state_.y = r;
     state_.angle = 0.0;
     state_.fuel = config_.fuel;
+    previous_ = state_;
 }
 
 void Simulation::set_state(const State& state) {
@@ -99,6 +160,35 @@ void Simulation::set_state(const State& state) {
     next.angle = normalize_angle(next.angle);
     next.fuel = std::max(0.0, next.fuel);
     state_ = next;
+    previous_ = next;
+}
+
+void Simulation::circularize() {
+    if (state_.landed || state_.crashed) {
+        return;
+    }
+    const double r = radial_distance(state_);
+    if (r < 1.0e-9) {
+        return;
+    }
+    const double theta = std::atan2(state_.y, state_.x);
+    const double right_x = std::sin(theta);
+    const double right_y = -std::cos(theta);
+    const LocalVelocity lv = local_velocity(state_);
+    const double speed = std::sqrt(config_.mu / r);
+    const double direction =
+        std::abs(lv.tangential) > 1.0e-6
+            ? (lv.tangential < 0.0 ? -1.0 : 1.0)
+            : 1.0;
+    state_.vx = right_x * speed * direction;
+    state_.vy = right_y * speed * direction;
+}
+
+void Simulation::refuel() {
+    if (state_.landed || state_.crashed) {
+        return;
+    }
+    state_.fuel = config_.fuel;
 }
 
 void Simulation::advance(double elapsed, const Input& input) {
@@ -122,6 +212,7 @@ void Simulation::advance(double elapsed, const Input& input) {
 }
 
 void Simulation::step_fixed(const Input& input) {
+    previous_ = state_;
     const double dt = config_.fixed_dt;
     double throttle = clamp01(input.main_throttle);
     bool main_active = throttle > 0.0;

@@ -50,42 +50,27 @@ int main() {
 
         const lander::ScreenPoint base =
             lander::star_screen_pos(star, cx, cy, 0.0);
-        check_close(base.x, star.x, 1e-12, "zero angle leaves x unchanged");
-        check_close(base.y, star.y, 1e-12, "zero angle leaves y unchanged");
+        check_close(base.x, star.x, 1e-12, "screen x is the generated x");
+        check_close(base.y, star.y, 1e-12, "screen y is the generated y");
 
-        const lander::ScreenPoint translated =
-            lander::star_screen_pos(star, cx, cy, 0.0, 100.0, 50.0, 2.0);
-        check_close(translated.x, star.x, 1e-12,
-                    "translation/zoom ignored for x");
-        check_close(translated.y, star.y, 1e-12,
-                    "translation/zoom ignored for y");
-
-        const double dx = star.x - cx;
-        const double dy = star.y - cy;
-        for (double angle : {0.1, -0.4, 1.0, 2.2, -2.9}) {
-            const lander::ScreenPoint p =
-                lander::star_screen_pos(star, cx, cy, angle);
-            const double expected_x =
-                cx + dx * std::cos(angle) - dy * std::sin(angle);
-            const double expected_y =
-                cy + dx * std::sin(angle) + dy * std::cos(angle);
-            check_close(p.x, expected_x, 1e-9, "star rotates with camera");
-            check_close(p.y, expected_y, 1e-9, "star rotates with camera");
+        for (double camera_x : {0.0, 100.0, -250.0}) {
+            for (double camera_y : {0.0, 50.0, 900.0}) {
+                for (double scale : {0.2, 1.0, 4.0}) {
+                    for (double angle : {0.0, 0.1, -0.4, 1.0, 2.2, -2.9,
+                                         lander::kPi}) {
+                        const lander::ScreenPoint p =
+                            lander::star_screen_pos(star, cx, cy, angle,
+                                                    camera_x, camera_y,
+                                                    scale);
+                        check_close(p.x, star.x, 1e-12,
+                                    "camera x/y/angle/scale leaves x fixed");
+                        check_close(p.y, star.y, 1e-12,
+                                    "camera x/y/angle/scale leaves y fixed");
+                    }
+                }
+            }
         }
     }
-
-    lander::Star probe;
-    probe.x = cx + 100.0;
-    probe.y = cy;
-    const lander::ScreenPoint quarter =
-        lander::star_screen_pos(probe, cx, cy, 0.5 * lander::kPi);
-    check_close(quarter.x, cx, 1e-9, "quarter rotation x");
-    check_close(quarter.y, cy + 100.0, 1e-9, "quarter rotation y");
-
-    const lander::ScreenPoint half =
-        lander::star_screen_pos(probe, cx, cy, lander::kPi);
-    check_close(half.x, cx - 100.0, 1e-9, "half rotation x");
-    check_close(half.y, cy, 1e-9, "half rotation y");
 
     if (failures == 0) {
         std::puts("All lander_starfield_tests passed");

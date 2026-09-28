@@ -217,6 +217,56 @@ void test_follow_and_anchor() {
           "moving target stays near horizontal centre while following");
 }
 
+void test_full_revolution_anchor_and_zoom() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    const double R = lander::kReferenceRadius + 10.0;
+    const int steps = 1200;
+
+    cam.snap(0.0, R);
+    for (int i = 1; i <= steps; ++i) {
+        const double theta = 0.5 * lander::kPi + i * lander::kTwoPi / steps;
+        const double x = std::cos(theta) * R;
+        const double y = std::sin(theta) * R;
+        cam.update(1.0 / 60.0, x, y, 10.0, 0, false);
+        const ScreenPos pos = to_screen(x, y, cam);
+        check_close(pos.x, p.window_width / 2.0, 1e-6,
+                    "full revolution keeps exact horizontal anchor");
+        check_close(pos.y, p.window_height * p.lander_top_fraction, 1e-6,
+                    "full revolution keeps exact vertical anchor");
+    }
+
+    cam.snap(0.0, R);
+    cam.update(0.0, 0.0, R, 10.0, 0, true);
+    for (int i = 0; i < 200 && cam.zoom() < p.zoom_max - 1e-9; ++i) {
+        cam.update(0.0, 0.0, R, 10.0, 1, false);
+        const ScreenPos pos = to_screen(0.0, R, cam);
+        check_close(pos.x, p.window_width / 2.0, 1e-6,
+                    "manual zoom-in sweep preserves horizontal anchor");
+        check_close(pos.y, p.window_height * p.lander_top_fraction, 1e-6,
+                    "manual zoom-in sweep preserves vertical anchor");
+    }
+    check_close(cam.zoom(), p.zoom_max, 1e-9,
+                "manual zoom sweeps up to the 4.0X maximum");
+    for (int i = 0; i < 400 && cam.zoom() > p.zoom_min + 1e-9; ++i) {
+        cam.update(0.0, 0.0, R, 10.0, -1, false);
+        const ScreenPos pos = to_screen(0.0, R, cam);
+        check_close(pos.x, p.window_width / 2.0, 1e-6,
+                    "manual zoom-out sweep preserves horizontal anchor");
+        check_close(pos.y, p.window_height * p.lander_top_fraction, 1e-6,
+                    "manual zoom-out sweep preserves vertical anchor");
+    }
+    check_close(cam.zoom(), p.zoom_min, 1e-9,
+                "manual zoom sweeps down to the 0.2X minimum");
+
+    const double auto_y = lander::kReferenceRadius + 20.0;
+    cam.snap(0.0, auto_y);
+    drive_auto(cam, 30.0);
+    check_anchor(cam, 0.0, auto_y);
+    drive_auto(cam, 5.0);
+    check_anchor(cam, 0.0, auto_y);
+}
+
 void test_zero_dt_angle_change() {
     lander::Camera cam;
     const double R = lander::kReferenceRadius;
@@ -254,6 +304,7 @@ int main() {
     test_auto_hysteresis_and_zoom();
     test_manual_mode_and_wheel();
     test_follow_and_anchor();
+    test_full_revolution_anchor_and_zoom();
     test_zero_dt_angle_change();
     test_camera_does_not_modify_simulation_or_terrain();
 
