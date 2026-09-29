@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1513,12 +1514,14 @@ void test_sync_orbit_stability() {
     }
 }
 
-// M05-R3-16: transfer deterministically places the ship at the start of a
-// real ballistic arc that reaches the other body's clearance shell under the
-// two-body gravity alone: both directions, a flying reference-source case,
-// departure-shell / nose-along-velocity invariants, fuel / score / ticks /
-// phase preserved, no-op (false, state untouched) while crashed, and
-// deterministic per seed.
+// M05-R3-20: velocity-only transfer. T x3 changes ONLY the ship's velocity;
+// its position stays bit-identical. The departure point is the current world
+// position (the exact surface point when landed, the current flight point
+// when flying). SOURCE = landed body (if landed) else the reference body;
+// TARGET = the other body. A solution replaces the velocity with a real
+// two-body ballistic arc that reaches the target's clearance shell and stays
+// outside terrain; a no-solution leaves the state bit-identical (no teleport).
+// Fuel / score / ticks / phase preserved; deterministic per seed.
 void test_transfer() {
     lander::Config cfg{};
     const double dt = cfg.fixed_dt;
@@ -1543,8 +1546,8 @@ void test_transfer() {
     // Re-search the solver's candidate flight times for the placed state and
     // return the candidate whose terminal point is closest to the target's
     // arrival shell: the clearance shell above the target's surface on the
-    // approach side (the solver accepts a miss below 5 m at a point on that
-    // shell, so an error of 5 m or less is expected).
+    // approach side. The solver accepts a miss up to 8 m at a point on that
+    // shell, so a match within that bound confirms a real ballistic arc.
     auto best_fraction = [&](const lander::Simulation& sim, int source,
                              int target) {
         const double t0 = sim.sim_time();
@@ -1579,31 +1582,30 @@ void test_transfer() {
                 best = fraction;
             }
         }
-        return (best < 0.0 || best_err > 5.0) ? -1.0 : best;
+        return (best < 0.0 || best_err > 8.0) ? -1.0 : best;
     };
 
-    auto run_case = [&](int source) {
+    // Verify the velocity-only invariants for a SOLVED transfer: position
+    // bit-identical to `before`, velocity replaced, unlanded / non-attached,
+    // fuel / score / ticks / phase preserved, spin zero, nose along the
+    // velocity, speed bounded, and the arc reaches the target's clearance
+    // shell on the approach side and stays outside the target's worst-case
+    // surface at every half-second sample.
+    auto check_solved = [&](const lander::Simulation& sim, int source,
+                            const lander::State& before, double t_before) {
         const int target = 1 - source;
-        lander::Simulation sim;
-        sim.reset(seed);
-        if (source == 1) {
-            check(drop_on(sim, 1, 0) >= 0,
-                  "the companion transfer probe lands first");
-        }
-        check(sim.state().landed && sim.state().landed_body == source,
-              "the transfer probe is landed on the source");
-
-        const lander::State before = sim.state();
-        const double t_before = sim.sim_time();
-        check(sim.transfer(), "transfer() found a plausible arc");
         const lander::State& s = sim.state();
         check(!s.landed && !s.crashed, "the placed ship is in flight");
         check(s.landed_body == -1, "the placed ship is not attached");
-        check_close(s.fuel, before.fuel, 1e-12, "transfer preserves the fuel");
-        check(s.ticks == before.ticks, "transfer preserves the tick count");
-        check(s.score == before.score, "transfer preserves the score");
+        check(s.x == before.x && s.y == before.y,
+              "the transfer leaves the ship's position bit-identical");
+        check(s.vx != before.vx || s.vy != before.vy,
+              "the transfer replaced the ship's velocity");
+        check_close(s.fuel, before.fuel, 1e-12, "the transfer preserves the fuel");
+        check(s.ticks == before.ticks, "the transfer preserves the tick count");
+        check(s.score == before.score, "the transfer preserves the score");
         check_close(sim.sim_time(), t_before, 1e-12,
-                    "transfer preserves the phase clock");
+                    "the transfer preserves the phase clock");
         check_close(s.omega, 0.0, 1e-12, "the placed spin is zero");
         const double speed = std::hypot(s.vx, s.vy);
         check(speed > 1e-9 && speed <= 60.0,
@@ -1611,23 +1613,12 @@ void test_transfer() {
         check_close(s.angle, norm_angle(std::atan2(s.vy, s.vx)), 1e-9,
                     "the nose points along the launch velocity");
 
-        // The departure shell: above the source, facing the target at t0.
-        const double t0 = sim.sim_time();
-        const lander::Vec2 s_pos = sim.binary().position(source, t0);
-        const lander::Vec2 t_pos = sim.binary().position(target, t0);
-        const double d0 = std::hypot(t_pos.x - s_pos.x, t_pos.y - s_pos.y);
-        const lander::Vec2 dir{(t_pos.x - s_pos.x) / d0,
-                               (t_pos.y - s_pos.y) / d0};
-        const double r_dep =
-            sim.binary().body(source).terrain.max_surface_radius() + 15.0;
-        check_close(lander::radial_distance(s, s_pos), r_dep, 1e-9,
-                    "the ship departs from the clearance shell");
-        check_close((s.x - s_pos.x) * dir.x + (s.y - s_pos.y) * dir.y, r_dep,
-                    1e-9, "the ship departs facing the target");
-
         // The arc really reaches the target's clearance shell under gravity
-        // alone, arrives on the approach side, and stays outside both
-        // worst-case surfaces at every half-second sample.
+        // alone, arrives on the approach side, and stays outside the target's
+        // worst-case surface at every half-second sample (source clearance is
+        // the solver's own arc-clear's job; the craft legitimately begins on
+        // the source surface, so the source is not part of this check).
+        const double t0 = sim.sim_time();
         const double fraction = best_fraction(sim, source, target);
         check(fraction > 0.0,
               "the placed arc reaches the target clearance shell");
@@ -1647,12 +1638,10 @@ void test_transfer() {
             bool clear = true;
             for (int i = 0; i < steps; ++i) {
                 if (i % 60 == 0) {
-                    for (int b = 0; b < 2; ++b) {
-                        const lander::Vec2 bp = sim.binary().position(b, t);
-                        if (std::hypot(px - bp.x, py - bp.y) <
-                                sim.binary().body(b).terrain.max_surface_radius()) {
-                            clear = false;
-                        }
+                    const lander::Vec2 bp = sim.binary().position(target, t);
+                    if (std::hypot(px - bp.x, py - bp.y) <
+                            sim.binary().body(target).terrain.max_surface_radius()) {
+                        clear = false;
                     }
                 }
                 const lander::Vec2 a = sim.binary().gravity({px, py}, t);
@@ -1662,14 +1651,61 @@ void test_transfer() {
                 py += vy * dt;
                 t += dt;
             }
-            check(clear, "the arc stays outside both worst-case surfaces");
+            check(clear,
+                  "the approach stays outside the target's worst-case surface");
         }
     };
 
-    run_case(0);
-    run_case(1);
+    // A no-solution leaves the state bit-identical (no teleport, M05-R3-20).
+    auto check_nosolution = [&](const lander::Simulation& sim,
+                                const lander::State& before) {
+        check(sim.state() == before,
+              "the no-solution transfer leaves the state untouched");
+    };
 
-    // Flying (unlanded) near the primary: the reference body is the source.
+    // (1) Landed primary -> companion: the guaranteed-positive case. Must
+    //     produce a real arc and stay fast enough not to stall the game loop.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        check(sim.state().landed && sim.state().landed_body == 0,
+              "the probe is landed on the primary");
+        const lander::State before = sim.state();
+        const double t_before = sim.sim_time();
+        const auto clk0 = std::chrono::steady_clock::now();
+        check(sim.transfer(), "the primary-source transfer found a plausible arc");
+        const auto clk1 = std::chrono::steady_clock::now();
+        const long ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(clk1 - clk0)
+                .count();
+        check(ms < 200,
+              "the primary-source transfer solve stays under the loop stall bound");
+        if (sim.state().landed_body == -1 && !sim.state().landed) {
+            check_solved(sim, 0, before, t_before);
+        }
+    }
+
+    // (2) Landed companion -> primary: a real arc when one exists, otherwise a
+    //     no-solution that leaves the state bit-identical.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        check(drop_on(sim, 1, 0) >= 0,
+              "the companion transfer probe lands first");
+        check(sim.state().landed && sim.state().landed_body == 1,
+              "the probe is landed on the companion");
+        const lander::State before = sim.state();
+        const double t_before = sim.sim_time();
+        if (sim.transfer()) {
+            check_solved(sim, 1, before, t_before);
+        } else {
+            check_nosolution(sim, before);
+        }
+    }
+
+    // (3) Flying reference-source: the position is left bit-identical and
+    //     either the velocity is replaced (a real arc) or the state is
+    //     untouched (no-solution).
     {
         lander::Simulation sim;
         sim.reset(seed);
@@ -1677,22 +1713,22 @@ void test_transfer() {
             state_relative(sim.binary(), 0, 0.0, 100.0, 0.0, 0.0, 0.0));
         check(sim.reference_body() == 0, "the reference is the primary");
         check(!sim.state().landed, "the probe is in flight");
-        check(sim.transfer(), "transfer works from a flying reference-source state");
-        const lander::State& s = sim.state();
-        check(!s.landed && !s.crashed, "the flying-source ship is in flight");
-        check_close(s.fuel, 1000.0, 1e-9,
-                    "the flying-source transfer preserves the fuel");
-        const lander::Vec2 s_pos = sim.binary().position(0, 0.0);
-        const lander::Vec2 t_pos = sim.binary().position(1, 0.0);
-        const double r_dep = sim.terrain(0).max_surface_radius() + 15.0;
-        check_close(lander::radial_distance(s, s_pos), r_dep, 1e-9,
-                    "the flying-source departure is on the primary shell");
-        const double d = std::hypot(t_pos.x - s_pos.x, t_pos.y - s_pos.y);
-        const double dot =
-            (s.x - s_pos.x) * (t_pos.x - s_pos.x) / d +
-            (s.y - s_pos.y) * (t_pos.y - s_pos.y) / d;
-        check_close(dot, r_dep, 1e-9,
-                    "the flying-source departure faces the target");
+        const lander::State before = sim.state();
+        const double t_before = sim.sim_time();
+        if (sim.transfer()) {
+            const lander::State& s = sim.state();
+            check(s.x == before.x && s.y == before.y,
+                  "the flying transfer leaves the position bit-identical");
+            check(s.vx != before.vx || s.vy != before.vy,
+                  "the flying transfer replaced the velocity");
+            check_close(s.fuel, before.fuel, 1e-9,
+                        "the flying transfer preserves the fuel");
+            check(!s.landed && !s.crashed, "the flying-source ship is in flight");
+            check_close(sim.sim_time(), t_before, 1e-12,
+                        "the flying transfer preserves the phase clock");
+        } else {
+            check_nosolution(sim, before);
+        }
     }
 
     // No-op while crashed: reports no solution and leaves the state

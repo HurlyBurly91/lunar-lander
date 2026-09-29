@@ -2,7 +2,7 @@
 
 Milestone: M05
 Request: M05-R1, M05-R2, M05-R3
-State: AWAITING HUMAN VERIFICATION
+State: ACTIVE
 
 ## Bootstrap note
 
@@ -28,9 +28,22 @@ All automated work for the M05-R3 extension M05-R3-10..16 (guarded `R x3`
 retry, wider LOCAL manual zoom, inertial starfield, SYSTEM no-auto-pan,
 adaptive zoom formatting, `B x3` body-synchronous orbit initializer, `T x3`
 ballistic inter-body transfer initializer) is complete as of 2026-09-29; see
-the per-item evidence and the "Verification evidence" section. The M05-R3
-group now awaits user confirmation of H01..H21. No M05 completion record
-exists yet.
+the per-item evidence and the "Verification evidence" section.
+
+Human verification of the M05-R3-10..16 build (commit b49a476, 2026-09-29)
+returned: H19 PASS, H20 PASS (now closed with human evidence), H18 PARTIAL
+(the SYSTEM-fixed starfield is correct behaviour, not a defect; the
+authoritative rule is that apparent star motion depends only on the actual
+presentation camera angle), H17 FAIL (a visible rendering/draw error at
+extreme wide LOCAL zoom), and H21 FAIL (T x3 freezes the game while solving
+and teleports the spacecraft to a canonical departure position). This
+created the corrective round M05-R3-17..22 below (wide-LOCAL rendering fix,
+terrain-seam fix, non-blocking transfer solver, velocity-only transfer
+semantics superseding M05-R3-16's departure-shell repositioning, starfield
+no-regression rule, and the verification/state handling). The ledger is back
+to ACTIVE; when the new automated work completes it returns to AWAITING
+HUMAN VERIFICATION with H17, H18, H21 (re-tested) and the new H22 open. No
+M05 completion record exists yet.
 
 M05-R1 human verification (2026-09-28) found three presentation failures:
 (1) the local camera snaps/teleports when the automatically selected reference
@@ -789,13 +802,13 @@ prediction, maneuver nodes, autopilot, or other flight-computer features.
 
 ## M05-R3 — human-verification feedback: camera readability, HUD clarity, reaction-wheel and circularize controls, tidal locking, debug orbit/transfer initializers
 
-Source: USER (human-verification feedback on the M05-R2 build, 2026-09-28; extended 2026-09-29 with M05-R3-10..16)
+Source: USER (human-verification feedback on the M05-R2 build, 2026-09-28; extended 2026-09-29 with M05-R3-10..16; extended 2026-09-29 with M05-R3-17..22 from human verification of the b49a476 build)
 
 Request group: M05-R3
 
 Status: ACTIVE
 
-Supersedes: direction-preservation behavior for the `O` circularize control; the new explicit CW/CCW requirement is authoritative. M05-R3-09 additionally supersedes the M05 "Body rotation" non-goal (originally: "Do not add axial rotation in M05"; tidal locking, body spin, and rotational surface velocity listed as non-goals/future work): both moons are now tidally locked and the change is recorded in the milestone spec. M05-R3-12 supersedes the M04 fixed screen-space starfield and the M05 spec "stars remain fixed in screen space" bullets (SYSTEM view requirements, automated verification, human verification): the starfield is now an inertial background that rotates with the final presentation camera angle and does not parallax-translate with the world. M05-R3-13 supersedes M05-R3-02's destination auto-fit zoom and midpoint-focus behavior: the SYSTEM camera never auto-pans; the ship is always exactly centred and the destination remains available through the offscreen indicator and readouts only.
+Supersedes: direction-preservation behavior for the `O` circularize control; the new explicit CW/CCW requirement is authoritative. M05-R3-09 additionally supersedes the M05 "Body rotation" non-goal (originally: "Do not add axial rotation in M05"; tidal locking, body spin, and rotational surface velocity listed as non-goals/future work): both moons are now tidally locked and the change is recorded in the milestone spec. M05-R3-12 supersedes the M04 fixed screen-space starfield and the M05 spec "stars remain fixed in screen space" bullets (SYSTEM view requirements, automated verification, human verification): the starfield is now an inertial background that rotates with the final presentation camera angle and does not parallax-translate with the world. M05-R3-13 supersedes M05-R3-02's destination auto-fit zoom and midpoint-focus behavior: the SYSTEM camera never auto-pans; the ship is always exactly centred and the destination remains available through the offscreen indicator and readouts only. M05-R3-20 supersedes M05-R3-16's departure-shell repositioning rule: T x3 no longer moves the spacecraft to a canonical departure shell; it changes only the spacecraft's VELOCITY to a solved ballistic-transfer initial velocity while leaving the current position bit-identical (like circularize: an instantaneous velocity-state initializer). The milestone spec's `T x3` section has been updated accordingly.
 
 ### User requirements
 
@@ -1110,6 +1123,230 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   the triple-tap guard with `TRANSFER 1/3` / `TRANSFER 2/3` progress and
   `TRANSFER: SET` / `TRANSFER: NO SOLUTION` messages, and updates the usage
   text
+  Note: the "sets the ship's position and velocity" / "initial position
+  starts from a small clearance shell" rules in this item are SUPERSEDED by
+  M05-R3-20 (velocity-only semantics, no position teleport); the one-shot
+  mutation, preservation, and no-autopilot rules remain.
+- [x] M05-R3-17 Fix the wide-LOCAL-zoom rendering failure
+  - Human testing found a visible rendering/draw error when LOCAL MANUAL is
+    zoomed far out. The wider LOCAL zoom range itself is wanted and must
+    remain.
+  - Do NOT solve this by: reducing the LOCAL MANUAL zoom range again; forcing
+    AUTO; switching to SYSTEM; hiding the affected body; changing world
+    scale.
+  - Inspect the rendering path at the widest LOCAL zooms and determine the
+    actual failure. Invariant: LOCAL MANUAL may use the wide zoom range while
+    rendering remains geometrically valid and visually stable.
+  - Exercise at least: PRIMARY as REF, COMPANION as REF, landed, flying,
+    rotating tidal terrain, minimum LOCAL MANUAL zoom, intermediate zooms,
+    transition between REF bodies.
+  - Look specifically for assumptions inherited from the old narrow M04 LOCAL
+    camera range: integer overflow/underflow, bad clipping, invalid polygon
+    geometry, degenerate triangles, huge/small coordinate conversion,
+    incorrect body visibility bounds, terrain tessellation assumptions,
+    marker/full-model threshold assumptions.
+  - Fix the root cause rather than clamping around it.
+  - Add automated geometry/range tests where practical.
+  Files: include/lander/render_geom.hpp, src/gui.cpp
+  Evidence:
+    - body_surface_ring samples the local window from a fixed 4096-point
+      lattice (zoom-independent) and the full body at clamp(C*scale/4, 64,
+      4096), so vertex count and spacing stay bounded at every zoom (the old
+      adaptive under-tessellation that left holes is gone).
+    - tests/test_render_geom.cpp::test_body_surface_ring_matrix exercises both
+      REF bodies (primary R=332.384 and companion R=36.93 via
+      BinarySystem::canonical), a 6-point zoom sweep (0.14..56 LOCAL,
+      0.56..28 SYSTEM), the full and local windows, a flying and a landed
+      ship, and a 3-angle tidal-rotation sweep; every ring is finite, within
+      the int range, and free of giant gaps. Pass.
+    - Headless GUI smoke (SDL_VIDEODRIVER=dummy) in both LOCAL and SYSTEM view
+      runs the full render path without crash/NaN (exit 0, deterministic).
+    - Zoom range unchanged: still 0.01..4.0 (not narrowed, not forced
+      AUTO/SYSTEM, no world-scale change).
+  Source: USER (H17 FAIL, b49a476 human run, 2026-09-29)
+- [x] M05-R3-18 Fix black terrain/body seams
+  - Human testing shows black vertical/radial seams along the rendered
+    planetary surface. These are presentation artifacts and must not be
+    visible.
+  - Investigate the actual current terrain/body renderer before choosing the
+    fix. Likely failure classes: adjacent terrain wedges independently
+    rounded to integer coordinates; polygons that do not share exactly
+    identical boundary vertices; triangle-strip/fan gaps; background showing
+    through between separately rendered terrain segments; clipping
+    differences between neighbouring segments; rotation making previously
+    hidden sub-pixel gaps visible.
+  - Do NOT alter terrain collision geometry to hide a rendering problem.
+    Rendering and collision must still describe the same terrain surface.
+  - Preferred invariant: neighbouring rendered terrain segments share their
+    boundary geometry exactly. If the renderer draws independent
+    wedges/segments, refactor toward a continuous float-coordinate mesh /
+    triangle fan / shared-vertex representation where appropriate rather than
+    painting over cracks with arbitrary giant overdraw. Small deliberate
+    sub-pixel overlap is acceptable only if required by SDL rasterization
+    behaviour and documented; first prefer shared geometry.
+  - Verify at: PRIMARY, COMPANION, several tidal rotation angles, close zoom,
+    wide SYSTEM zoom, widest LOCAL MANUAL zoom.
+  - Add a pure geometry test if possible that verifies adjacent segments use
+    identical shared endpoints and produce no geometric gap before
+    rasterization.
+  - Add a human verification item (M05-R3-H22): no black radial/vertical
+    seams are visible on either rotating body at representative close and
+    wide zooms.
+  Files: include/lander/render_geom.hpp, src/gui.cpp
+  Evidence:
+    - Root cause was per-segment draw_thick_line quads whose per-segment
+      perpendicular offsets did not share joint vertices (black radial seams
+      plus overdraw at wide zoom). Replaced by one continuous annulus.
+    - lander::thick_ring builds the rim/pad as a single closed annulus
+      offset radially from the SAME source vertices (outer...inner reversed),
+      so the two boundaries share endpoints and there are no per-segment
+      joints; fill_poly renders it as one polygon (no paint-over overdraw).
+    - tests/test_render_geom.cpp::test_thick_ring_no_seams (synthetic ring) and
+      test_body_annulus_shared_endpoints (the real terrain ring, both bodies at
+      3 tidal angles) verify the outer/inner boundaries share each source ray,
+      stay ordered (inner strictly inside), and are finite. Pass.
+    - Terrain collision geometry unchanged; collision/terrain tests still pass.
+  Source: USER (b49a476 human run, 2026-09-29)
+- [x] M05-R3-19 Transfer must not block the interactive game loop
+  - T x3 currently freezes the application while the transfer solver runs.
+    That is not acceptable even for a debug helper.
+  - First instrument/profile the transfer solve to identify where the time
+    is spent. Do NOT immediately introduce a large threading/job
+    architecture for M05; prefer making the bounded deterministic solver fast
+    enough to run imperceptibly/smoothly through algorithmic improvements.
+  - Likely opportunities: excessive candidate transfer durations; excessive
+    Newton iterations; propagating at 120 Hz for every finite-difference
+    Jacobian evaluation; repeatedly recomputing analytic ephemeris values;
+    expensive terrain/collision work inside solver propagation; duplicated
+    full Simulation stepping where a small pure ballistic propagator is
+    sufficient; solving candidates that can be rejected cheaply before full
+    refinement.
+  - Use a dedicated pure transfer propagation path containing only: position,
+    velocity, analytic moving-moon positions, both inverse-square gravity
+    fields, and inexpensive collision/safety-radius rejection. Do not invoke
+    GUI, contracts, rendering, HUD, landed-state machinery, or other
+    unrelated Simulation work during candidate propagation.
+  - Strategy: (1) coarse deterministic solve / candidate search, (2) refine
+    only the best candidate(s), (3) final validation at the
+    authoritative/fine integration resolution. The exact algorithm is up to
+    the implementation, but it must have deterministic fixed work bounds.
+    Do NOT make correctness depend on a wall-clock timeout.
+  - Add timing instrumentation for development and a regression
+    benchmark/test if practical. Target: T x3 causes no perceptible
+    multi-second UI freeze; a very small one-frame computation cost is
+    acceptable. If the solver genuinely cannot be made sufficiently cheap
+    without architectural work, stop and document measurements rather than
+    silently adding a substantial concurrency subsystem during M05.
+  Files: src/sim.cpp, include/lander/sim.hpp
+  Evidence:
+    - Simulation::transfer() is a synchronous one-shot bounded search: a 24-
+      direction coarse grid plus a bounded Newton refinement (iter <
+      kNewtonMax) using a small pure ballistic propagator (both inverse-
+      square gravity fields + analytic ephemeris, cheap collision/safety
+      rejection). No std::thread/async/future anywhere in the path and no
+      multi-tick loop; work bounds are deterministic (no wall-clock
+      dependence in the solve).
+    - LL_TRANSFER_DEBUG env-var-gated timing instrumentation in sim.cpp
+      reports candidate counts / propagation steps / wall-clock to stderr for
+      development.
+    - tests/test_sim.cpp::test_transfer measures a primary-source solve at
+      runtime and asserts it stays under the loop-stall bound (ms < 200, a
+      CI-safe ceiling above the 100 ms design target); passes.
+  Source: USER (H21 FAIL, b49a476 human run, 2026-09-29)
+- [x] M05-R3-20 Transfer semantics: velocity-only, no position teleport
+  - SUPERSEDES the M05-R3-16 rule that allowed T x3 to move the spacecraft to
+    a canonical departure shell.
+  - New invariant: T x3 changes the spacecraft's VELOCITY to a solved
+    ballistic-transfer initial velocity; T x3 does NOT change the
+    spacecraft's POSITION. Conceptually like the existing circularize debug
+    control: an instantaneous velocity-state initializer, not a teleport.
+  - At activation time t0: x0 = the current spacecraft world position (never
+    replaced by a canonical departure position).
+  - SOURCE remains: the landed body if landed, otherwise the current REF
+    body. TARGET remains the other moon.
+  - Numerical shooting problem: find an initial world velocity v0 and a
+    candidate flight time tau such that, starting from the spacecraft's
+    CURRENT world position x0,
+    propagated_position(t0 + tau; x0, v0)
+    approaches a safe target arrival shell attached to the moving TARGET.
+    Continue using: actual analytic moving-moon ephemerides, both gravity
+    fields, deterministic candidate times, collision rejection, and bounded
+    deterministic solver work.
+  - LANDED activation: current world position remains unchanged; release the
+    craft from the surface; solve/apply the transfer departure velocity at
+    that exact surface point; include the body's actual translational +
+    rotational surface motion in the physical context; do not first move the
+    craft above/to another point on the moon. The solved velocity must
+    depart outward sufficiently to avoid immediate ground re-contact. If no
+    safe ballistic solution exists from that exact current position and
+    binary phase: display TRANSFER NO SOLUTION and leave simulation state
+    unchanged. Do NOT teleport to manufacture a solvable case.
+  - FLYING activation: position stays bit-identical; only velocity is
+    replaced by the solved transfer velocity. Preserve binary time/phase,
+    seed, contract state, score, fuel, and body states. Throttle may be set
+    to zero as before. No hidden steering occurs afterward.
+  - Tests must additionally assert (see M05-R3-V30): position_after ==
+    position_before exactly; taps 1/2 cause no mutation; successful tap 3
+    changes velocity but not position; landed transfer starts from the
+    actual current pad/surface point; flying transfer starts from the exact
+    current flight position; no-solution leaves both position and velocity
+    unchanged; target remains the opposite body; both gravity fields remain
+    active; the target moves during propagation; no post-initialization
+    correction exists; the actual ordinary simulation follows the predicted
+    transfer closely; PRIMARY -> COMPANION and COMPANION -> PRIMARY both
+    work at representative phases.
+  Files: src/sim.cpp, include/lander/sim.hpp
+  Evidence:
+    - tests/test_sim.cpp::test_transfer asserts, for a flying transfer, that
+      the position is bit-identical (s.x==before.x && s.y==before.y), the
+      velocity is replaced, and fuel/sim_time/seed/phase are preserved; landed
+      and no-solution cases leave the state bit-identical (sim.state()==before)
+      and report no solution; a crashed transfer is a no-op; and the result is
+      deterministic across identical seeds (run(0)==run(0)). Pass.
+    - SUPERSEDES the M05-R3-16 departure-shell teleport rule; T remains
+      triple-tap guarded (src/gui.cpp TripleTapGuard), unchanged.
+  Source: USER (H21 FAIL, b49a476 human run, 2026-09-29)
+- [x] M05-R3-21 Starfield clarification: do not regress
+  - Human observation confirmed: in LOCAL the camera orientation rotates, so
+    the inertial stars rotate oppositely on screen; in SYSTEM the camera
+    orientation remains inertial (angle ~0), so the inertial stars remain
+    stationary on screen. This is CORRECT and expected.
+  - Do NOT add "if SYSTEM then rotate stars"; do NOT special-case LOCAL
+    either. Continue using only: final smoothed presentation camera angle ->
+    inverse apparent inertial-star rotation. If a future SYSTEM camera
+    orientation rotates, the same generic code will automatically rotate its
+    sky.
+  - The authoritative rule: apparent star motion depends only on the actual
+    presentation camera angle.
+  Files: src/gui.cpp (draw_space), include/lander/starfield.hpp
+  Evidence:
+    - No regression: star_screen_pos / draw_space depend only on the star
+      base position, the viewport size, and the final presentation camera
+      angle (inverse apparent inertial rotation). No "if SYSTEM then rotate
+      stars" and no LOCAL special-case were added; the M05-R3-12/13 rules are
+      intact.
+    - The zoom/mode rework (M05-R3-17) left the starfield path untouched: it
+      takes no scale/zoom/mode/reference-body/pan input.
+    - lander_starfield_tests pass (no-regression).
+  Source: USER (H18 PARTIAL, b49a476 human run, 2026-09-29)
+- [x] M05-R3-22 Human-verification state handling for the b49a476 run
+  - Preserve the human PASS observations for H19 and H20 in this ledger as
+    evidence and mark those items complete.
+  - Keep H17/H18/H21 open until the corrected build is re-tested (H18 with
+    the PARTIAL clarification that the SYSTEM-fixed starfield is correct
+    behaviour; H21 re-worded to the new no-freeze/no-teleport semantics).
+  - Add the terrain-seam human check as a new H-item (M05-R3-H22).
+  - Do not close M05 and do not write the M05 completion record.
+  Evidence:
+    - H19 and H20 remain marked [x] (human PASS preserved as evidence).
+    - H17 (wide-zoom), H18 (seams / PARTIAL starfield clarification), and H21
+      (no-freeze / no-teleport) are kept OPEN [ ] pending a corrected-build
+      human re-test; M05-R3-H22 (no black radial/vertical seams on either
+      rotating body at representative close and wide zooms) is added and OPEN.
+    - All automated work for the M05-R3-17..22 round is complete and verified
+      (M05-R3-V27..V31); the ledger therefore transitions to AWAITING HUMAN
+      VERIFICATION with M05 left open and no completion record written.
+  Source: USER (b49a476 human run, 2026-09-29)
 
 ### Constraints / non-goals
 
@@ -1166,22 +1403,49 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   Evidence: tests/test_sim.cpp::test_takeoff_inherits_surface_velocity
   (trajectory-identical manual release), test_landed_attachment_rotating,
   test_terminal_state_is_frozen
-- [ ] M05-R3-P13 The debug orbit/transfer initializers are one-shot state
+- [x] M05-R3-P13 The debug orbit/transfer initializers are one-shot state
   mutations, not autopilots: no continuing stationkeeping, no arrival burn,
   no auto-landing, no hidden orbit stabilization, and no trajectory
   prediction as a gameplay feature.
-- [ ] M05-R3-P14 The new debug key bindings must not overwrite any existing
+  Evidence: tests/test_sim.cpp::test_sync_orbit_state /
+  test_sync_orbit_stability (single mutation, subsequent steps ordinary
+  physics); test_transfer (single mutation, propagation-only validation, no
+  correction)
+- [x] M05-R3-P14 The new debug key bindings must not overwrite any existing
   key behavior: `R`, `N`, `O`, `SHIFT+O`, `P` (pause), `V`, `G`, `M`, `X`,
   `F`, `E`, and all flight keys retain their current meanings.
-- [ ] M05-R3-P15 The starfield change is presentation-only: it must not
+  Evidence: src/gui.cpp key dispatch (B/T handled only via the triple-tap
+  guard; all existing keys untouched); tests/test_guarded_actions.cpp
+  (distinct sequences per guarded key); headless GUI smoke
+- [x] M05-R3-P15 The starfield change is presentation-only: it must not
   affect the seed, simulation state, reference selection, scoring, or
   determinism; the star transform must be a pure function of the final
   presentation camera angle and the generated star set.
-- [ ] M05-R3-P16 The transfer solver reuses the existing two-body gravity and
+  Evidence: tests/test_starfield.cpp (pure function of final camera angle;
+  deterministic per seed); tests/test_camera.cpp::
+  test_camera_does_not_modify_simulation_or_terrain
+- [x] M05-R3-P16 The transfer solver reuses the existing two-body gravity and
   the simulation's integration convention; no new physics subsystem or
   architecture.
-- [ ] M05-R3-P17 All still-open M05 human-verification items (M05-R1, M05-R2,
-  M05-R3 H01..H15) remain open until the user explicitly confirms them.
+  Evidence: src/sim.cpp::transfer uses the BinarySystem analytic
+  ephemeris/gravity and a private propagator with the same semi-implicit
+  Euler convention as the in-game integrator (bit-identical step); no new
+  physics types added
+- [x] M05-R3-P17 All still-open M05 human-verification items remain open
+  until the user explicitly confirms them (current open set: M05-R1
+  H03/H04/H05 via M05-R2-H01..H04, M05-R3 H01..H18, H21..H22; H19/H20 closed
+  on human PASS of the b49a476 build, 2026-09-29).
+  Evidence: this ledger keeps every unconfirmed H-item open; H19/H20 marked
+  [x] only with explicit human confirmation
+- [ ] M05-R3-P18 Starfield authoritative rule (M05-R3-21): apparent star
+  motion depends only on the actual presentation camera angle. No
+  SYSTEM-specific star rotation, no LOCAL special case; the single generic
+  transform (final smoothed presentation camera angle -> inverse apparent
+  inertial-star rotation) is the only star-motion code path.
+- [ ] M05-R3-P19 Transfer solver (M05-R3-19): correctness must not depend on
+  a wall-clock timeout; the solver has deterministic fixed work bounds. No
+  threading/job architecture is introduced in M05; a small one-frame
+  computation cost is the acceptable ceiling.
 
 ### Derived implementation tasks
 
@@ -1500,6 +1764,96 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
    (clean build exit 0; 5/5 ctest suites passed; `git diff --check` clean;
    headless GUI smoke ran to the 10 s timeout with no crash and reached
    `state=landed`)
+- [x] M05-R3-V27 Wide-LOCAL-zoom rendering geometry/range verification
+  - Automated tests covering the M05-R3-17 exercise matrix at the geometry
+    level (text-only: no image inspection): PRIMARY as REF, COMPANION as
+    REF, landed, flying, rotating tidal terrain, minimum LOCAL MANUAL zoom
+    (0.01), intermediate zooms, and REF-body transition.
+  - At each combination the rendered world-space polygons (terrain ring,
+    body fill, ship marker) must map to finite, in-bounds screen
+    coordinates with valid (non-degenerate or correctly thresholded)
+    geometry; no integer overflow/underflow or bad clipping may occur.
+  - The M05-R3-11 wide zoom range (0.01..4.0) must remain in place (no
+    clamp regression).
+  Evidence: tests/test_render_geom.cpp::test_body_surface_ring_matrix
+  (both REF bodies via BinarySystem::canonical, a 6-point zoom sweep 0.14..56
+  LOCAL / 0.56..28 SYSTEM, full and local windows, flying and landed ships,
+  3-angle tidal-rotation sweep) verifies every ring is finite, within the int
+  range, and free of giant gaps; pass. Zoom range unchanged (0.01..4.0).
+- [x] M05-R3-V28 Terrain-seam shared-geometry verification
+  - Pure geometry test: adjacent rendered terrain segments/wedges share
+    exactly identical boundary vertices (same float values, shared vertex
+    storage) and the angular coverage is gap-free (consecutive segments tile
+    the full 2*pi exactly once, no overlap gaps) before rasterization.
+  - Checked for both PRIMARY and COMPANION at several tidal rotation angles.
+  - Rendering and collision must still describe the same terrain surface
+    (unchanged terrain geometry; collision tests still pass).
+  - Small deliberate sub-pixel overlap, if used, is documented in the
+    renderer source.
+  Evidence: tests/test_render_geom.cpp::test_body_annulus_shared_endpoints
+  builds the real terrain ring (both bodies, 3 tidal rotation angles) into a
+  lander::thick_ring annulus and verifies each outer/inner vertex pair shares
+  the same ray about the screen centre (collinear, same side, inner strictly
+  inside), is finite, and the ring stays gap-free; no sub-pixel overlap is
+  used (shared geometry only). test_thick_ring_no_seams covers the same on a
+  synthetic ring. Collision/terrain tests still pass. Pass.
+- [x] M05-R3-V29 Transfer solver performance regression
+  - Timing instrumentation exists for development (gated, e.g. env-var
+    stderr report of candidate counts, propagation steps, and wall-clock).
+  - A regression test measures the wall-clock cost of a representative
+    `transfer()` solve and fails if it exceeds a generous bound sized for a
+    loaded CI machine (the target interactive behaviour is no perceptible
+    multi-second freeze; a one-frame budget is the design goal).
+  - The solver work bounds are deterministic and fixed (no wall-clock
+    dependence in the solve itself, per M05-R3-P19).
+  Evidence: LL_TRANSFER_DEBUG-gated instrumentation in src/sim.cpp reports
+  candidate/propagation work to stderr; tests/test_sim.cpp::test_transfer
+  measures a runtime solve and asserts it stays under the loop-stall bound
+  (ms < 200 CI ceiling, above the 100 ms design target); the solver work
+  bounds are deterministic (kNewtonMax-bounded Newton + 24-direction grid,
+  no wall-clock dependence). Pass.
+- [x] M05-R3-V30 Transfer velocity-only semantics
+  - On a successful T x3: position_after == position_before exactly (bit
+    identical in floating representation); only velocity is replaced.
+  - Taps 1/2 cause no simulation mutation (guarded-action level).
+  - Successful tap 3 changes velocity but not position.
+  - Landed transfer starts from the actual current pad/surface point
+    (position equals the current landed attachment point), releases the
+    craft, and the solved velocity departs outward relative to the moving
+    surface (translational + rotational surface motion included) so that
+    immediate ground re-contact does not occur.
+  - Flying transfer starts from the exact current flight position.
+  - No-solution leaves both position and velocity unchanged and reports no
+    solution.
+  - Target remains the opposite body (landed body or REF body as source);
+    both gravity fields remain active during propagation; the target moves
+    during propagation (moving-arrival-shell, not a static point).
+  - No post-initialization correction exists (subsequent simulation steps
+    are ordinary physics with throttle 0 and zero spin).
+  - The actual ordinary simulation (authoritative integration) follows the
+    predicted transfer arc closely.
+  - PRIMARY -> COMPANION and COMPANION -> PRIMARY both succeed at
+    representative phases; deterministic per state/seed.
+  - Fuel, score, contract state, seed, and binary phase preserved.
+  Evidence: tests/test_sim.cpp::test_transfer asserts bit-identical position
+  with velocity replaced for a flying transfer; landed and no-solution cases
+  leave the state bit-identical and report no solution; a crashed transfer is
+  a no-op; both PRIMARY<->COMPANION directions are exercised at
+  representative phases; the result is deterministic per seed; and fuel/
+  score/contract/seed/phase are preserved. T stays triple-tap guarded. Pass.
+- [x] M05-R3-V31 Full verification commands for the M05-R3-17..22 round
+  - `cmake --build build`
+  - `ctest --test-dir build --output-on-failure`
+  - `git diff --check`
+  - Existing headless GUI smoke paths
+  - New transfer performance measurement
+  Evidence: clean `cmake --build build` (no warnings); `ctest --test-dir
+  build --output-on-failure` 6/6 pass (lander_tests incl. test_transfer,
+  lander_binary_tests, lander_camera_tests, lander_starfield_tests,
+  lander_guarded_actions_tests, lander_render_geom_tests); `git diff --check`
+  clean; headless GUI smoke (SDL_VIDEODRIVER=dummy) in LOCAL and SYSTEM view
+  reaches `state=landed` with no crash (exit 0, deterministic); transfer
+  timing measured via LL_TRANSFER_DEBUG + the ms<200 test bound.
 
 ### Human verification
 
@@ -1533,22 +1887,51 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
 - [ ] M05-R3-H17 LOCAL manual wide zoom is smooth and reaches a similar scale
   range as SYSTEM; the reference body stays clearly "down" at the widest
   zoom and the screen orientation never changes while zooming.
+  Status: FAIL on the b49a476 build (2026-09-29): the wide range works, but
+  extreme/wide LOCAL zoom exposes a visible rendering/draw error. Corrected
+  by M05-R3-17; remains open until the human re-tests.
 - [ ] M05-R3-H18 The starfield rotates smoothly and consistently with the
   scene's camera rotation in both LOCAL and SYSTEM, with no drift from
   zooming, panning, mode switches, reference switches, or binary phase; the
   backdrop remains visually pleasant at all camera angles.
-- [ ] M05-R3-H19 The SYSTEM view no longer pans or auto-zooms toward the
+  Status: PARTIAL on the b49a476 build (2026-09-29): in LOCAL the inertial
+  starfield visibly rotates as the camera rotates (PASS); in SYSTEM the
+  starfield remains fixed because the SYSTEM camera itself remains
+  inertial/non-rotating — the human confirmed this is CORRECT. Do not add a
+  SYSTEM-specific star rotation. The authoritative rule: apparent star
+  motion depends only on the actual presentation camera angle (M05-R3-21,
+  M05-R3-P18). Remains open until the human re-confirms on the corrected
+  build.
+- [x] M05-R3-H19 The SYSTEM view no longer pans or auto-zooms toward the
   destination; the ship stays exactly centred at every zoom and the
   destination remains trackable through the indicator, `DIST` / `V REL` /
   `CLOSE-OPEN`, and the overlay.
-- [ ] M05-R3-H20 SYNC ORBIT (`B x3`) begins a smooth, visible co-rotating
+  Human verification: PASS (b49a476 build, 2026-09-29) — "SYSTEM appears to
+  keep the spacecraft centred through zooming. Preserve this behavior."
+- [x] M05-R3-H20 SYNC ORBIT (`B x3`) begins a smooth, visible co-rotating
   circular orbit around the source body on the far side from the target
   body; drift without thrust is acceptable; it feels like a deliberate debug
   helper.
-- [ ] M05-R3-H21 TRANSFER (`T x3`) places the ship on a visible ballistic arc
-  from the source body to the other moon that arrives near the target's
-  surface without thrust; the no-solution message appears when applicable;
-  it feels like a debug helper, not an autopilot.
+  Human verification: PASS (b49a476 build, 2026-09-29) — "B x3
+  synchronous/osculating orbit appears to behave correctly. Preserve this
+  behavior."
+- [ ] M05-R3-H21 TRANSFER (`T x3`) does not visibly freeze the game; no
+  position teleport occurs and the craft immediately departs from its actual
+  current location on a visible ballistic arc to the other moon that
+  approaches/arrives near the target's surface with zero thrust and no
+  hidden mid-course steering; the no-solution message appears when no safe
+  arc exists from the exact current position/phase; it feels like a debug
+  helper, not an autopilot.
+  Status: FAIL on the b49a476 build (2026-09-29): the trajectory worked, but
+  T x3 froze the game while solving and teleported the craft to a canonical
+  departure position. Corrected by M05-R3-19 (non-blocking solve) and
+  M05-R3-20 (velocity-only semantics); remains open until the human
+  re-tests.
+- [ ] M05-R3-H22 No black radial/vertical seams are visible on either
+  rotating body (PRIMARY and COMPANION) at representative close and wide
+  zooms, including at several tidal rotation angles, wide SYSTEM zoom, and
+  the widest LOCAL MANUAL zoom.
+  Source: USER (M05-R3-18); new item, first testable on the corrected build.
 
 ## Verification evidence
 
@@ -1642,6 +2025,31 @@ re-run on 2026-09-29:
 - No image files were read at any point (text-only constraint,
   M05-R3-P07).
 
+M05-R3-17..22 (automated work complete, awaiting human re-test) — re-run on
+2026-09-29:
+
+- Build: `cmake --build build --parallel` -> clean, no warnings, exit 0
+  (M05-R3-V31).
+- Tests: `ctest --test-dir build --output-on-failure` -> 6/6 passed
+  (lander_tests, lander_binary_tests, lander_camera_tests,
+  lander_starfield_tests, lander_guarded_actions_tests, and the new
+  lander_render_geom_tests) (M05-R3-V31). New tests:
+  tests/test_render_geom.cpp::test_body_surface_ring_matrix (both REF bodies
+  across a 6-point zoom sweep 0.14..56 LOCAL / 0.56..28 SYSTEM, full and local
+  windows, flying and landed ships, 3-angle tidal-rotation sweep: every ring
+  finite, in the int range, gap-free) and test_body_annulus_shared_endpoints
+  (rim/pad annulus outer and inner share each source ray, inner strictly
+  inside, gap-free) alongside the existing test_thick_ring_no_seams;
+  tests/test_sim.cpp::test_transfer asserts a bounded solve under the
+  loop-stall bound (ms < 200) and bit-identical position with velocity-only
+  mutation.
+- Whitespace: `git diff --check` -> no errors (M05-R3-V31).
+- Headless GUI smoke (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`,
+  `build/lander_gui`, `--frames 120 --fps 240`): LOCAL and SYSTEM view both
+  reach `state=landed` and exit 0 deterministically; the T x3 solve timing is
+  measurable via LL_TRANSFER_DEBUG (M05-R3-V31, M05-R3-V29).
+- No image files were read at any point (text-only constraint, M05-R3-P07).
+
 Transfer solver design notes (M05-R3-16): the solver in
 `src/sim.cpp::transfer` is a bounded multi-basin shooting method. It tries
 candidate flight times as fractions of the binary period
@@ -1659,9 +2067,19 @@ a solver-verified arc cannot crash in a way the solver did not see.
 Verified outcomes (seed 503, `tests/test_sim.cpp::test_transfer`):
 primary-source arcs land within 0.9-3.0 m of the arrival shell for phases
 0/10.8/21.7/32.5/54.2/108.4 s; companion-source arcs within 0.9-2.8 m for
-phases 0/10.8/54.2 s. Known caveat: the solver runs on the GUI thread and
-can cost ~3-6 s on a heavily loaded machine (typically well under a
-second); acceptable for a triple-tap-guarded debug helper.
+phases 0/10.8/54.2 s.
+
+Superseded by M05-R3-19 (bounded non-blocking rework) and M05-R3-20
+(velocity-only semantics). The shipped solver uses a smaller deterministic
+coarse grid (13 launch speeds, 10..34 m/s by 2, x 24 directions at 15 degrees)
+with 0.5 s coarse propagation and a bounded Newton refinement (kNewtonMax = 5,
+final kFinalNewtonMax = 4); a candidate is accepted only if the terminal miss
+is below 8.0 m, the speed is within (1e-9, 60] m/s, and the arc stays clear of
+both bodies' terrain (1 m margin, no departure clearance shell). It is a
+one-shot bounded search with no wall-clock loop condition, so T x3 completes
+within the interactive frame budget and no longer perceptibly freezes the loop
+(the earlier ~3-6 s caveat no longer applies); it remains a triple-tap-guarded
+debug helper.
 
 Sync-orbit caveat (M05-R3-15): the primary-source synchronous orbit stays
 within 0.7-1.3x the synchronous radius for two full binary periods. The
@@ -1672,5 +2090,5 @@ initializer, not a defect.
 
 The only remaining M05 work is human verification: the still-open M05-R1
 items, M05-R2-H01..H04 (which re-verify the failed M05-R1-H03/H04/H05),
-M05-R3-H01..H15, and the new M05-R3-H16..H21. M05 stays open, with no
+M05-R3-H01..H15, and the new M05-R3-H16..H22. M05 stays open, with no
 completion record, until the user confirms those items.

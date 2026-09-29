@@ -95,3 +95,18 @@ target_compile_options(lander_guarded_actions_tests PRIVATE
 
 add_test(NAME lander_guarded_actions_tests
          COMMAND lander_guarded_actions_tests)
+
+# M05-R3: pure presentation geometry for the body/pad annulus renderer,
+# tested headlessly with no SDL dependency.
+add_executable(lander_render_geom_tests
+    tests/test_render_geom.cpp
+)
+target_link_libraries(lander_render_geom_tests PRIVATE lander)
+target_compile_options(lander_render_geom_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_render_geom_tests
+         COMMAND lander_render_geom_tests)

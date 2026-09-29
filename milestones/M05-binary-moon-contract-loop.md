@@ -647,22 +647,42 @@ or hidden stabilization.
 
 ### `T x3` — ballistic inter-body transfer
 
+(Superseded 2026-09-29 by M05-R3-20: the initializer no longer repositions
+the ship to a clearance shell. The authoritative semantics are velocity-only.)
+
+- Velocity-only: T x3 changes the ship's VELOCITY to a solved ballistic-
+  transfer initial velocity and does NOT change the ship's POSITION. It
+  behaves like the circularize control: an instantaneous velocity-state
+  initializer, not a teleport.
+- At activation time t0 the departure position x0 is the ship's current
+  world position, unmodified.
 - Source: the landed body if landed, otherwise the current reference body.
 - Target: the other body.
-- Compute a ballistic arc using the actual two-body gravity of both bodies
-  and the bodies' future ephemeris positions, starting from a small clearance
-  shell above the source body and arriving near the target body's surface
-  after a chosen flight time.
+- Shooting problem: find an initial world velocity v0 and a candidate flight
+  time tau such that, starting from x0 under the actual two-body gravity of
+  both moving bodies (analytic ephemerides, both gravity fields), the
+  propagated position at t0 + tau approaches a safe arrival shell attached to
+  the moving target body.
+- Landed activation: the ship is released from its exact current surface
+  point (position unchanged); the body's translational + rotational surface
+  motion is part of the physical context, and the solved velocity must depart
+  outward sufficiently to avoid immediate ground re-contact.
 - Solve numerically (for example a shooting method with Newton iteration over
   a small set of candidate flight times); reject implausible solutions (NaN,
-  terrain penetration before arrival, terminal miss beyond tolerance); rank
-  valid solutions deterministically.
-- If a solution is found: set the ship's position and velocity once, unland
-  the ship, clear crashed state; throttle 0, angular rate 0; seed, score,
-  contract state, and phase preserved.
-- If no plausible solution exists: leave the ship state unchanged and show a
-  readable "transfer no solution" message.
-- After activation the ship flies under ordinary physics only.
+  terrain penetration, terminal miss beyond tolerance); rank valid solutions
+  deterministically. The solver has deterministic fixed work bounds and runs
+  fast enough that T x3 does not perceptibly freeze the interactive game
+  loop (M05-R3-19); correctness must not depend on wall-clock timeouts.
+- If a solution is found: replace the ship's velocity once; when landed,
+  unland the ship and clear crashed state; throttle 0, angular rate 0;
+  position bit-identical to before; seed, score, contract state, and phase
+  preserved.
+- If no plausible solution exists from the exact current position and binary
+  phase: leave the ship state (position and velocity) unchanged and show a
+  readable "transfer no solution" message. Do not teleport to manufacture a
+  solvable case.
+- After activation the ship flies under ordinary physics only: no autopilot,
+  arrival burn, auto-landing, or hidden mid-course steering.
 
 ---
 
@@ -731,7 +751,11 @@ Requirements:
 - stars are a decorative backdrop (SUPERSEDED by M05-R3-12: the starfield is
   an inertial background that rotates with the final presentation camera
   angle; it does not parallax-translate with the world and is unaffected by
-  mode, reference body, phase, or pan)
+  mode, reference body, phase, or pan). Authoritative rule (M05-R3-21):
+  apparent star motion depends only on the actual presentation camera angle —
+  no SYSTEM-specific star rotation and no LOCAL special case; a camera mode
+  whose orientation does not rotate (e.g. the current inertial SYSTEM view)
+  correctly shows a stationary starfield
 - include a minimum-size ship marker when the correctly scaled lander would be
   difficult to see, and switch to a real lander representation once it is
   readable

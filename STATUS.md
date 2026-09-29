@@ -6,12 +6,12 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M05-R3 extension (M05-R3-10..16: `R x3` guarded retry, wider LOCAL
-manual zoom, inertial starfield background, SYSTEM no-auto-pan, adaptive zoom
-display formatting, `B x3` body-synchronous orbit initializer, `T x3`
-ballistic inter-body transfer initializer) — automated work complete,
-awaiting user confirmation of H16..H21 (and the still-open M05-R1/R2/R3
-H-items)
+Phase: M05-R3 corrective round (M05-R3-17..22) automated work complete —
+awaiting human re-test of the corrected build: H17 (wide LOCAL zoom no longer
+exposes a rendering failure), H18 (starfield re-confirm: LOCAL rotates, SYSTEM
+stays correctly stationary), H21 (`T x3` no longer freezes or teleports), and
+H22 (no black radial/vertical seams on either body at close and wide zoom).
+H19 and H20 were confirmed PASS on b49a476 and remain closed. See TASKS.md.
 
 M05-R1 and M05-R2 automated work is complete, but their human-verification
 items remain open. Human verification of the M05-R2 build produced the
@@ -52,9 +52,24 @@ whitespace check clean, headless GUI smoke OK. See TASKS.md for per-item
 evidence, including the transfer solver design and the companion-source
 sync-orbit drift caveat.
 
+Human verification of that build (2026-09-29) confirmed H19 (SYSTEM
+centre-on-ship) and H20 (`B x3` sync-orbit), but exposed new findings,
+persisted as the corrective round M05-R3-17..22: H17 FAIL (the wide LOCAL zoom
+exposes a visible render/draw failure), H18 PARTIAL (the LOCAL inertial star
+rotation is correct, but the SYSTEM-fixed starfield is also correct and must
+not regress), and H21 FAIL (`T x3` freezes the interactive loop while solving
+and teleports the craft to a canonical departure position). The round fixes the
+wide-LOCAL-zoom rendering failure (M05-R3-17), fixes black terrain/body seams
+(M05-R3-18), makes `T x3` non-blocking (M05-R3-19), reworks `T x3` to change
+only velocity with no position teleport (M05-R3-20), adds a starfield
+no-regression check (M05-R3-21), and handles the b49a476 human-verification
+state (M05-R3-22). Automated work for this round is complete (2026-09-29);
+awaiting human re-test on the corrected build.
+
 All still-open human-verification items (M05-R1, M05-R2, M05-R3
-H01..H15, and the new H16..H21) remain open until explicitly confirmed by
-the user. M05 remains open and no completion record has been written.
+H01..H18, H21, and the new H22) remain open until explicitly confirmed by
+the user (H19 and H20 were confirmed PASS on the b49a476 build and are
+closed). M05 remains open and no completion record has been written.
 
 M05 turns the M04 flight simulation into the first complete game loop by
 extending the world to a compact two-body system: a 1/9-scale companion

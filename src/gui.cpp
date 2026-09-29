@@ -23,6 +23,7 @@
 #include "lander/binary.hpp"
 #include "lander/camera.hpp"
 #include "lander/guarded_actions.hpp"
+#include "lander/render_geom.hpp"
 #include "lander/sim.hpp"
 #include "lander/starfield.hpp"
 
@@ -285,14 +286,23 @@ std::string fmt_zoom(double value) {
 // never change its shape. Coordinates stay floating point here; SDL
 // quantizes to pixels.
 Vec2 to_screen(double world_x, double world_y, const lander::Camera& cam) {
-    const double dx = world_x - cam.center_x();
-    const double dy = world_y - cam.center_y();
-    const double c = std::cos(cam.angle());
-    const double s = std::sin(cam.angle());
-    const double local_x = dx * c + dy * s;
-    const double local_y = -dx * s + dy * c;
-    return {kWindowWidth / 2.0 + local_x * cam.scale(),
-            kWindowHeight / 2.0 - local_y * cam.scale()};
+    // Single source of truth for the world->screen transform (render_geom.hpp);
+    // the camera's window size equals kWindowWidth/kWindowHeight here. The
+    // pure-geometry API uses lander::Vec2; this adapts it to the renderer's
+    // local Vec2.
+    const lander::Vec2 p = lander::to_screen_point(world_x, world_y, cam);
+    return {p.x, p.y};
+}
+
+// Convert a lander::Vec2 polygon (as produced by the pure render geometry)
+// into the renderer's local Vec2 form for SDL drawing.
+std::vector<Vec2> to_vec2s(const std::vector<lander::Vec2>& in) {
+    std::vector<Vec2> out;
+    out.reserve(in.size());
+    for (const auto& v : in) {
+        out.push_back({v.x, v.y});
+    }
+    return out;
 }
 
 // ------------------------------------------------------------- primitives
@@ -305,17 +315,30 @@ void fill_poly(SDL_Renderer* renderer, const std::vector<Vec2>& pts,
     if (pts.size() < 3) {
         return;
     }
+    // M05-R3-17: a polygon with even one non-finite vertex is rejected rather
+    // than pushed through the double->int casts below, so a degenerate or
+    // wide-zoom transform can never turn a single bad point into a bogus huge
+    // fill (integer overflow / NaN / huge-coordinate conversion).
     double top = 1e30;
     double bottom = -1e30;
     for (const auto& p : pts) {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
+            return;
+        }
         top = std::min(top, p.y);
         bottom = std::max(bottom, p.y);
     }
+    const double kIntMax = 1.0e9;  // clamp before the int casts (out-of-range
+                                   // double -> int is undefined behaviour)
+    const int row_begin = std::max(
+        0, static_cast<int>(std::floor(std::clamp(top, -kIntMax, kIntMax))));
+    const int row_end = std::min(
+        kWindowHeight - 1,
+        static_cast<int>(std::ceil(std::clamp(bottom, -kIntMax, kIntMax))));
+    if (row_end < row_begin) {
+        return;
+    }
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, alpha);
-    const int row_begin =
-        std::max(0, static_cast<int>(std::floor(top)));
-    const int row_end =
-        std::min(kWindowHeight - 1, static_cast<int>(std::ceil(bottom)));
     const int n = static_cast<int>(pts.size());
     for (int row = row_begin; row <= row_end; ++row) {
         const double yc = row + 0.5;
@@ -325,13 +348,18 @@ void fill_poly(SDL_Renderer* renderer, const std::vector<Vec2>& pts,
             const auto& b = pts[(i + 1) % n];
             if ((a.y > yc) != (b.y > yc)) {
                 const double t = (yc - a.y) / (b.y - a.y);
-                xs.push_back(a.x + t * (b.x - a.x));
+                const double x = a.x + t * (b.x - a.x);
+                if (std::isfinite(x)) {
+                    xs.push_back(x);
+                }
             }
         }
         std::sort(xs.begin(), xs.end());
         for (size_t i = 0; i + 1 < xs.size(); i += 2) {
-            const int x0 = static_cast<int>(std::floor(xs[i]));
-            const int x1 = static_cast<int>(std::ceil(xs[i + 1]) - 1);
+            const int x0 = static_cast<int>(
+                std::floor(std::clamp(xs[i], -kIntMax, kIntMax)));
+            const int x1 = static_cast<int>(
+                std::ceil(std::clamp(xs[i + 1], -kIntMax, kIntMax)) - 1);
             if (x1 >= x0) {
                 SDL_FRect r{static_cast<float>(x0), static_cast<float>(row),
                             static_cast<float>(x1 - x0 + 1), 1.0f};
@@ -419,63 +447,45 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
         u_end = s_target + half_arc;
     }
 
-    // Full bodies use an adaptive sample count so the contour stays smooth
-    // at system scale without wasting vertices up close; local windows keep
-    // the M04 fixed lattice.
-    const int samples =
-        full_body ? std::clamp(static_cast<int>(C * scale / 4.0), 64, 4096)
-                  : 4096;
-
-    std::vector<Vec2> outer;
-    std::vector<Vec2> inner;
-    auto push_point = [&](double u) {
-        const double theta = terrain.angle_at_arc(u) + body_rotation;
-        const double r = terrain.surface_radius_at_arc(u);
-        outer.push_back(to_screen(bpos.x + std::cos(theta) * r,
-                                  bpos.y + std::sin(theta) * r, cam));
-        inner.push_back(
-            to_screen(bpos.x + std::cos(theta) * (r - 0.75),
-                      bpos.y + std::sin(theta) * (r - 0.75), cam));
-    };
-    if (full_body) {
-        for (int i = 0; i < samples; ++i) {
-            push_point(i * C / samples);
-        }
-    } else {
-        for (int i =
-                   static_cast<int>(std::floor(u_start / C * samples));
-             i <= static_cast<int>(std::ceil(u_end / C * samples)); ++i) {
-            push_point(i * C / samples);
-        }
-    }
-    if (outer.size() < 2) {
+    // The surface is one continuous, shared-vertex mesh (M05-R3-18): an
+    // interior fill plus two radial annulus bands built from the same ring
+    // vertices. Rendering the rim/pads as single closed polygons, instead of
+    // hundreds of independent thick-line quads whose per-segment offsets never
+    // met at the joints, removes the black radial seams and the per-segment
+    // overdraw that banded the surface at wide zooms (M05-R3-17), while the
+    // tessellation count stays bounded at every zoom.
+    lander::SurfaceRing ring = lander::body_surface_ring(
+        body, bpos, cam, lander::Vec2{ship.x, ship.y}, full_body,
+        body_rotation);
+    const std::vector<lander::Vec2>& l_outer = ring.outer;
+    if (l_outer.size() < 2) {
         return;
     }
+    const lander::Vec2 l_centre = lander::to_screen_point(bpos.x, bpos.y, cam);
 
     std::vector<Vec2> polygon;
-    polygon.reserve(outer.size() + 2);
-    for (const Vec2& p : outer) {
-        polygon.push_back(p);
+    polygon.reserve(l_outer.size() + 2);
+    for (const auto& p : l_outer) {
+        polygon.push_back({p.x, p.y});
     }
     if (!full_body) {
         // Close the sampled arc on the interior/downward side of the surface,
         // well outside the viewport, so the moon body does not show radial
         // chords back to the moon centre.
         const double bottom = kWindowHeight + 512.0;
-        polygon.push_back({outer.back().x, bottom});
-        polygon.push_back({outer.front().x, bottom});
+        polygon.push_back({polygon.back().x, bottom});
+        polygon.push_back({polygon.front().x, bottom});
     }
     fill_poly(renderer, polygon, make_color(66, 70, 82));
 
-    const size_t rim_segments = full_body ? outer.size()
-                                          : outer.size() - 1;
-    for (size_t i = 0; i < rim_segments; ++i) {
-        const size_t j = (i + 1) % outer.size();
-        draw_thick_line(renderer, inner[i], inner[j], 8.0,
-                        make_color(58, 62, 74));
-        draw_thick_line(renderer, outer[i], outer[j], 2.5,
-                        make_color(125, 130, 145));
-    }
+    // Dark inner rim: one continuous 8-px band centred on the inner ring.
+    fill_poly(renderer,
+              to_vec2s(lander::thick_ring(ring.inner, l_centre, 4.0, 4.0)),
+              make_color(58, 62, 74));
+    // Light surface edge: one continuous 2.5-px band centred on the surface.
+    fill_poly(renderer,
+              to_vec2s(lander::thick_ring(ring.outer, l_centre, 1.25, 1.25)),
+              make_color(125, 130, 145));
 
     // Small surface ticks are useful up close; at system scale they would
     // just add noise.
@@ -514,30 +524,34 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
             (is_base && highlight_base)
                 ? make_color(255, 196, 64)
                 : make_color(72, 210, 120);
+        // The pad is one continuous annulus sector (no per-segment seams):
+        // a 4-px band on the pad surface and a 1.5-px highlight just above it.
         const int segments = 24;
+        std::vector<lander::Vec2> pad_ring;
+        std::vector<lander::Vec2> pad_ring_hi;
+        pad_ring.reserve(segments);
+        pad_ring_hi.reserve(segments);
         for (int i = 0; i < segments; ++i) {
-            const double u0 =
+            const double u =
                 pad.center_arc - pad.half_width +
                 (2.0 * pad.half_width * i / segments);
-            const double u1 =
-                pad.center_arc - pad.half_width +
-                (2.0 * pad.half_width * (i + 1) / segments);
-            const double t0 = terrain.angle_at_arc(u0) + body_rotation;
-            const double t1 = terrain.angle_at_arc(u1) + body_rotation;
-            const Vec2 a = to_screen(bpos.x + std::cos(t0) * pad.radius,
-                                     bpos.y + std::sin(t0) * pad.radius, cam);
-            const Vec2 b = to_screen(bpos.x + std::cos(t1) * pad.radius,
-                                     bpos.y + std::sin(t1) * pad.radius, cam);
-            draw_thick_line(renderer, a, b, 4.0, pad_color);
-            const Vec2 ah =
-                to_screen(bpos.x + std::cos(t0) * (pad.radius + 0.25),
-                          bpos.y + std::sin(t0) * (pad.radius + 0.25), cam);
-            const Vec2 bh =
-                to_screen(bpos.x + std::cos(t1) * (pad.radius + 0.25),
-                          bpos.y + std::sin(t1) * (pad.radius + 0.25), cam);
-            draw_thick_line(renderer, ah, bh, 1.5,
-                            make_color(205, 255, 220), 220);
+            const double t = terrain.angle_at_arc(u) + body_rotation;
+            pad_ring.push_back(
+                lander::to_screen_point(bpos.x + std::cos(t) * pad.radius,
+                                        bpos.y + std::sin(t) * pad.radius,
+                                        cam));
+            pad_ring_hi.push_back(
+                lander::to_screen_point(
+                    bpos.x + std::cos(t) * (pad.radius + 0.25),
+                    bpos.y + std::sin(t) * (pad.radius + 0.25), cam));
         }
+        fill_poly(renderer,
+                  to_vec2s(lander::thick_ring(pad_ring, l_centre, 2.0, 2.0)),
+                  pad_color);
+        fill_poly(renderer,
+                  to_vec2s(lander::thick_ring(pad_ring_hi, l_centre, 0.75,
+                                              0.75)),
+                  make_color(205, 255, 220), 220);
 
         const double tc =
             terrain.angle_at_arc(pad.center_arc) + body_rotation;
