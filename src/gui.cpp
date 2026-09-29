@@ -553,13 +553,16 @@ void draw_lander(SDL_Renderer* renderer, const lander::State& s,
         const Vec2 p = to_screen(s.x, s.y, cam);
         const Color marker =
             s.crashed ? make_color(158, 64, 52) : make_color(235, 240, 250);
-        fill_rect(renderer, static_cast<int>(p.x) - 3,
-                  static_cast<int>(p.y) - 3, 7, 7, marker);
-        const double c = std::cos(s.angle);
-        const double sn = std::sin(s.angle);
-        const Vec2 tip =
-            to_screen(s.x + c * 4.0, s.y + sn * 4.0, cam);
-        draw_thick_line(renderer, p, tip, 1.0, marker, 200);
+        const lander::MarkerTriangle tri =
+            lander::marker_triangle(p.x, p.y, s.angle, cam.angle(), 9.0);
+        fill_poly(
+            renderer,
+            {Vec2{tri.nose.x, tri.nose.y},
+             Vec2{tri.left.x, tri.left.y},
+             Vec2{tri.right.x, tri.right.y}},
+            marker);
+        draw_thick_line(renderer, p, {tri.nose.x, tri.nose.y}, 1.0, marker,
+                        220);
         return;
     }
 
@@ -687,7 +690,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
     const Color amber(255, 196, 64);
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    fill_rect(renderer, 8, 8, 330, 330, panel, 160);
+    fill_rect(renderer, 8, 8, 330, 360, panel, 160);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
     draw_text(renderer, "LUNAR LANDER", 18, 16, 3, white);
@@ -787,9 +790,27 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
                             fmt1(omg * 180.0 / lander::kPi) + " D/S",
               18, 262, 2, white);
 
+    const double range_rate = lander::target_range_rate(
+        {s.x, s.y}, {s.vx, s.vy}, {base_x, base_y}, dest_vel);
+    std::string rate_label;
+    Color rate_color = white;
+    if (range_rate <= -0.05) {
+        rate_label = "CLOSING";
+        rate_color = green;
+    } else if (range_rate >= 0.05) {
+        rate_label = "OPENING";
+        rate_color = amber;
+    } else {
+        rate_label = "HOLDING";
+    }
+    char rate_buffer[64];
+    std::snprintf(rate_buffer, sizeof rate_buffer, "RATE  %+.1f M/S  %s",
+                  range_rate, rate_label.c_str());
+    draw_text(renderer, rate_buffer, 18, 282, 2, rate_color);
+
     char score_line[32];
     std::snprintf(score_line, sizeof score_line, "SCORE %d", s.score);
-    draw_text(renderer, score_line, 18, 282, 2, white);
+    draw_text(renderer, score_line, 18, 302, 2, white);
 
     std::string status = "IN FLIGHT";
     Color status_color = white;
@@ -800,7 +821,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
         status = "CRASHED";
         status_color = red;
     }
-    draw_text(renderer, status, 18, 308, 2, status_color);
+    draw_text(renderer, status, 18, 328, 2, status_color);
 
     // Control help along the bottom.
     draw_text(renderer, "UP/W INC  DN/S DEC  X CUT", 18,
@@ -1266,6 +1287,19 @@ int main(int argc, char** argv) {
                                          render_state, ref_pos));
         const double target_angle =
             lander::local_up_angle(render_state, ref_pos);
+        const int nav_dest = sim.contract().destination_body;
+        const lander::Vec2 nav_dest_pos = bin.position(nav_dest, t_present);
+        const double nav_dest_r =
+            bin.body(nav_dest).terrain.surface_radius_at_arc(0.0);
+        const double nav_dest_x =
+            nav_dest_pos.x + std::cos(lander::kSpawnAngle) * nav_dest_r;
+        const double nav_dest_y =
+            nav_dest_pos.y + std::sin(lander::kSpawnAngle) * nav_dest_r;
+        if (cam.system_view()) {
+            cam.set_system_destination(nav_dest_x, nav_dest_y);
+        } else {
+            cam.clear_system_destination();
+        }
         cam.update(dt, render_state.x, render_state.y, altitude,
                    pending_wheel, pending_cam_toggle, target_angle);
         pending_wheel = 0;
@@ -1308,6 +1342,27 @@ int main(int argc, char** argv) {
         draw_contract_banner(renderer, last_completed_seen,
                              contract_banner_time);
         draw_landed_banner(renderer, s);
+        if (cam.system_view()) {
+            const lander::OffscreenIndicator indicator =
+                lander::offscreen_target_indicator(nav_dest_x, nav_dest_y,
+                                                   cam);
+            if (!indicator.on_screen) {
+                const Color amber(255, 196, 64);
+                const double len = 14.0;
+                const Vec2 tip{indicator.x + indicator.dir_x * len,
+                               indicator.y + indicator.dir_y * len};
+                const Vec2 perp{-indicator.dir_y, indicator.dir_x};
+                const Vec2 left{indicator.x - indicator.dir_x * len * 0.7 +
+                                    perp.x * len * 0.55,
+                                 indicator.y - indicator.dir_y * len * 0.7 +
+                                     perp.y * len * 0.55};
+                const Vec2 right{indicator.x - indicator.dir_x * len * 0.7 -
+                                     perp.x * len * 0.55,
+                                  indicator.y - indicator.dir_y * len * 0.7 -
+                                      perp.y * len * 0.55};
+                fill_poly(renderer, {tip, left, right}, amber);
+            }
+        }
         draw_overlay(renderer, s, paused);
         SDL_RenderPresent(renderer);
 

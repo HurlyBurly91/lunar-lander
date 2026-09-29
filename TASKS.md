@@ -1,7 +1,7 @@
 # Active Task
 
 Milestone: M05
-Request: M05-R1
+Request: M05-R1, M05-R2
 State: AWAITING HUMAN VERIFICATION
 
 ## Bootstrap note
@@ -13,11 +13,29 @@ group: the binary moon and the first contract loop, per the M05 milestone
 specification (milestones/M05-binary-moon-contract-loop.md).
 
 All automated-verification work for M05-R1 (V01..V14 and the derived
-implementation tasks D01..D06) is complete; see the per-item evidence below
-and the "Verification evidence" summary. The milestone is now awaiting human
-verification: every H-item (H01..H07) remains open and is not closed until the
-user confirms each one. No M05 completion record is written and M05 is not set
-to COMPLETE until that human acceptance happens.
+implementation tasks D01..D06) and for the M05-R2 camera/navigation follow-up
+is complete; see the per-item evidence below and the "Verification evidence"
+summary. The milestone is now awaiting human verification: every open
+H-item remains open and is not closed until the user confirms each one. No M05
+completion record is written and M05 is not set to COMPLETE until that human
+acceptance happens.
+
+M05-R1 human verification (2026-09-28) found three presentation failures:
+(1) the local camera snaps/teleports when the automatically selected reference
+body changes; (2) the SYSTEM view gives no way to tell whether the craft is
+closing on or opening from the contract destination once it leaves the
+viewport; (3) at SYSTEM scale the ship degenerates into a small white square.
+The user also clarified the intended camera model: LOCAL = fly relative to the
+gravitationally relevant body; SYSTEM = understand and navigate the binary.
+This created a new follow-up request group, M05-R2 (see the `## Request M05-R2`
+section below), and the ledger is back to ACTIVE. Per the human-feedback rule
+a failed human-verification item is not completed by code alone: the M05-R1
+items implicated by these failures (H03 spatial/no-teleport, H04 interception
+feel, H05 local-camera usability) remain open and are re-verified through
+M05-R2. The `User requirements` ... `Derived implementation tasks` sections in
+this file record M05-R1; the `## Request M05-R2` section records the active
+follow-up. M05 stays open (not COMPLETE, no record) until all M05-R2 automated
+work passes and the user re-confirms every open H-item.
 
 ## User requirements
 
@@ -168,14 +186,16 @@ to COMPLETE until that human acceptance happens.
   Source: USER (spec, "Camera modes")
   Evidence: tests/test_camera.cpp (AUTO/MANUAL anchor + SYSTEM-mode tests); tests/test_sim.cpp::test_interpolated_state
 
-- [x] M05-R1-16 Reference body: may drive local HUD altitude, radial/
-  tangential display, local camera orientation, developer circularize, and
-  landing information, but must not control which gravitational fields are
-  active. Chosen deterministically; near a surface it is the locally relevant
-  body; avoid rapid flicker near the crossover region using a simple
-  deterministic hysteresis rule.
+- [x] M05-R1-16 SUPERSEDED by M05-R2-01. Reference body: may drive local HUD
+  altitude, radial/ tangential display, local camera orientation, developer
+  circularize, and landing information, but must not control which
+  gravitational fields are active. Chosen deterministically; near a surface it
+  is the locally relevant body; avoid rapid flicker near the crossover region
+  using a simple deterministic hysteresis rule.
   Source: USER (spec, "Reference body versus physics")
-  Evidence: tests/test_sim.cpp::test_reset_state; ::test_landing_rules (reference_body() tracks the landed/target body with 0.8x hysteresis in src/sim.cpp::update_reference_body)
+  Evidence: M05-R1 shipped distance-based 0.8x hysteresis in
+  src/sim.cpp::update_reference_body; M05-R2-01 replaces the selection law with
+  local gravitational influence while preserving the landed-body rule.
 
 - [x] M05-R1-17 HUD: preserve the M04 HUD where practical; add compact
   two-body information: reference body, contract destination body/base,
@@ -483,6 +503,278 @@ to COMPLETE until that human acceptance happens.
   Files: tests/test_binary.cpp, tests/test_sim.cpp, tests/test_camera.cpp, CMakeLists.txt
   Evidence: ctest --test-dir build -> 4/4 passed
 
+## Request M05-R2 (smooth local camera and SYSTEM navigation)
+
+Source: USER (human-verification feedback, 2026-09-28, after M05-R1 runtime
+review)
+
+M05-R1 passed build/tests, but human verification found three presentation
+failures and clarified the intended camera model. This request fixes the
+presentation only: (1) a smooth, shortest-path local camera orientation
+transition when the reference body changes; (2) minimal SYSTEM-view navigation
+(dynamic framing + offscreen target indicator + signed CLOSING/OPENING range
+rate); (3) an orientation-preserving minimum-size ship marker instead of a
+white square. It does not close M05 and does not start M06. No trajectory
+prediction, maneuver nodes, autopilot, or other flight-computer features.
+
+### User requirements
+
+- [x] M05-R2-01 Reference-body selection is by local gravitational influence:
+  influence_i = mu_i / distance_i^2 (distance from the spacecraft to body i's
+  centre). The selected reference is the body with the larger influence. Use a
+  deterministic hysteresis so the reference does not oscillate at the exact
+  crossover (switch only across a margin). While landed, the reference is the
+  landed body (unchanged from M05-R1). A reference-body change is
+  presentation/navigation state only and must never enable or disable a
+  gravitational field.
+  Source: USER (camera clarification)
+  Evidence: tests/test_sim.cpp::test_reference_body_influence
+
+- [x] M05-R2-02 Local camera orientation model (AUTO and MANUAL): screen up
+  points local-radial outward from the reference body's centre, screen down
+  points toward the reference body's centre, screen right = local tangent.
+  Preserve the exact M04 spacecraft screen anchor and the useful near-surface
+  AUTO zoom behaviour from M04.
+  Source: USER (camera clarification)
+  Evidence: tests/test_camera.cpp::test_snap_and_rotation,
+  test_full_revolution_anchor_and_zoom, test_auto_zoom_readability
+
+- [x] M05-R2-03 Smooth camera orientation transition on reference-body change:
+  when the reference body changes, interpolate the local camera orientation to
+  the new body's radial-up over the SHORTEST angular path over a short fixed
+  time. No snap/teleport of the frame. Presentation-only: it must not change
+  spacecraft state, world coordinates, gravity, or the reference-body selection
+  result. The standing M05 human requirement "no visible coordinate-frame
+  teleport when the reference body or camera view changes" must hold.
+  Source: USER (issue 1)
+  Evidence: tests/test_camera.cpp::test_angle_transition_shortest_path,
+  test_angle_transition_preserves_simulation
+
+- [x] M05-R2-04 Bounded local AUTO zoom: keep the local AUTO zoom within
+  readable presentation bounds, not merely mathematical bounds. The spacecraft
+  must remain large enough to read attitude and thrust during normal surface
+  flight and at overview altitude. Preserve the M04 anchor and near-surface
+  AUTO zoom behaviour; if the existing `overview_zoom` already satisfies that
+  visual readability requirement, preserve it, otherwise raise the AUTO overview
+  floor until it does. Do not zoom indefinitely outward merely because altitude
+  grows. Long-range navigation is NOT solved by zooming AUTO/SYSTEM out until
+  the ship and destination   both fit.
+  Source: USER (camera clarification, 2026-09-28)
+  Evidence: tests/test_camera.cpp::test_auto_zoom_readability
+
+- [x] M05-R2-05 SYSTEM view is the wide inertial navigation view: preserve true
+  world scale (no fake distance compression), keep SYSTEM inertial (unrotated),
+  keep the spacecraft reasonably visible/near centre, and do NOT require both
+  bodies plus the spacecraft to remain   on screen at all distances.
+  Source: USER (issue 2, camera clarification)
+  Evidence: tests/test_camera.cpp::test_system_mode_basic,
+  test_system_destination_framing, test_offscreen_indicator
+
+- [x] M05-R2-06 SYSTEM dynamic framing: when practical (both the spacecraft and
+  the current contract destination can be framed at a readable, true-world
+  scale), frame them together using presentation-only dynamic zoom/panning.
+  Preserve true world geometry; no coordinate scaling/compression. When both
+  cannot be framed readably, fall back to M05-R2-07 (  offscreen indicator).
+  Source: USER (issue 2)
+  Evidence: tests/test_camera.cpp::test_system_destination_framing
+
+- [x] M05-R2-07 Offscreen target-direction indicator: when the contract
+  destination is outside the SYSTEM viewport, draw a clear edge/direction
+  indicator pointing toward it, computed from true world coordinates (direction
+  from the spacecraft, or viewport centre,   to the target).
+  Source: USER (issue 2, camera clarification)
+  Evidence: tests/test_camera.cpp::test_offscreen_indicator
+
+- [x] M05-R2-08 Signed target range rate in the HUD: expose the signed closing
+  speed to the current contract destination,
+  range_rate = dot(relative_velocity_to_target, target_direction),
+  where the relative velocity and direction use body-relative target geometry
+  and velocity consistent with M05-R1-08. Present the sign unambiguously as
+  CLOSING (range decreasing) vs OPENING (range increasing). Retain the existing
+  distance and useful relative-velocity readouts. Do not add trajectory
+  prediction, maneuver nodes, autopilot, or any fake   navigation assistance.
+  Source: USER (issue 2, camera clarification)
+  Evidence: tests/test_sim.cpp::test_target_range_rate; src/gui.cpp renders
+  RATE/CLOSING/OPENING/HOLDING beside DIST/DV/OMG
+
+- [x] M05-R2-09 Oriented minimum-size ship marker: at SYSTEM scale, replace the
+  white-square minimum-size marker with a small orientation-preserving craft
+  marker (chevron/triangle, or a minimum-screen-size rendering of the lander
+  silhouette) that visibly communicates spacecraft attitude and does not look
+  like a stray pixel/block.
+  Source: USER (issue 3)
+  Evidence: tests/test_camera.cpp::test_marker_triangle_orientation;
+  src/gui.cpp::draw_lander uses lander::marker_triangle
+
+### Preserve / constraints
+
+- [x] M05-R2-P01 Preserve all M05-R1 physics and reference-body selection
+  semantics (deterministic selection, both fields always active, no hidden
+  assistance). Do not change spacecraft state, world coordinates, or gravity to
+  hide the camera transition.
+  Source: USER (issue 1)
+  Evidence: tests/test_sim.cpp full suite; test_angle_transition_preserves_simulation
+
+- [x] M05-R2-P02 Preserve true world geometry everywhere: no fake distance
+  compression, transfer-distance multiplier, or hidden velocity scaling.
+  Source: USER (issue 2)
+  Evidence: camera/HUD indicator tests use unscaled world coordinates
+
+- [x] M05-R2-P03 Preserve the exact M04 spacecraft screen anchor, the fixed-step
+  simulation architecture (fixed_dt = 1/120, semi-implicit Euler), and the
+  authoritative presentation-time render interpolation.
+  Source: USER (camera clarification)
+  Evidence: unchanged fixed-step simulation tests and camera anchor tests
+
+- [x] M05-R2-P04 SYSTEM remains an inertial (unrotated) navigation view; the
+  local (AUTO/MANUAL) view remains the only body-radial-rotated view.
+  Source: USER (camera clarification)
+  Evidence: tests/test_camera.cpp::test_system_mode_basic
+
+- [x] M05-R2-P05 No trajectory prediction, maneuver nodes, autopilot, or fake
+  navigation assistance; M05-R1-P05 non-goals otherwise unchanged.
+  Source: USER (issue 2)
+  Evidence: diff limited to camera framing, indicator, HUD readout, marker
+
+### Automated verification
+
+- [x] M05-R2-V01 Gravitational-influence reference selection: at a range of
+  points the selected reference is the body with the larger mu_i/d_i^2; the
+   rule is deterministic and, while landed, equals the landed body.
+  Source: USER (camera clarification)
+  Evidence: tests/test_sim.cpp::test_reference_body_influence passes
+
+- [x] M05-R2-V02 Reference hysteresis: over a deterministic sweep of positions
+  across the crossover region the reference does not oscillate (it holds across
+  the    hysteresis margin and switches at most once per crossing).
+  Source: USER (camera clarification)
+  Evidence: tests/test_sim.cpp::test_reference_body_influence margin/flip cases
+
+- [x] M05-R2-V03 Smooth shortest-path camera transition: interpolating the
+  local camera orientation from one body's radial-up to a different body's
+  radial-up follows the shortest angular path (stays within the minimal arc,
+  never the long way), and the transition does not alter authoritative state
+   (ship x/y/vx/vy/angle, fuel, sim_time, or the selected reference body).
+  Source: USER (issue 1, camera clarification)
+  Evidence: tests/test_camera.cpp::test_angle_transition_shortest_path,
+  test_angle_transition_preserves_simulation
+
+- [x] M05-R2-V04 SYSTEM framing / target-indicator geometry uses true
+  coordinates: the offscreen indicator direction equals the true world angle to
+  the target; the framing centre/zoom are derived from unscaled world positions
+   (no compression factor applied to coordinates).
+  Source: USER (issue 2, camera clarification)
+  Evidence: tests/test_camera.cpp::test_system_destination_framing,
+  test_offscreen_indicator
+
+- [x] M05-R2-V05 Signed range-rate sign: range_rate is negative (CLOSING) for
+  an approaching target and positive (OPENING) for a receding target, computed
+  from body-relative geometry (ship minus target velocity dotted with the
+   ship-to-target unit direction).
+  Source: USER (issue 2, camera clarification)
+  Evidence: tests/test_sim.cpp::test_target_range_rate
+
+- [x] M05-R2-V06 Minimum-size marker orientation: the marker geometry helper,
+  if independently testable, produces vertices that rotate with the spacecraft
+  attitude angle (   attitude is encoded in the marker, not lost to a square).
+  Source: USER (issue 3)
+  Evidence: tests/test_camera.cpp::test_marker_triangle_orientation
+
+- [x] M05-R2-V07 Build succeeds: cmake --build build
+  Source: USER
+  Evidence: cmake --build build -> clean, exit 0
+
+- [x] M05-R2-V08 Full test suite passes:
+  ctest --test-dir build --output-on-failure
+  Source: USER
+  Evidence: ctest --test-dir build --output-on-failure -> 4/4 passed
+
+- [x] M05-R2-V09 Pass: git diff --check
+  Source: USER
+  Evidence: git diff --check -> no errors
+
+### Human verification
+
+- [ ] M05-R2-H01 When the reference body changes, the local camera rotates
+  smoothly to the new body's radial-up (no snap/teleport), and near-surface
+  local flight still feels like M04 (readable zoom, stable frame). Re-verifies
+  M05-R1-H05.
+  Source: USER (issue 1, camera clarification)
+
+- [ ] M05-R2-H02 In SYSTEM view, with the destination offscreen, the edge
+  direction indicator clearly points toward it and the HUD CLOSING/OPENING
+  speed plus distance make navigation legible without needing both bodies on
+  screen. Re-verifies M05-R1-H03 and M05-R1-H04.
+  Source: USER (issue 2, camera clarification)
+
+- [ ] M05-R2-H03 The minimum-size ship marker now reads as a small oriented
+  craft (chevron/triangle/silhouette) showing attitude, not a white square, in
+  SYSTEM view.
+  Source: USER (issue 3)
+
+- [ ] M05-R2-H04 Long-range navigation does NOT rely on zooming AUTO/SYSTEM
+  until the ship and destination both fit; the spacecraft stays readable.
+  Source: USER (camera clarification)
+
+### Derived implementation tasks
+
+- [x] M05-R2-D01 Add a pure, testable reference-body helper (a free function
+  e.g. lander::reference_body_for(mu0, mu1, d0, d1, current) or a method on
+  Simulation) implementing influence = mu/d^2 selection with a deterministic
+  hysteresis margin, and wire it into update_reference_body() (landed => landed
+  body). No gravity change.
+  Source: DERIVED
+  Depends: M05-R2-01, M05-R2-P01
+  Files: include/lander/sim.hpp, src/sim.cpp
+  Evidence: lander::reference_body_for (margin 1.2) in include/lander/sim.hpp
+  and src/sim.cpp; Simulation::update_reference_body now uses it while landed
+  state still forces state_.landed_body; tests/test_sim.cpp::
+  test_reference_body_influence passes.
+
+- [x] M05-R2-D02 Add a smooth shortest-path orientation transition to the
+  camera: a small state easing the current camera angle toward the target
+  radial-up over a fixed duration via shortest-arc (signed angular difference)
+  interpolation. Presentation-only; must not touch sim state.
+  Source: DERIVED
+  Depends: M05-R2-02, M05-R2-03, M05-R2-P01
+  Files: include/lander/camera.hpp, src/gui.cpp
+  Evidence: Camera::update_angle smoothsteps over the shortest arc
+
+- [x] M05-R2-D03 Verify and, if necessary, raise the local AUTO overview zoom
+  floor so the spacecraft remains visually readable (attitude and thrust
+  discernible) at overview altitude; preserve the existing M04 near-surface
+  AUTO behaviour and preserve `overview_zoom` if it already satisfies the
+  readability requirement.
+  Source: DERIVED
+  Depends: M05-R2-04, M05-R2-P03
+  Files: include/lander/camera.hpp, src/gui.cpp, tests/test_camera.cpp
+  Evidence: overview zoom already readable; test_auto_zoom_readability asserts it
+
+- [x] M05-R2-D04 Implement SYSTEM presentation framing: dynamic zoom/pan that
+  frames spacecraft + contract destination while both are readable; otherwise
+  keep the spacecraft centred and draw an offscreen direction indicator toward
+  the destination, all from true world geometry.
+  Source: DERIVED
+  Depends: M05-R2-05, M05-R2-06, M05-R2-07
+  Files: include/lander/camera.hpp, src/gui.cpp
+  Evidence: system_frame_zoom/offscreen_target_indicator plus GUI edge arrow
+
+- [x] M05-R2-D05 Add a pure signed target range-rate helper
+  (range_rate = dot(ship_vel - target_vel, unit(ship_pos - target_pos))) and
+  render CLOSING/OPENING + distance in the HUD, retaining existing readouts.
+  Source: DERIVED
+  Depends: M05-R2-08
+  Files: include/lander/sim.hpp, src/gui.cpp
+  Evidence: lander::target_range_rate and HUD RATE/CLOSING/OPENING line
+
+- [x] M05-R2-D06 Replace the SYSTEM white-square minimum marker with an
+  orientation-preserving chevron/triangle (or minimum-size lander silhouette)
+  driven by the spacecraft attitude angle, exposed as a pure geometry helper.
+  Source: DERIVED
+  Depends: M05-R2-09
+  Files: include/lander/camera.hpp, src/gui.cpp
+  Evidence: lander::marker_triangle rendered in draw_lander
+
 ## Verification evidence
 
 Automated execution summary (all re-run this session):
@@ -504,3 +796,23 @@ Automated execution summary (all re-run this session):
 
 Human verification (H01..H07) is the only remaining gate and must be confirmed
 by the user before M05 is closed out to COMPLETE.
+
+M05-R2 (automated work complete, awaiting human re-verification):
+
+- Build: `cmake --build build` -> clean, exit 0 (M05-R2-V07).
+- Tests: `ctest --test-dir build --output-on-failure` -> 4/4 passed
+  (M05-R2-V08). The new/updated tests cover gravitational-influence
+  reference selection and hysteresis, the smooth shortest-path camera
+  transition without modifying authoritative state, local AUTO zoom
+  readability, SYSTEM destination framing, true-coordinate offscreen
+  indicator geometry, signed CLOSING/OPENING range-rate sign, and
+  oriented minimum-size marker geometry.
+- Whitespace: `git diff --check` -> no errors (M05-R2-V09).
+- Headless GUI smoke (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`,
+  `build/lander_gui`): default spawn, `--system-view`, and
+  `--orbit-demo --system-view` all ran for 120 frames and exited 0.
+
+The only remaining M05 work is human verification: M05-R2-H01..H04 (which
+re-verify failed M05-R1-H03/H04/H05) and any still-open M05-R1 human
+items. M05 stays open, with no completion record, until the user confirms
+those items.

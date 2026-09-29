@@ -849,6 +849,95 @@ int drop_on(lander::Simulation& sim, int body, int pad_index) {
     return run_to_contact(sim);
 }
 
+// M05-R2-V01: reference-body selection follows local gravitational influence
+// with deterministic hysteresis, still honors the landed body, and does not
+// flicker during a stable primary orbit.
+void test_reference_body_influence() {
+    // Pure selection rule.
+    check(lander::reference_body_for(81.0, 1.0, 9.0, 1.0, 0) == 0,
+          "equal influence keeps the primary");
+    check(lander::reference_body_for(81.0, 1.0, 9.0, 1.0, 1) == 1,
+          "equal influence keeps the companion");
+    check(lander::reference_body_for(81.0, 1.0, 9.0, 2.0, 0) == 0,
+          "primary is kept below the switching margin");
+    check(lander::reference_body_for(81.0, 1.0, 10.0, 1.0, 1) == 1,
+          "companion is kept below the switching margin");
+    check(lander::reference_body_for(81.0, 1.0, 10.0, 1.0, 0) == 1,
+          "companion wins past the switching margin");
+    check(lander::reference_body_for(81.0, 1.0, 1.0, 10.0, 1) == 0,
+          "primary wins past the switching margin");
+    check(lander::reference_body_for(81.0, 1.0, 0.0, 1.0, 0) == 0,
+          "zero primary distance dominates");
+    check(lander::reference_body_for(81.0, 1.0, 1.0, 0.0, 1) == 1,
+          "zero companion distance dominates");
+    check(lander::reference_body_for(81.0, 1.0, 0.0, 0.0, 0) == 0,
+          "both zero keeps the primary");
+    check(lander::reference_body_for(81.0, 1.0, 0.0, 0.0, 1) == 1,
+          "both zero keeps the companion");
+
+    const lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 71;
+
+    // Near the companion, one step selects the companion.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        sim.set_state(state_relative(sim.binary(), 1, 0.0, 8.0, 0.0, 0.0, 0.0));
+        sim.advance(dt, {});
+        check(sim.reference_body() == 1, "near the companion, the reference is the companion");
+    }
+
+    // Far from the companion, the primary reference is stable for a second.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const lander::Vec2 p0 = sim.binary().position(0, 0.0);
+        sim.set_state(state_at(p0.x - 400.0, p0.y, 0.0, 0.0, 0.0, 0.0));
+        for (int i = 0; i < 120; ++i) {
+            sim.advance(dt, {});
+        }
+        check(sim.reference_body() == 0,
+              "a ship far from the companion keeps the primary reference");
+    }
+
+    // A stable circular orbit around the primary does not flip.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const double r0 = sim.terrain(0).max_surface_radius() + 25.0;
+        const double alt = r0 - sim.terrain(0).surface_radius_at_arc(0.0);
+        sim.set_state(state_relative(sim.binary(), 0, 0.0, alt, 0.0, 0.0, 0.0));
+        sim.circularize();
+        const double local_period =
+            2.0 * lander::kPi * std::sqrt((r0 * r0 * r0) / cfg.mu);
+        const int steps = (int)std::lround(1.5 * local_period / dt);
+        bool flipped = false;
+        for (int i = 0; i < steps && !sim.state().crashed; ++i) {
+            sim.advance(dt, {});
+            flipped = flipped || sim.reference_body() != 0;
+        }
+        check(!sim.state().crashed, "reference-orbit probe does not crash");
+        check(!flipped, "a stable primary orbit keeps the primary reference");
+    }
+
+    // The landed body always forces the reference.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        drop_on(sim, 1, 0);
+        check(sim.state().landed, "companion landing probe lands");
+        check(sim.reference_body() == 1, "landing on the companion forces its reference");
+    }
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        drop_on(sim, 0, 0);
+        check(sim.state().landed, "primary landing probe lands");
+        check(sim.reference_body() == 0, "landing on the primary forces its reference");
+    }
+}
+
 // M05-R1-V09: the delivery contract loop. A safe landing on the destination
 // base pad completes the active contract exactly once (pad bonus plus the
 // contract reward, after which the destination reverses); a safe landing on a
@@ -933,6 +1022,41 @@ void test_contract_loop() {
     }
 }
 
+void test_target_range_rate() {
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {-1.0, 0.0}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        -1.0, 1.0e-12, "approaching along the range axis is closing");
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {1.0, 0.0}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        1.0, 1.0e-12, "receding along the range axis is opening");
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {0.0, 0.0}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        0.0, 1.0e-12, "no relative motion gives zero range rate");
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {-1.0, 0.0}, {0.0, 0.0},
+                                  {-1.0, 0.0}),
+        0.0, 1.0e-12, "target matching the ship's velocity gives zero");
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {0.0, -5.0}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        0.0, 1.0e-12, "pure cross-range motion gives zero range rate");
+    check_close(
+        lander::target_range_rate({0.0, 0.0}, {5.0, 5.0}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        0.0, 1.0e-12, "the zero-range guard returns zero");
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {-0.3, 0.4}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        -0.3, 1.0e-12, "mixed motion projects onto the range axis");
+    check_close(
+        lander::target_range_rate({10.0, 0.0}, {0.3, 0.4}, {0.0, 0.0},
+                                  {0.0, 0.0}),
+        0.3, 1.0e-12, "outward mixed motion projects positively");
+}
+
 }  // namespace
 
 int main() {
@@ -950,6 +1074,8 @@ int main() {
     test_set_state_normalizes();
     test_circularize_state();
     test_orbit_is_usable();
+    test_reference_body_influence();
+    test_target_range_rate();
     test_refuel_only_changes_fuel();
     test_flame_animation_continuous();
     test_interpolated_state();

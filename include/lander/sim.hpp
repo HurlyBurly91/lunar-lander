@@ -89,6 +89,19 @@ double altitude_at(const Terrain& terrain, const State& state,
 double local_angular_velocity(const State& state, const Vec2& bpos,
                                const Vec2& bvel);
 
+// M05-R2: signed scalar range rate between the ship and a target body.
+// Negative means closing, positive means opening; zero inside the guard
+// radius.
+double target_range_rate(const Vec2& ship_pos, const Vec2& ship_vel,
+                          const Vec2& target_pos, const Vec2& target_vel);
+
+// M05-R2: deterministic reference-body selection by local gravitational
+// influence, `mu / distance^2`, with hysteresis. The current body is kept
+// unless the other body's influence exceeds `margin *` the current influence;
+// at an exact crossover the current body is kept.
+int reference_body_for(double mu0, double mu1, double distance0,
+                       double distance1, int current, double margin = 1.2);
+
 // Presentation only: the state of a ship attached to `body_index` at the
 // body-local surface arc `landed_arc`, at ephemeris time `t`. The position
 // is the body's surface point at that arc, the velocity is the body's

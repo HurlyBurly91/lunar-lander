@@ -97,6 +97,41 @@ double local_angular_velocity(const State& state, const Vec2& bpos,
     return lv.tangential / r;
 }
 
+double target_range_rate(const Vec2& ship_pos, const Vec2& ship_vel,
+                          const Vec2& target_pos, const Vec2& target_vel) {
+    const double dx = ship_pos.x - target_pos.x;
+    const double dy = ship_pos.y - target_pos.y;
+    const double r = std::hypot(dx, dy);
+    if (r < 1.0e-9) {
+        return 0.0;
+    }
+    return ((ship_vel.x - target_vel.x) * dx +
+            (ship_vel.y - target_vel.y) * dy) /
+           r;
+}
+
+namespace {
+
+double gravitational_influence(double mu, double distance) {
+    if (distance <= 1.0e-9) {
+        return 1.0e300;
+    }
+    return mu / (distance * distance);
+}
+
+}  // namespace
+
+int reference_body_for(double mu0, double mu1, double distance0,
+                       double distance1, int current, double margin) {
+    const bool current_is_primary = current != 1;
+    const double i0 = gravitational_influence(mu0, distance0);
+    const double i1 = gravitational_influence(mu1, distance1);
+    if (current_is_primary) {
+        return i1 > margin * i0 ? 1 : 0;
+    }
+    return i0 > margin * i1 ? 0 : 1;
+}
+
 State attached_state(const BinarySystem& system, int body_index,
                      double landed_arc, double t) {
     const Body& body = system.body(body_index);
@@ -443,17 +478,13 @@ void Simulation::update_reference_body() {
         return;
     }
 
-    double d[2];
-    for (int i = 0; i < 2; ++i) {
-        const Vec2 bpos = binary_.position(i, sim_time_);
-        d[i] = std::hypot(state_.x - bpos.x, state_.y - bpos.y);
-    }
-    // Deterministic hysteresis: only switch to the other body once it is
-    // clearly (20% or more) closer, preventing flicker near the crossover.
-    const int other = 1 - reference_body_;
-    if (d[other] < 0.8 * d[reference_body_]) {
-        reference_body_ = other;
-    }
+    const Vec2 p0 = binary_.position(0, sim_time_);
+    const Vec2 p1 = binary_.position(1, sim_time_);
+    const double d0 = std::hypot(state_.x - p0.x, state_.y - p0.y);
+    const double d1 = std::hypot(state_.x - p1.x, state_.y - p1.y);
+    reference_body_ = reference_body_for(binary_.body(0).mu,
+                                         binary_.body(1).mu, d0, d1,
+                                         reference_body_);
 }
 
 }  // namespace lander

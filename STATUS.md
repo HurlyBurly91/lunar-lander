@@ -6,13 +6,17 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: HUMAN VERIFICATION (M05-R1)
+Phase: M05-R2 (smooth local camera + SYSTEM navigation polish; automated work
+complete)
 
-All automated verification for M05-R1 is complete (build, 4/4 test suite,
-git diff --check, headless smoke runs, and the new contract-loop test all
-pass; see TASKS.md "Verification evidence"). The milestone is now awaiting
-human confirmation of the runtime items H01..H07; it is not complete and no
-completion record has been written until the user confirms each one.
+M05-R1 automated verification was complete, but human verification (2026-09-28)
+found three presentation failures: the local camera snaps/teleports when the
+reference body changes; the SYSTEM view gives no closing/opening cue once the
+destination leaves the viewport; and the SYSTEM-scale ship is a white square.
+These are addressed by follow-up request group M05-R2 (see TASKS.md). All
+M05-R2 automated checks now pass; the implicated M05-R1 H-items (H03/H04/H05)
+and the M05-R2 H-items remain open and must be re-verified by the user. M05 is
+not complete and no completion record has been written.
 
 M05 turns the M04 flight simulation into the first complete game loop by
 extending the world to a compact two-body system: a 1/9-scale companion

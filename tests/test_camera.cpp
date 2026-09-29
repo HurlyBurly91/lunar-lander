@@ -397,6 +397,169 @@ void test_system_mode_no_resave_and_snap_keeps_system() {
     check_close(cam.center_y(), -12.0, 1e-12, "snap() in SYSTEM recentres y");
 }
 
+void test_auto_zoom_readability() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);
+
+    drive_auto(cam, 30.0);
+    check(cam.scale() * 2.5 >= 2.0 + 1.0e-9,
+          "overview lander stays above the minimum-marker threshold");
+    check(cam.scale() >= 0.8 + 1.0e-9,
+          "overview scale keeps the lander visually readable");
+
+    drive_auto(cam, 5.0);
+    check(cam.scale() * 2.5 >= 2.0 + 1.0e-9,
+          "landing lander stays above the minimum-marker threshold");
+    check(cam.scale() >= 0.8 + 1.0e-9,
+          "landing scale keeps the lander visually readable");
+    check(cam.scale() <= p.base_scale * p.zoom_max + 1.0e-12,
+          "local AUTO zoom remains bounded");
+}
+
+void test_angle_transition_shortest_path() {
+    lander::Camera cam;
+    cam.snap(0.0, 0.0, 3.0);
+    check_close(cam.angle(), 3.0, 1.0e-12, "snap sets the starting angle");
+
+    cam.update(1.0 / 60.0, 0.0, 0.0, 10.0, 0, false, 3.1);
+    check_close(cam.angle(), 3.1, 1.0e-12,
+                "a small angular change snaps instead of transitioning");
+
+    cam.snap(0.0, 0.0, 3.0);
+    cam.update(1.0 / 60.0, 0.0, 0.0, 10.0, 0, false, -2.5);
+    check(cam.angle() > 3.0,
+          "a large angular change moves along the shortest arc");
+    for (int i = 0; i < 300; ++i) {
+        cam.update(1.0 / 60.0, 0.0, 0.0, 10.0, 0, false, -2.5);
+        double relative = std::fmod(cam.angle() - 3.0 + lander::kTwoPi,
+                                    lander::kTwoPi);
+        if (relative < 0.0) {
+            relative += lander::kTwoPi;
+        }
+        check(relative <= 0.7832 + 1.0e-6,
+              "the transition stays inside the minimal arc");
+    }
+    check_close(cam.angle(), -2.5, 1.0e-12,
+                "the transition settles exactly on the target angle");
+}
+
+void test_angle_transition_preserves_simulation() {
+    lander::Simulation sim;
+    sim.reset(42);
+    const lander::State before = sim.state();
+    const int ref_before = sim.reference_body();
+
+    lander::Camera cam;
+    const lander::Vec2 ref_pos =
+        sim.binary().position(ref_before, sim.sim_time());
+    cam.snap(before.x, before.y,
+             lander::local_up_angle(before, ref_pos));
+    for (int i = 0; i < 300; ++i) {
+        cam.update(1.0 / 60.0, before.x, before.y, 10.0, 0, false,
+                   before.angle + 1.0);
+    }
+
+    check(sim.state() == before, "camera transition does not modify the ship");
+    check(sim.reference_body() == ref_before,
+          "camera transition does not change reference-body selection");
+}
+
+void test_system_destination_framing() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);
+    cam.set_system(true);
+
+    cam.set_system_destination(100.0, 0.0);
+    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    check_close(cam.zoom(), lander::system_frame_zoom(100.0, p), 1.0e-12,
+                "near destination uses the fitted true-scale zoom");
+    check_close(cam.center_x(), 50.0, 1.0e-12,
+                "near destination frames the ship/destination midpoint");
+    check_close(cam.center_y(), 0.0, 1.0e-12,
+                "near destination keeps the midpoint y");
+
+    cam.set_system_destination(100000.0, 0.0);
+    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    check_close(cam.zoom(), p.system_zoom, 1.0e-12,
+                "a destination that cannot fit readably uses the default zoom");
+    check_close(cam.center_x(), 0.0, 1.0e-12,
+                "an unfittable destination keeps the ship centred");
+
+    cam.set_system_destination(100.0, 0.0);
+    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    cam.update(0.0, 0.0, 0.0, 0.0, -1, false);
+    check(cam.system_zoom_manual(), "wheel input marks the SYSTEM zoom manual");
+    const double manual_zoom = cam.zoom();
+    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    check_close(cam.zoom(), manual_zoom, 1.0e-12,
+                "manual SYSTEM zoom is preserved while the destination is visible");
+}
+
+void test_offscreen_indicator() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);
+    cam.set_system(true);
+    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+
+    const auto on = lander::offscreen_target_indicator(100.0, 0.0, cam);
+    check(on.on_screen, "a visible destination is reported on-screen");
+    check_close(on.x, p.window_width / 2.0 + 100.0 * cam.scale(), 1.0e-9,
+                "on-screen x is true world scale");
+    check_close(on.y, p.window_height / 2.0, 1.0e-9,
+                "on-screen y is centred");
+
+    const auto right = lander::offscreen_target_indicator(5000.0, 0.0, cam);
+    check(!right.on_screen, "a far-right destination is off-screen");
+    check_close(right.dir_x, 1.0, 1.0e-12, "right indicator points right");
+    check_close(right.dir_y, 0.0, 1.0e-12, "right indicator has no y");
+    check_close(right.x, p.window_width, 1.0e-9,
+                "right indicator anchors to the right edge");
+    check_close(right.y, p.window_height / 2.0, 1.0e-9,
+                "right indicator keeps the centre height");
+
+    const auto up = lander::offscreen_target_indicator(0.0, 5000.0, cam);
+    check(!up.on_screen, "a far-north destination is off-screen");
+    check_close(up.dir_x, 0.0, 1.0e-12, "up indicator has no x");
+    check_close(up.dir_y, -1.0, 1.0e-12, "up indicator points screen-up");
+    check_close(up.x, p.window_width / 2.0, 1.0e-9,
+                "up indicator keeps the centre width");
+    check_close(up.y, 0.0, 1.0e-9, "up indicator anchors to the top edge");
+}
+
+void test_marker_triangle_orientation() {
+    const auto up = lander::marker_triangle(100.0, 100.0, 0.0, 0.0, 10.0);
+    check_close(up.nose.x, 100.0, 1.0e-12, "ship up points screen-up");
+    check_close(up.nose.y, 90.0, 1.0e-12, "ship-up nose is above the centre");
+    check(up.left.y > up.nose.y && up.right.y > up.nose.y,
+          "up-facing marker back vertices are behind the nose");
+    check(up.left.x > 100.0 && up.right.x < 100.0,
+          "up-facing marker back vertices spread sideways");
+
+    const auto right =
+        lander::marker_triangle(100.0, 100.0, 0.0, 0.5 * lander::kPi, 10.0);
+    check_close(right.nose.x, 110.0, 1.0e-12,
+                "camera rotation carries the nose to screen-right");
+    check_close(right.nose.y, 100.0, 1.0e-12,
+                "camera-right nose has no vertical offset");
+
+    const auto left =
+        lander::marker_triangle(100.0, 100.0, 0.5 * lander::kPi, 0.0, 10.0);
+    check_close(left.nose.x, 90.0, 1.0e-12,
+                "ship-left attitude points screen-left");
+    check_close(left.nose.y, 100.0, 1.0e-12,
+                "screen-left nose has no vertical offset");
+
+    const auto down =
+        lander::marker_triangle(100.0, 100.0, lander::kPi, 0.0, 10.0);
+    check_close(down.nose.x, 100.0, 1.0e-12,
+                "ship-down attitude has no horizontal offset");
+    check_close(down.nose.y, 110.0, 1.0e-12,
+                "ship-down nose points screen-down");
+}
+
 }  // namespace
 
 int main() {
@@ -412,6 +575,12 @@ int main() {
     test_system_mode_zoom_clamp();
     test_system_mode_saves_restores_local_state();
     test_system_mode_no_resave_and_snap_keeps_system();
+    test_auto_zoom_readability();
+    test_angle_transition_shortest_path();
+    test_angle_transition_preserves_simulation();
+    test_system_destination_framing();
+    test_offscreen_indicator();
+    test_marker_triangle_orientation();
 
     if (failures == 0) {
         std::puts("All lander_camera_tests passed");
