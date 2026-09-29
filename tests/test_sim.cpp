@@ -1306,6 +1306,427 @@ void test_circularize_directions() {
           "both explicit circularize directions are no-ops while landed");
 }
 
+// M05-R3-15: sync_orbit places the ship in a body-synchronous circular orbit
+// on the far side of the source body (the landed body when landed, otherwise
+// the current reference body): the exact position/velocity of the
+// synchronous-radius formula, co-rotating with the binary, zero spin, nose
+// radially out, fuel / score / ticks / phase preserved, no-op while crashed,
+// deterministic per seed.
+void test_sync_orbit_state() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 501;
+
+    // (a) Landed on the primary: the source is the landed body.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const int source = 0;
+        const int other = 1;
+        const double t = 0.0;
+        const lander::Vec2 spos = sim.binary().position(source, t);
+        const lander::Vec2 svel = sim.binary().velocity(source, t);
+        const lander::Vec2 opos = sim.binary().position(other, t);
+        const double away = std::hypot(spos.x - opos.x, spos.y - opos.y);
+        const lander::Vec2 dir{(spos.x - opos.x) / away,
+                               (spos.y - opos.y) / away};
+        const double omega = sim.binary().omega();
+        const double r =
+            std::cbrt(sim.binary().body(source).mu / (omega * omega));
+        check(r > 500.0 && r < 700.0,
+              "the primary synchronous radius is in the expected band");
+
+        sim.sync_orbit();
+        const lander::State& s = sim.state();
+        check(!s.landed && !s.crashed, "sync_orbit places the ship in flight");
+        check(s.landed_body == -1, "the synced ship is not attached");
+        check_close(s.x, spos.x + dir.x * r, 1e-9, "sync orbit position x");
+        check_close(s.y, spos.y + dir.y * r, 1e-9, "sync orbit position y");
+        check_close(s.vx, svel.x - omega * (s.y - spos.y), 1e-9,
+                    "sync orbit co-rotates with the binary vx");
+        check_close(s.vy, svel.y + omega * (s.x - spos.x), 1e-9,
+                    "sync orbit co-rotates with the binary vy");
+        check_close(norm_angle(s.angle), norm_angle(std::atan2(dir.y, dir.x)),
+                    1e-9, "the nose points radially out, away from the other body");
+        check_close(s.omega, 0.0, 1e-12, "the synced spin is zero");
+        check_close(s.fuel, cfg.fuel, 1e-9, "sync_orbit preserves the fuel");
+        check(s.ticks == 0 && s.score == 0,
+              "sync_orbit preserves ticks and score");
+        const double toward =
+            (s.x - spos.x) * (opos.x - spos.x) +
+            (s.y - spos.y) * (opos.y - spos.y);
+        check(toward < 0.0,
+              "the synced ship starts on the far side of the binary");
+        const lander::LocalVelocity lv = lander::local_velocity(s, spos, svel);
+        check_close(lv.radial, 0.0, 1e-9,
+                    "the synced orbit has zero relative radial speed");
+        check_close(lv.tangential, -omega * r, 1e-9,
+                    "the synced orbit carries the binary angular velocity");
+    }
+
+    // (b) Landed on the companion: the source is the companion.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        check(drop_on(sim, 1, 0) >= 0, "the companion probe lands");
+        check(sim.state().landed, "the companion probe is landed");
+        const int source = 1;
+        const int other = 0;
+        const double t = sim.sim_time();
+        const lander::Vec2 spos = sim.binary().position(source, t);
+        const lander::Vec2 svel = sim.binary().velocity(source, t);
+        const lander::Vec2 opos = sim.binary().position(other, t);
+        const double away = std::hypot(spos.x - opos.x, spos.y - opos.y);
+        const lander::Vec2 dir{(spos.x - opos.x) / away,
+                               (spos.y - opos.y) / away};
+        const double omega = sim.binary().omega();
+        const double r =
+            std::cbrt(sim.binary().body(source).mu / (omega * omega));
+        check(r > 100.0 && r < 200.0,
+              "the companion synchronous radius is in the expected band");
+
+        sim.sync_orbit();
+        const lander::State& s = sim.state();
+        check(!s.landed && !s.crashed,
+              "companion sync_orbit places the ship in flight");
+        check_close(s.x, spos.x + dir.x * r, 1e-9,
+                    "companion sync orbit position x");
+        check_close(s.y, spos.y + dir.y * r, 1e-9,
+                    "companion sync orbit position y");
+        check_close(s.vx, svel.x - omega * (s.y - spos.y), 1e-9,
+                    "companion sync orbit co-rotates vx");
+        check_close(s.vy, svel.y + omega * (s.x - spos.x), 1e-9,
+                    "companion sync orbit co-rotates vy");
+        const lander::LocalVelocity lv = lander::local_velocity(s, spos, svel);
+        check_close(lv.radial, 0.0, 1e-9,
+                    "the companion synced orbit has zero relative radial speed");
+        check_close(lv.tangential, -omega * r, 1e-9,
+                    "the companion synced orbit carries the binary angular velocity");
+    }
+
+    // (c) Flying near the companion: the reference body is the source.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        sim.set_state(state_relative(sim.binary(), 1, 0.0, 8.0, 0.0, 0.0, 0.0));
+        sim.advance(cfg.fixed_dt, {});
+        check(sim.reference_body() == 1, "the reference is the companion");
+        sim.sync_orbit();
+        const int source = 1;
+        const int other = 0;
+        const double t = sim.sim_time();
+        const lander::Vec2 spos = sim.binary().position(source, t);
+        const lander::Vec2 svel = sim.binary().velocity(source, t);
+        const lander::Vec2 opos = sim.binary().position(other, t);
+        const double away = std::hypot(spos.x - opos.x, spos.y - opos.y);
+        const lander::Vec2 dir{(spos.x - opos.x) / away,
+                               (spos.y - opos.y) / away};
+        const double omega = sim.binary().omega();
+        const double r =
+            std::cbrt(sim.binary().body(source).mu / (omega * omega));
+        const lander::State& s = sim.state();
+        check(!s.landed && !s.crashed,
+              "in-flight sync_orbit places the ship in flight");
+        check_close(s.x, spos.x + dir.x * r, 1e-9,
+                    "reference-source sync orbit position x");
+        check_close(s.y, spos.y + dir.y * r, 1e-9,
+                    "reference-source sync orbit position y");
+        check_close(s.vx, svel.x - omega * (s.y - spos.y), 1e-9,
+                    "reference-source sync orbit co-rotates vx");
+        check_close(s.vy, svel.y + omega * (s.x - spos.x), 1e-9,
+                    "reference-source sync orbit co-rotates vy");
+    }
+
+    // (d) No-op while crashed.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const double arc = 0.5 * sim.terrain(0).circumference();
+        sim.set_state(
+            state_relative(sim.binary(), 0, arc, 0.3, -30.0, 0.0, 0.0));
+        run_to_contact(sim);
+        check(sim.state().crashed, "crashed for the sync-orbit no-op test");
+        const lander::State before = sim.state();
+        sim.sync_orbit();
+        check(sim.state() == before, "sync_orbit is a no-op while crashed");
+    }
+
+    // (e) Deterministic for a fixed seed.
+    {
+        auto run = [&]() {
+            lander::Simulation sim;
+            sim.reset(seed);
+            sim.sync_orbit();
+            return sim.state();
+        };
+        check(run() == run(), "sync_orbit is deterministic for a fixed seed");
+    }
+}
+
+// M05-R3-15: the primary-sourced synced orbit stays visually stable over two
+// binary periods (no crash, no decay, radius stays near the synchronous
+// radius). The companion-sourced orbit drifts outward over the same span
+// (gravity there is weaker than the co-rotation requirement) but still does
+// not crash.
+void test_sync_orbit_stability() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 502;
+
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        sim.sync_orbit();  // landed on the primary at reset: source 0
+        const double omega = sim.binary().omega();
+        const double r0 =
+            std::cbrt(sim.binary().body(0).mu / (omega * omega));
+        check_close(lander::radial_distance(
+                        sim.state(), sim.binary().position(0, sim.sim_time())),
+                    r0, 1e-9, "the synced orbit starts at the synchronous radius");
+        const int steps =
+            static_cast<int>(std::lround(2.0 * sim.binary().period() / dt));
+        double rmin = 1e300, rmax = -1e300;
+        for (int i = 0; i < steps && !sim.state().crashed; ++i) {
+            sim.advance(dt, {});
+            const double r = lander::radial_distance(
+                sim.state(), sim.binary().position(0, sim.sim_time()));
+            rmin = std::min(rmin, r);
+            rmax = std::max(rmax, r);
+        }
+        check(!sim.state().crashed, "the primary synced orbit does not crash");
+        check(rmin > 0.7 * r0, "the primary synced orbit does not decay");
+        check(rmax < 1.3 * r0,
+              "the primary synced orbit stays near the synchronous radius");
+    }
+
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        check(drop_on(sim, 1, 0) >= 0, "the companion stability probe lands");
+        sim.sync_orbit();  // landed on the companion: source 1
+        const int steps =
+            static_cast<int>(std::lround(2.0 * sim.binary().period() / dt));
+        for (int i = 0; i < steps && !sim.state().crashed; ++i) {
+            sim.advance(dt, {});
+        }
+        check(!sim.state().crashed,
+              "the companion synced orbit does not crash despite the drift");
+    }
+}
+
+// M05-R3-16: transfer deterministically places the ship at the start of a
+// real ballistic arc that reaches the other body's clearance shell under the
+// two-body gravity alone: both directions, a flying reference-source case,
+// departure-shell / nose-along-velocity invariants, fuel / score / ticks /
+// phase preserved, no-op (false, state untouched) while crashed, and
+// deterministic per seed.
+void test_transfer() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 503;
+
+    // Mirrors the solver's propagator: the same semi-implicit Euler with the
+    // two-body field sampled at each step's start; no thrust / spin / fuel /
+    // collision.
+    auto propagate = [&](const lander::BinarySystem& bin, double x, double y,
+                         double vx, double vy, double t, int steps) {
+        for (int i = 0; i < steps; ++i) {
+            const lander::Vec2 a = bin.gravity({x, y}, t);
+            vx += a.x * dt;
+            vy += a.y * dt;
+            x += vx * dt;
+            y += vy * dt;
+            t += dt;
+        }
+        return lander::Vec2{x, y};
+    };
+
+    // Re-search the solver's candidate flight times for the placed state and
+    // return the candidate whose terminal point is closest to the target's
+    // arrival shell: the clearance shell above the target's surface on the
+    // approach side (the solver accepts a miss below 5 m at a point on that
+    // shell, so an error of 5 m or less is expected).
+    auto best_fraction = [&](const lander::Simulation& sim, int source,
+                             int target) {
+        const double t0 = sim.sim_time();
+        const lander::State& s = sim.state();
+        double best = -1.0;
+        double best_err = 1e30;
+        for (double fraction : {0.15, 0.20, 0.25, 0.30, 0.40, 0.50}) {
+            const int steps =
+                static_cast<int>(std::lround(fraction *
+                                             sim.binary().period() / dt));
+            if (steps < 10) {
+                continue;
+            }
+            const double t1 = t0 + steps * dt;
+            const lander::Vec2 g1 = sim.binary().position(target, t1);
+            const lander::Vec2 s1 = sim.binary().position(source, t1);
+            const double dg = std::hypot(s1.x - g1.x, s1.y - g1.y);
+            if (dg < 1.0e-9) {
+                continue;
+            }
+            const lander::Vec2 approach{(s1.x - g1.x) / dg,
+                                        (s1.y - g1.y) / dg};
+            const double r_arr =
+                sim.binary().body(target).terrain.max_surface_radius() + 15.0;
+            const lander::Vec2 goal{g1.x + approach.x * r_arr,
+                                    g1.y + approach.y * r_arr};
+            const lander::Vec2 f =
+                propagate(sim.binary(), s.x, s.y, s.vx, s.vy, t0, steps);
+            const double err = std::hypot(f.x - goal.x, f.y - goal.y);
+            if (err < best_err) {
+                best_err = err;
+                best = fraction;
+            }
+        }
+        return (best < 0.0 || best_err > 5.0) ? -1.0 : best;
+    };
+
+    auto run_case = [&](int source) {
+        const int target = 1 - source;
+        lander::Simulation sim;
+        sim.reset(seed);
+        if (source == 1) {
+            check(drop_on(sim, 1, 0) >= 0,
+                  "the companion transfer probe lands first");
+        }
+        check(sim.state().landed && sim.state().landed_body == source,
+              "the transfer probe is landed on the source");
+
+        const lander::State before = sim.state();
+        const double t_before = sim.sim_time();
+        check(sim.transfer(), "transfer() found a plausible arc");
+        const lander::State& s = sim.state();
+        check(!s.landed && !s.crashed, "the placed ship is in flight");
+        check(s.landed_body == -1, "the placed ship is not attached");
+        check_close(s.fuel, before.fuel, 1e-12, "transfer preserves the fuel");
+        check(s.ticks == before.ticks, "transfer preserves the tick count");
+        check(s.score == before.score, "transfer preserves the score");
+        check_close(sim.sim_time(), t_before, 1e-12,
+                    "transfer preserves the phase clock");
+        check_close(s.omega, 0.0, 1e-12, "the placed spin is zero");
+        const double speed = std::hypot(s.vx, s.vy);
+        check(speed > 1e-9 && speed <= 60.0,
+              "the launch speed is nonzero and within the plausibility bound");
+        check_close(s.angle, norm_angle(std::atan2(s.vy, s.vx)), 1e-9,
+                    "the nose points along the launch velocity");
+
+        // The departure shell: above the source, facing the target at t0.
+        const double t0 = sim.sim_time();
+        const lander::Vec2 s_pos = sim.binary().position(source, t0);
+        const lander::Vec2 t_pos = sim.binary().position(target, t0);
+        const double d0 = std::hypot(t_pos.x - s_pos.x, t_pos.y - s_pos.y);
+        const lander::Vec2 dir{(t_pos.x - s_pos.x) / d0,
+                               (t_pos.y - s_pos.y) / d0};
+        const double r_dep =
+            sim.binary().body(source).terrain.max_surface_radius() + 15.0;
+        check_close(lander::radial_distance(s, s_pos), r_dep, 1e-9,
+                    "the ship departs from the clearance shell");
+        check_close((s.x - s_pos.x) * dir.x + (s.y - s_pos.y) * dir.y, r_dep,
+                    1e-9, "the ship departs facing the target");
+
+        // The arc really reaches the target's clearance shell under gravity
+        // alone, arrives on the approach side, and stays outside both
+        // worst-case surfaces at every half-second sample.
+        const double fraction = best_fraction(sim, source, target);
+        check(fraction > 0.0,
+              "the placed arc reaches the target clearance shell");
+        if (fraction > 0.0) {
+            const int steps =
+                static_cast<int>(std::lround(fraction *
+                                             sim.binary().period() / dt));
+            const double t1 = t0 + steps * dt;
+            const lander::Vec2 g1 = sim.binary().position(target, t1);
+            const lander::Vec2 s1 = sim.binary().position(source, t1);
+            const lander::Vec2 f =
+                propagate(sim.binary(), s.x, s.y, s.vx, s.vy, t0, steps);
+            check((f.x - g1.x) * (s1.x - g1.x) + (f.y - g1.y) * (s1.y - g1.y) >
+                      0.0,
+                  "the arrival is on the approach side of the target");
+            double px = s.x, py = s.y, vx = s.vx, vy = s.vy, t = t0;
+            bool clear = true;
+            for (int i = 0; i < steps; ++i) {
+                if (i % 60 == 0) {
+                    for (int b = 0; b < 2; ++b) {
+                        const lander::Vec2 bp = sim.binary().position(b, t);
+                        if (std::hypot(px - bp.x, py - bp.y) <
+                                sim.binary().body(b).terrain.max_surface_radius()) {
+                            clear = false;
+                        }
+                    }
+                }
+                const lander::Vec2 a = sim.binary().gravity({px, py}, t);
+                vx += a.x * dt;
+                vy += a.y * dt;
+                px += vx * dt;
+                py += vy * dt;
+                t += dt;
+            }
+            check(clear, "the arc stays outside both worst-case surfaces");
+        }
+    };
+
+    run_case(0);
+    run_case(1);
+
+    // Flying (unlanded) near the primary: the reference body is the source.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        sim.set_state(
+            state_relative(sim.binary(), 0, 0.0, 100.0, 0.0, 0.0, 0.0));
+        check(sim.reference_body() == 0, "the reference is the primary");
+        check(!sim.state().landed, "the probe is in flight");
+        check(sim.transfer(), "transfer works from a flying reference-source state");
+        const lander::State& s = sim.state();
+        check(!s.landed && !s.crashed, "the flying-source ship is in flight");
+        check_close(s.fuel, 1000.0, 1e-9,
+                    "the flying-source transfer preserves the fuel");
+        const lander::Vec2 s_pos = sim.binary().position(0, 0.0);
+        const lander::Vec2 t_pos = sim.binary().position(1, 0.0);
+        const double r_dep = sim.terrain(0).max_surface_radius() + 15.0;
+        check_close(lander::radial_distance(s, s_pos), r_dep, 1e-9,
+                    "the flying-source departure is on the primary shell");
+        const double d = std::hypot(t_pos.x - s_pos.x, t_pos.y - s_pos.y);
+        const double dot =
+            (s.x - s_pos.x) * (t_pos.x - s_pos.x) / d +
+            (s.y - s_pos.y) * (t_pos.y - s_pos.y) / d;
+        check_close(dot, r_dep, 1e-9,
+                    "the flying-source departure faces the target");
+    }
+
+    // No-op while crashed: reports no solution and leaves the state
+    // untouched.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const double arc = 0.5 * sim.terrain(0).circumference();
+        sim.set_state(
+            state_relative(sim.binary(), 0, arc, 0.3, -30.0, 0.0, 0.0));
+        run_to_contact(sim);
+        check(sim.state().crashed, "crashed for the transfer no-op test");
+        const lander::State before = sim.state();
+        check(!sim.transfer(), "transfer() reports no solution while crashed");
+        check(sim.state() == before,
+              "transfer() leaves the crashed state untouched");
+    }
+
+    // Deterministic for a fixed seed, in both directions.
+    {
+        auto run = [&](int source) {
+            lander::Simulation sim;
+            sim.reset(seed);
+            if (source == 1) {
+                drop_on(sim, 1, 0);
+            }
+            sim.transfer();
+            return sim.state();
+        };
+        check(run(0) == run(0), "the primary-source transfer is deterministic");
+        check(run(1) == run(1), "the companion-source transfer is deterministic");
+    }
+}
+
 }  // namespace
 
 // M05-R3-V14: a landed ship stays attached to a rotating surface point.
@@ -1591,6 +2012,9 @@ int main() {
     test_set_state_normalizes();
     test_circularize_state();
     test_circularize_directions();
+    test_sync_orbit_state();
+    test_sync_orbit_stability();
+    test_transfer();
     test_orbit_is_usable();
     test_reference_body_influence();
     test_target_range_rate();

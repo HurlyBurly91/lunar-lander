@@ -264,6 +264,19 @@ std::string fmt1(double value) {
     return buffer;
 }
 
+// M05-R3-14: adaptive zoom formatting. Wide values below 2.0 use two
+// decimals so 0.04X / 0.10X / 0.25X / 1.00X stay unambiguous; 2.0 and up
+// use one (2.0X, 3.5X, 4.0X).
+std::string fmt_zoom(double value) {
+    char buffer[32];
+    if (value < 2.0) {
+        std::snprintf(buffer, sizeof buffer, "%.2f", value);
+    } else {
+        std::snprintf(buffer, sizeof buffer, "%.1f", value);
+    }
+    return std::string(buffer) + "X";
+}
+
 // ------------------------------------------------------------------- camera
 
 // The single world-to-screen transform. Every piece of world geometry (the
@@ -348,17 +361,18 @@ void fill_rect(SDL_Renderer* renderer, int x, int y, int w, int h,
 }
 
 // ------------------------------------------------------------------- stars
-// The starfield is a fixed screen-space celestial backdrop generated
-// deterministically from the game seed (see lander/starfield.hpp). It does not
-// move, scale, or rotate with the local-frame camera, in any camera mode.
+// The starfield is an inertial celestial backdrop (M05-R3-12): its generated
+// base positions (see lander/starfield.hpp) are rotated about the viewport
+// centre by the final presentation camera angle, so it turns with the scene
+// in both LOCAL and SYSTEM modes, but it never parallax-translates with the
+// world and never depends on camera mode, reference body, phase, or pan.
 void draw_space(SDL_Renderer* renderer,
-                const std::vector<lander::Star>& stars) {
+                const std::vector<lander::Star>& stars, double camera_angle) {
     fill_rect(renderer, 0, 0, kWindowWidth, kWindowHeight,
               make_color(8, 10, 22));
     for (const lander::Star& star : stars) {
-        const lander::ScreenPoint p =
-            lander::star_screen_pos(star, kWindowWidth / 2.0,
-                                    kWindowHeight / 2.0, 0.0);
+        const lander::ScreenPoint p = lander::star_screen_pos(
+            star, kWindowWidth, kWindowHeight, camera_angle);
         fill_rect(renderer, static_cast<int>(p.x), static_cast<int>(p.y),
                   star.size, star.size,
                   make_color(star.bright, star.bright,
@@ -899,27 +913,30 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
         draw_text(renderer, tap_progress, 18, 372, 2, amber);
     }
 
-    // Control help along the bottom. The dangerous controls are triple-tap
-    // guarded: they only fire on the third tap within 700 ms.
+    // Control help along the bottom. The guarded controls only fire on the
+    // third tap within 700 ms (M05-R3-07, and M05-R3-10/15/16 for
+    // R/B/T).
     draw_text(renderer, "UP/W INC  DN/S DEC  X CUT", 18,
-              kWindowHeight - 56, 1, dim);
+              kWindowHeight - 72, 1, dim);
     draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  G NAV", 18,
-              kWindowHeight - 40, 1, dim);
+              kWindowHeight - 56, 1, dim);
     draw_text(renderer, "E WHEELS  O X3 CIRC  SH+O X3 CCW", 18,
+              kWindowHeight - 40, 1, dim);
+    draw_text(renderer, "F FUEL  P PAUSE  N X3 SEED  R X3 RETRY", 18,
               kWindowHeight - 24, 1, dim);
-    draw_text(renderer, "F FUEL  P PAUSE  N X3 SEED  WHEEL ZOOM", 18,
+    draw_text(renderer, "B X3 SYNC ORBIT  T X3 TRANSFER  WHEEL ZOOM", 18,
               kWindowHeight - 8, 1, dim);
 
     // Camera indicator, top-right.
     std::string cam_line;
     Color cam_color = dim;
     if (cam.mode() == lander::CameraMode::kSystem) {
-        cam_line = "CAM SYSTEM " + fmt1(cam.zoom()) + "X";
+        cam_line = "CAM SYSTEM " + fmt_zoom(cam.zoom());
         cam_color = amber;
     } else if (cam.mode() == lander::CameraMode::kAuto) {
         cam_line = "CAM AUTO";
     } else {
-        cam_line = "CAM MANUAL " + fmt1(cam.zoom()) + "X";
+        cam_line = "CAM MANUAL " + fmt_zoom(cam.zoom());
         cam_color = green;
     }
     const int cam_x =
@@ -945,7 +962,7 @@ void draw_landed_banner(SDL_Renderer* renderer, const lander::State& s) {
                      kWindowHeight / 2 - 130, 2, green);
     draw_center_text(renderer, "HOLD UP TO TAKE OFF",
                       kWindowHeight / 2 - 104, 2, dim);
-    draw_center_text(renderer, "R RETRY   N X3 NEW SEED",
+    draw_center_text(renderer, "R X3 RETRY   N X3 NEW SEED",
                       kWindowHeight / 2 - 80, 1, amber);
 }
 
@@ -1094,10 +1111,16 @@ void print_usage() {
         "V system view, mouse wheel zoom, O x3 clockwise circularize around\n"
         "the reference body, Shift+O x3 counter-clockwise circularize, E\n"
         "reaction-wheel angular damping, G navigation/gravity overlay, F\n"
-        "refill fuel (also on the ground), R retry same seed, N x3 new seed,\n"
-        "P pause, Esc/Q quit. O/Shift+O/N are triple-tap guarded: the action\n"
-        "fires on the third tap within 700 ms, with progress shown on the\n"
-        "HUD.\n");
+        "refill fuel (also on the ground), N x3 new seed, P pause, Esc/Q\n"
+        "quit.\n"
+        "Developer controls (all triple-tap guarded, progress shown on the\n"
+        "HUD, firing on the third tap within 700 ms):\n"
+        "  R x3  retry the same seed\n"
+        "  B x3  body-synchronous orbit around the source body (the landed\n"
+        "        body when landed, else the reference body), on the side\n"
+        "        opposite the other body\n"
+        "  T x3  ballistic inter-body transfer to the other body; shows\n"
+        "        'TRANSFER: NO SOLUTION' if none exists for this phase\n");
 }
 
 }  // namespace
@@ -1187,6 +1210,10 @@ int main(int argc, char** argv) {
     // Transient contract-completion presentation.
     std::optional<lander::Contract> last_completed_seen;
     double contract_banner_time = 0.0;
+    // Transient developer-control feedback (M05-R3-16 no-solution message
+    // and T confirmation).
+    std::string debug_message;
+    double debug_message_time = 0.0;
     Uint64 prev_ns = SDL_GetTicksNS();
     int frame = 0;
     // Continuous presentation clock (seconds) that drives the cosmetic flame
@@ -1207,6 +1234,8 @@ int main(int argc, char** argv) {
         tap_guard.reset();
         last_completed_seen = sim.last_completed();
         contract_banner_time = 0.0;
+        debug_message.clear();
+        debug_message_time = 0.0;
         if (orbit_demo) {
             // Developer mode: start in flight on a terrain-clearing
             // circular-ish orbit around the primary at t = 0 (primary
@@ -1248,11 +1277,20 @@ int main(int argc, char** argv) {
                     case SDL_SCANCODE_Q:
                         running = false;
                         break;
-                    case SDL_SCANCODE_R:
-                        // Retry the same seed: both pad layouts are
-                        // identical.
-                        start_mission();
+                    case SDL_SCANCODE_R: {
+                        // Triple-tap guarded (M05-R3-10): a single press no
+                        // longer restarts; the third tap within 700 ms
+                        // retries the same seed.
+                        const lander::GuardedAction action =
+                            tap_guard.press(lander::GuardedKey::kRetry,
+                                            SDL_GetTicks());
+                        if (action == lander::GuardedAction::kRetry) {
+                            // Retry the same seed: both pad layouts are
+                            // identical.
+                            start_mission();
+                        }
                         break;
+                    }
                     case SDL_SCANCODE_N: {
                         // Triple-tap guarded: one or two taps only arm the
                         // sequence; the third tap within 700 ms rolls a new
@@ -1303,6 +1341,32 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
+                    case SDL_SCANCODE_B: {
+                        // Triple-tap guarded (M05-R3-15): one-shot
+                        // body-synchronous orbit initializer. Works from
+                        // the ground too (source is the landed body).
+                        const lander::GuardedAction action =
+                            tap_guard.press(lander::GuardedKey::kSyncOrbit,
+                                            SDL_GetTicks());
+                        if (action == lander::GuardedAction::kSyncOrbit) {
+                            sim.sync_orbit();
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_T: {
+                        // Triple-tap guarded (M05-R3-16): one-shot ballistic
+                        // inter-body transfer initializer.
+                        const lander::GuardedAction action =
+                            tap_guard.press(lander::GuardedKey::kTransfer,
+                                            SDL_GetTicks());
+                        if (action == lander::GuardedAction::kTransfer) {
+                            debug_message =
+                                sim.transfer() ? "TRANSFER: SET"
+                                               : "TRANSFER: NO SOLUTION";
+                            debug_message_time = 3.0;
+                        }
+                        break;
+                    }
                     case SDL_SCANCODE_F:
                         // Refill is allowed in flight and on the ground;
                         // only a crash blocks it.
@@ -1332,6 +1396,7 @@ int main(int argc, char** argv) {
             flame_clock += dt;
             contract_banner_time =
                 std::max(0.0, contract_banner_time - dt);
+            debug_message_time = std::max(0.0, debug_message_time - dt);
         }
 
         // The polled state array is indexed by scancode (SDL3's
@@ -1457,7 +1522,8 @@ int main(int argc, char** argv) {
             contract_banner_time = kContractBannerTime;
         }
 
-        draw_space(renderer, stars);
+        // The backdrop rotates with the final presentation angle (M05-R3-12).
+        draw_space(renderer, stars, cam.angle());
         const bool sys_view = cam.system_view();
         const int dest = sim.contract().destination_body;
         const lander::Vec2 other_pos = bin.position(1 - ref, t_present);
@@ -1482,6 +1548,11 @@ int main(int argc, char** argv) {
         draw_contract_banner(renderer, last_completed_seen,
                               contract_banner_time);
         draw_landed_banner(renderer, s);
+        if (debug_message_time > 0.0 && !debug_message.empty()) {
+            const Color amber(255, 196, 64);
+            draw_center_text(renderer, debug_message,
+                              kWindowHeight / 2 + 150, 2, amber);
+        }
         if (cam.system_view()) {
             const lander::OffscreenIndicator indicator =
                 lander::offscreen_target_indicator(nav_dest_x, nav_dest_y,

@@ -19,7 +19,11 @@ struct CameraParams {
     double landing_zoom = 1.40;
     double alt_to_landing = 18.0;
     double alt_to_overview = 25.0;
-    double zoom_min = 0.20;
+    // M05-R3-11: `zoom_min` is the MANUAL LOCAL floor; it now matches the
+    // SYSTEM wide end so a manual wide zoom can cover the whole world. It
+    // no longer guards LOCAL readability, which the AUTO readability floor
+    // (`camera_readability_zoom`) already provides.
+    double zoom_min = 0.01;
     double zoom_max = 4.0;
     double follow_rate = 4.0;
     double zoom_rate = 3.0;
@@ -35,7 +39,6 @@ struct CameraParams {
     double system_zoom = 0.04;
     double system_zoom_min = 0.01;
     double system_zoom_max = 2.0;
-    double system_viewport_margin = 80.0;
     double angle_transition_time = 0.35;
     double angle_jump_threshold = 0.4;
 };
@@ -59,20 +62,6 @@ inline double camera_readability_zoom(const CameraParams& p) {
 inline double cue_arrow_length(double magnitude, double px_per_unit,
                                double max_px) {
     return std::clamp(magnitude * px_per_unit, 0.0, max_px);
-}
-
-inline double system_frame_zoom(double distance, const CameraParams& p) {
-    if (distance < 1.0e-6) {
-        return p.system_zoom_max;
-    }
-    const double available =
-        0.5 * std::min(p.window_width, p.window_height) -
-        p.system_viewport_margin;
-    if (available <= 0.0) {
-        return p.system_zoom_max;
-    }
-    const double zoom = 2.0 * available / (distance * p.base_scale);
-    return std::clamp(zoom, p.system_zoom_min, p.system_zoom_max);
 }
 
 // Sentinel meaning "derive the camera angle from the target position" (the
@@ -101,7 +90,6 @@ public:
             mode_ = CameraMode::kSystem;
             zoom_ = params_.system_zoom;
             system_target_zoom_ = params_.system_zoom;
-            system_zoom_manual_ = false;
             angle_transition_active_ = false;
             angle_ = 0.0;
             angle_initialized_ = true;
@@ -113,7 +101,6 @@ public:
             zoom_ = saved_zoom_;
             wants_landing_ = saved_wants_landing_;
             system_target_zoom_ = params_.system_zoom;
-            system_zoom_manual_ = false;
             angle_transition_active_ = false;
         }
     }
@@ -126,7 +113,6 @@ public:
             angle_ = 0.0;
             angle_initialized_ = true;
             angle_transition_active_ = false;
-            system_zoom_manual_ = false;
             system_target_zoom_ = params_.system_zoom;
             zoom_ = params_.system_zoom;
             focus_x_ = target_x_;
@@ -136,7 +122,6 @@ public:
         mode_ = CameraMode::kAuto;
         wants_landing_ = true;
         zoom_ = 1.0;
-        system_zoom_manual_ = false;
         set_angle(target_angle, x, y);
 
         const double offset = framing_offset();
@@ -166,7 +151,6 @@ public:
     bool has_system_destination() const { return has_system_destination_; }
     double system_destination_x() const { return system_destination_x_; }
     double system_destination_y() const { return system_destination_y_; }
-    bool system_zoom_manual() const { return system_zoom_manual_; }
     double system_target_zoom() const { return system_target_zoom_; }
 
     void update(double dt, double target_x, double target_y, double altitude,
@@ -178,35 +162,22 @@ public:
         if (mode_ == CameraMode::kSystem) {
             // Inertial framing: fixed angle, ship at the exact viewport
             // centre (no local anchor offset), wheel changing the target
-            // zoom multiplicatively, rendered zoom easing toward that target.
-            // Local mode/zoom/want-landing state is untouched.
+            // zoom multiplicatively, rendered zoom easing toward that
+            // target. Local mode/zoom/want-landing state is untouched.
+            //
+            // M05-R3-13: the SYSTEM camera never auto-pans or auto-zooms.
+            // The focus is always the ship, regardless of where the
+            // destination body is; a destination out of frame is reported
+            // by the offscreen indicator and the HUD (DIST / V REL /
+            // RANGE), not by moving the camera.
             if (wheel_delta > 0) {
                 system_target_zoom_ *= 1.0 + params_.wheel_step;
-                system_zoom_manual_ = true;
             } else if (wheel_delta < 0) {
                 system_target_zoom_ *= 1.0 - params_.wheel_step;
-                system_zoom_manual_ = true;
             }
             system_target_zoom_ = clamp(
                 system_target_zoom_, params_.system_zoom_min,
                 params_.system_zoom_max);
-
-            if (has_system_destination_ && !system_zoom_manual_) {
-                const double dx = system_destination_x_ - target_x_;
-                const double dy = system_destination_y_ - target_y_;
-                const double distance = std::hypot(dx, dy);
-                const double available =
-                    0.5 * std::min(params_.window_width, params_.window_height) -
-                    params_.system_viewport_margin;
-                if (available > 0.0 &&
-                    distance * params_.base_scale * params_.system_zoom_min <=
-                        2.0 * available + 1.0e-9) {
-                    system_target_zoom_ =
-                        system_frame_zoom(distance, params_);
-                } else {
-                    system_target_zoom_ = params_.system_zoom;
-                }
-            }
 
             if (dt <= 0.0) {
                 zoom_ = system_target_zoom_;
@@ -221,22 +192,6 @@ public:
             angle_transition_active_ = false;
             focus_x_ = target_x_;
             focus_y_ = target_y_;
-            if (has_system_destination_) {
-                const double dx = system_destination_x_ - target_x_;
-                const double dy = system_destination_y_ - target_y_;
-                const double distance = std::hypot(dx, dy);
-                const double available =
-                    0.5 * std::min(params_.window_width, params_.window_height) -
-                    params_.system_viewport_margin;
-                const auto fits = [&](double z) {
-                    return distance * params_.base_scale * z <=
-                           2.0 * available + 1.0e-9;
-                };
-                if (available > 0.0 && fits(zoom_)) {
-                    focus_x_ = 0.5 * (target_x_ + system_destination_x_);
-                    focus_y_ = 0.5 * (target_y_ + system_destination_y_);
-                }
-            }
             return;
         }
 
@@ -397,7 +352,6 @@ private:
     double angle_transition_to_ = 0.0;
     double angle_transition_remaining_ = 0.0;
     double angle_transition_total_ = 0.0;
-    bool system_zoom_manual_ = false;
     double system_target_zoom_ = 0.04;
     bool has_system_destination_ = false;
     double system_destination_x_ = 0.0;

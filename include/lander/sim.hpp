@@ -224,6 +224,23 @@ public:
     // `counter_clockwise` reverses the tangential direction. No continuing
     // stabilization.
     void circularize(bool counter_clockwise = false);
+    // M05-R3-15: one-shot developer initializer: places the ship in a
+    // body-synchronous circular orbit around the source body (the landed
+    // body when the ship is landed, otherwise the current reference body)
+    // on the side opposite the other body, with the binary's angular
+    // velocity, so the ship co-rotates with the binary. It is a single
+    // instantaneous state change; no continuing stabilization or autopilot
+    // after it. No-op while crashed.
+    void sync_orbit();
+    // M05-R3-16: one-shot developer initializer: deterministically solves a
+    // ballistic arc from the source body (the landed body when the ship is
+    // landed, otherwise the current reference body) to the other body using
+    // the real two-body gravity field and the bodies' future ephemeris, and
+    // places the ship at the arc's start: a small clearance shell above the
+    // source, unlanded, nose along the initial velocity. Returns false and
+    // leaves the state unchanged when no plausible solution exists for this
+    // binary phase. No-op (false) while crashed.
+    bool transfer();
     // Refill the fuel tank; allowed in flight and on the ground, never
     // after a crash.
     void refuel();

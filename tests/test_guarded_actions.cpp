@@ -140,6 +140,69 @@ void test_progress_label_and_expiry() {
           "progress feedback expires with the partial sequence");
 }
 
+// M05-R3-10/15/16: the retry and developer initializers share the same
+// triple-tap discipline and their own compact progress labels.
+void test_new_guarded_keys() {
+    TripleTapGuard guard;
+
+    guard.press(GuardedKey::kRetry, 100);
+    guard.press(GuardedKey::kRetry, 200);
+    check(guard.press(GuardedKey::kRetry, 300) == GuardedAction::kRetry,
+          "the third R press fires RETRY");
+    check(guard.empty(), "the retry sequence clears after firing");
+
+    TripleTapGuard sync;
+    sync.press(GuardedKey::kSyncOrbit, 100);
+    sync.press(GuardedKey::kSyncOrbit, 200);
+    check(sync.press(GuardedKey::kSyncOrbit, 300) ==
+              GuardedAction::kSyncOrbit,
+          "the third B press fires SYNC ORBIT");
+
+    TripleTapGuard xfer;
+    xfer.press(GuardedKey::kTransfer, 100);
+    xfer.press(GuardedKey::kTransfer, 200);
+    check(xfer.press(GuardedKey::kTransfer, 300) ==
+              GuardedAction::kTransfer,
+          "the third T press fires TRANSFER");
+
+    // Partial sequences of the new keys show their own labels and expire.
+    TripleTapGuard retry2;
+    retry2.press(GuardedKey::kRetry, 1000);
+    check(retry2.progress_label(1050) == "RETRY 1/3",
+          "retry progress uses its own label");
+    retry2.press(GuardedKey::kRetry, 1100);
+    check(retry2.progress_label(1150) == "RETRY 2/3",
+          "retry progress counts the second tap");
+    check(retry2.progress_label(
+              1000 + TripleTapGuard::kTripleTapWindowMs + 1)
+              .empty(),
+          "retry progress expires with the partial sequence");
+
+    TripleTapGuard sync2;
+    sync2.press(GuardedKey::kSyncOrbit, 1000);
+    check(sync2.progress_label(1050) == "SYNC ORBIT 1/3",
+          "sync-orbit progress uses its own label");
+
+    TripleTapGuard xfer2;
+    xfer2.press(GuardedKey::kTransfer, 1000);
+    xfer2.press(GuardedKey::kTransfer, 1100);
+    check(xfer2.progress_label(1150) == "TRANSFER 2/3",
+          "transfer progress counts the second tap");
+
+    // A mismatched guarded key still cancels a partial sequence of any of
+    // the six keys.
+    TripleTapGuard mixed;
+    mixed.press(GuardedKey::kSyncOrbit, 100);
+    mixed.press(GuardedKey::kTransfer, 200);
+    check(mixed.press(GuardedKey::kSyncOrbit, 300) ==
+              GuardedAction::kNone,
+          "B, T, B does not fire SYNC ORBIT");
+    mixed.press(GuardedKey::kTransfer, 400);
+    check(mixed.press(GuardedKey::kTransfer, 500) ==
+              GuardedAction::kNone,
+          "the interrupted transfer sequence must restart");
+}
+
 }  // namespace
 
 int main() {
@@ -149,6 +212,7 @@ int main() {
     test_autorepeat_is_ignored();
     test_mixed_o_and_shift_o_sequences();
     test_progress_label_and_expiry();
+    test_new_guarded_keys();
 
     if (failures == 0) {
         std::puts("All lander_guarded_actions_tests passed");

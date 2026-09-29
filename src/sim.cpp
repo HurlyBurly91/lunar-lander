@@ -18,6 +18,70 @@ double clamp01(double v) {
     return std::max(0.0, std::min(1.0, v));
 }
 
+// M05-R3-16: the transfer solver's clearance shell above a surface.
+constexpr double kTransferClearance = 15.0;
+
+// M05-R3-16: how far outside the actual terrain the transfer arc must
+// stay at each step, relative to the collision test the simulation itself
+// runs. The game re-checks terrain one fixed step after the solver's
+// sample, and the bodies rotate in between, so the margin keeps the
+// solver's guarantee valid against the game's test.
+constexpr double kTransferTerrainMargin = 1.0;
+
+// M05-R3-16: propagate (p, v) forward by exactly `steps` fixed steps of
+// size `dt` with the same semi-implicit Euler scheme and the same
+// two-body inverse-square field as Simulation::integrate_flight (gravity
+// sampled at each step's start time), without thrust, spin, fuel, or
+// collision. Pure: the inputs are unchanged.
+Vec2 propagate(const BinarySystem& bin, const Vec2& p0, const Vec2& v0,
+               double t0, int steps, double dt) {
+    Vec2 p = p0;
+    Vec2 v = v0;
+    double t = t0;
+    for (int i = 0; i < steps; ++i) {
+        const Vec2 a = bin.gravity(p, t);
+        v = v + a * dt;
+        p = p + v * dt;
+        t += dt;
+    }
+    return p;
+}
+
+// M05-R3-16: whether the unthrust arc from (p0, v0) stays outside both
+// bodies' actual terrain at every fixed step. This mirrors the collision
+// test the simulation applies each step (tidal-lock rotation included),
+// with a margin. Pure: no state is mutated.
+bool transfer_arc_clear(const BinarySystem& bin, const Vec2& p0,
+                        const Vec2& v0, double t0, int steps, double dt) {
+    Vec2 p = p0;
+    Vec2 v = v0;
+    double t = t0;
+    for (int i = 0; i < steps; ++i) {
+        const Vec2 a = bin.gravity(p, t);
+        v = v + a * dt;
+        p = p + v * dt;
+        t += dt;
+        for (int b = 0; b < 2; ++b) {
+            const Vec2 bp = bin.position(b, t);
+            const double rx = p.x - bp.x;
+            const double ry = p.y - bp.y;
+            const double rho = std::hypot(rx, ry);
+            if (rho < 1.0e-9) {
+                return false;
+            }
+            const double theta = std::atan2(ry, rx);
+            const Terrain& ter = bin.body(b).terrain;
+            const double surface =
+                ter.surface_radius_at_arc(
+                    ter.arc_at_angle(theta - bin.body_rotation(t)));
+            if (rho - surface < kTransferTerrainMargin) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool operator==(const Input& lhs, const Input& rhs) {
@@ -313,6 +377,283 @@ void Simulation::circularize(bool counter_clockwise) {
     // velocity: a one-time state change, with no continuing stabilization.
     state_.vx = bvel.x + right_x * speed * direction;
     state_.vy = bvel.y + right_y * speed * direction;
+}
+
+void Simulation::sync_orbit() {
+    if (state_.crashed) {
+        return;
+    }
+    const int source = state_.landed ? state_.landed_body : reference_body_;
+    const int other = 1 - source;
+    const double t = sim_time_;
+    const Vec2 spos = binary_.position(source, t);
+    const Vec2 svel = binary_.velocity(source, t);
+    const Vec2 opos = binary_.position(other, t);
+    const double away = std::hypot(spos.x - opos.x, spos.y - opos.y);
+    if (away < 1.0e-9) {
+        return;
+    }
+    // Body-synchronous circular orbit: the ship's offset from the source
+    // rotates with the binary's angular velocity, so the ship co-rotates
+    // with the binary and holds a fixed direction in the rotating frame.
+    // Its relative radial velocity is exactly zero. The initial attitude
+    // points radially out, away from the source (the far side of the
+    // binary). Like circularize, this is one instantaneous state change;
+    // no continuing stabilization or autopilot.
+    const double omega = binary_.omega();
+    const double r = std::cbrt(binary_.body(source).mu / (omega * omega));
+    const Vec2 dir{(spos.x - opos.x) / away, (spos.y - opos.y) / away};
+    State next{};
+    next.x = spos.x + dir.x * r;
+    next.y = spos.y + dir.y * r;
+    next.vx = svel.x - omega * (next.y - spos.y);
+    next.vy = svel.y + omega * (next.x - spos.x);
+    next.fuel = state_.fuel;
+    next.angle = normalize_angle(std::atan2(dir.y, dir.x));
+    next.omega = 0.0;
+    next.ticks = state_.ticks;
+    next.score = state_.score;
+    next.landed = false;
+    next.landed_body = -1;
+    set_state(next);
+}
+
+bool Simulation::transfer() {
+    if (state_.crashed) {
+        return false;
+    }
+    const int source = state_.landed ? state_.landed_body : reference_body_;
+    const int target = 1 - source;
+    const double t0 = sim_time_;
+    const double dt = config_.fixed_dt;
+    const Body& src = binary_.body(source);
+    const Body& tgt = binary_.body(target);
+
+    const Vec2 s_pos = binary_.position(source, t0);
+    const Vec2 t_pos = binary_.position(target, t0);
+    const double d0 = std::hypot(t_pos.x - s_pos.x, t_pos.y - s_pos.y);
+    if (d0 < 1.0e-9) {
+        return false;
+    }
+    // Departure: a small clearance shell above the source's worst-case
+    // surface, facing the target at the departure time.
+    const Vec2 dir{(t_pos.x - s_pos.x) / d0, (t_pos.y - s_pos.y) / d0};
+    const double r_dep = src.terrain.max_surface_radius() + kTransferClearance;
+    const Vec2 x0{s_pos.x + dir.x * r_dep, s_pos.y + dir.y * r_dep};
+
+    // The solver scans a deterministic finite set of candidate flight
+    // times (fixed fractions of the binary period), so it sees the same
+    // candidates for any binary phase. For each one it shoots initial
+    // velocities from the departure shell: a coarse polar scan finds the
+    // most promising basins of the terminal-miss landscape, a finer polar
+    // scan polishes each one, and a damped Newton step drives the miss
+    // below tolerance. The miss landscape has several basins (direct
+    // arcs, loop arcs, and diving loops); every candidate arc is checked
+    // against the actual terrain, so any arc that dips into a body is
+    // rejected. Bounded, deterministic, and independent of any player
+    // input.
+    constexpr double kFlightFractions[] = {0.15, 0.20, 0.25, 0.30, 0.40,
+                                           0.50};
+    constexpr double kMinSpeed = 10.0;
+    constexpr double kCoarseSpeedStep = 1.0;
+    constexpr int kCoarseSpeeds = 23;  // 10..32 m/s
+    constexpr int kCoarseDirs = 72;    // 5-degree steps
+    constexpr int kTopBasins = 6;
+    constexpr double kCoarseAccept = 25.0;
+    constexpr double kRefineSpeedStep = 0.25;
+    constexpr int kRefineSpeedRadius = 4;  // +/-1 m/s
+    constexpr int kRefineAngRadius = 2;    // +/-2 degrees, 1-degree steps
+    constexpr double kNewtonStep = 0.25;
+    constexpr int kNewtonMax = 6;
+    constexpr double kMaxSpeed = 60.0;
+    constexpr double kAcceptMiss = 5.0;
+
+    struct Solution {
+        double miss{};
+        double speed{};
+        double fraction{};
+        Vec2 v0{};
+    };
+    Solution best{};
+    bool have_best = false;
+
+    for (double fraction : kFlightFractions) {
+        const int steps = static_cast<int>(std::lround(fraction *
+                                                       binary_.period() / dt));
+        if (steps < 10) {
+            continue;
+        }
+        const double t1 = t0 + steps * dt;
+        const Vec2 s1 = binary_.position(source, t1);
+        const Vec2 g1 = binary_.position(target, t1);
+        const double dg = std::hypot(s1.x - g1.x, s1.y - g1.y);
+        if (dg < 1.0e-9) {
+            continue;
+        }
+        // Arrival: a small clearance shell above the target's surface on
+        // the side the departure is coming from, so the final approach
+        // stays outside the terrain.
+        const Vec2 approach{(s1.x - g1.x) / dg, (s1.y - g1.y) / dg};
+        const double r_arr =
+            tgt.terrain.max_surface_radius() + kTransferClearance;
+        const Vec2 x_goal{g1.x + approach.x * r_arr, g1.y + approach.y * r_arr};
+
+        auto miss_of = [&](const Vec2& v) {
+            const Vec2 f = propagate(binary_, x0, v, t0, steps, dt);
+            const double m = std::hypot(f.x - x_goal.x, f.y - x_goal.y);
+            return std::isfinite(m) ? m : 1.0e30;
+        };
+
+        // Coarse polar scan: keep the kTopBasins most promising candidates.
+        struct Coarse {
+            double miss{};
+            double speed{};
+            double ang{};
+        };
+        Coarse top[kTopBasins]{};
+        for (int k = 0; k < kTopBasins; ++k) {
+            top[k].miss = 1.0e30;
+        }
+        auto consider = [&](double miss, double speed, double ang) {
+            for (int k = 0; k < kTopBasins; ++k) {
+                if (miss < top[k].miss) {
+                    for (int j = kTopBasins - 1; j > k; --j) {
+                        top[j] = top[j - 1];
+                    }
+                    top[k] = {miss, speed, ang};
+                    return;
+                }
+            }
+        };
+        for (int si = 0; si < kCoarseSpeeds; ++si) {
+            const double speed = kMinSpeed + kCoarseSpeedStep * si;
+            for (int di = 0; di < kCoarseDirs; ++di) {
+                const double ang = kTwoPi * di / kCoarseDirs;
+                const Vec2 v{speed * std::cos(ang), speed * std::sin(ang)};
+                consider(miss_of(v), speed, ang);
+            }
+        }
+        if (top[0].miss > kCoarseAccept) {
+            continue;  // no basin at this flight time
+        }
+
+        for (int k = 0; k < kTopBasins; ++k) {
+            if (top[k].miss > 100.0) {
+                continue;  // no refine window can reach such a candidate
+            }
+            double m = top[k].miss;
+            Vec2 v0{top[k].speed * std::cos(top[k].ang),
+                    top[k].speed * std::sin(top[k].ang)};
+
+            // Fine polar scan around this coarse candidate.
+            for (int si = -kRefineSpeedRadius; si <= kRefineSpeedRadius;
+                 ++si) {
+                const double speed = top[k].speed + kRefineSpeedStep * si;
+                if (speed < 1.0e-9) {
+                    continue;
+                }
+                for (int ai = -kRefineAngRadius; ai <= kRefineAngRadius;
+                     ++ai) {
+                    const double ang = top[k].ang + kTwoPi * ai / 360.0;
+                    const Vec2 v{speed * std::cos(ang), speed * std::sin(ang)};
+                    const double mm = miss_of(v);
+                    if (mm < m) {
+                        m = mm;
+                        v0 = v;
+                    }
+                }
+            }
+
+            // Damped Newton polish on the terminal miss: central-difference
+            // 2x2 Jacobian, with the step halved whenever it fails to
+            // improve the miss.
+            for (int iter = 0; iter < kNewtonMax && m >= kAcceptMiss;
+                 ++iter) {
+                const Vec2 fp0 =
+                    propagate(binary_, x0, v0 - Vec2{kNewtonStep, 0}, t0,
+                              steps, dt);
+                const Vec2 fm0 =
+                    propagate(binary_, x0, v0 + Vec2{kNewtonStep, 0}, t0,
+                              steps, dt);
+                const Vec2 fp1 =
+                    propagate(binary_, x0, v0 - Vec2{0, kNewtonStep}, t0,
+                              steps, dt);
+                const Vec2 fm1 =
+                    propagate(binary_, x0, v0 + Vec2{0, kNewtonStep}, t0,
+                              steps, dt);
+                const double j00 = (fp0.x - fm0.x) / (2.0 * kNewtonStep);
+                const double j01 = (fp0.y - fm0.y) / (2.0 * kNewtonStep);
+                const double j10 = (fp1.x - fm1.x) / (2.0 * kNewtonStep);
+                const double j11 = (fp1.y - fm1.y) / (2.0 * kNewtonStep);
+                const double det = j00 * j11 - j01 * j10;
+                if (std::abs(det) < 1.0e-9) {
+                    break;  // singular or degenerate Jacobian
+                }
+                const Vec2 f = propagate(binary_, x0, v0, t0, steps, dt);
+                const double fx = f.x - x_goal.x;
+                const double fy = f.y - x_goal.y;
+                double dvx = (-fx * j11 + fy * j01) / det;
+                double dvy = (-fy * j00 + fx * j10) / det;
+                bool improved = false;
+                for (int damp = 0; damp < 6; ++damp) {
+                    const Vec2 trial{v0.x + dvx, v0.y + dvy};
+                    const double mt = miss_of(trial);
+                    if (mt < m) {
+                        v0 = trial;
+                        m = mt;
+                        improved = true;
+                        break;
+                    }
+                    dvx *= 0.5;
+                    dvy *= 0.5;
+                }
+                if (!improved) {
+                    break;
+                }
+            }
+
+            const double speed = std::hypot(v0.x, v0.y);
+            if (m >= kAcceptMiss || speed < 1.0e-9 || speed > kMaxSpeed) {
+                continue;  // not plausible: reject, never teleport
+            }
+            // The arc must stay outside both bodies' actual terrain at
+            // every flight step, by the same test the simulation applies.
+            if (!transfer_arc_clear(binary_, x0, v0, t0, steps, dt)) {
+                continue;
+            }
+
+            if (!have_best || m < best.miss ||
+                (m == best.miss && speed < best.speed) ||
+                (m == best.miss && speed == best.speed &&
+                 fraction < best.fraction)) {
+                best = {m, speed, fraction, v0};
+                have_best = true;
+            }
+        }
+    }
+
+    if (!have_best) {
+        return false;  // no plausible solution: the state is untouched
+    }
+
+    // One-shot activation: the ship is placed at the arc's start, unlanded
+    // and non-crashed, with the nose along the initial velocity. Fuel,
+    // score, and the phase clock are preserved; there is no autopilot after
+    // the placement.
+    State next{};
+    next.x = x0.x;
+    next.y = x0.y;
+    next.vx = best.v0.x;
+    next.vy = best.v0.y;
+    next.fuel = state_.fuel;
+    next.angle = normalize_angle(std::atan2(best.v0.y, best.v0.x));
+    next.omega = 0.0;
+    next.ticks = state_.ticks;
+    next.score = state_.score;
+    next.landed = false;
+    next.landed_body = -1;
+    set_state(next);
+    return true;
 }
 
 void Simulation::refuel() {

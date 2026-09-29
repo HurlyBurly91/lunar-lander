@@ -181,7 +181,8 @@ void test_manual_mode_and_wheel() {
     for (int i = 0; i < 100; ++i) {
         cam.update(0.0, 0.0, R + 20.0, 0.0, -1, false);
     }
-    check_close(cam.zoom(), 0.2, 1e-12, "manual zoom clamps at min");
+    check_close(cam.zoom(), lander::CameraParams{}.zoom_min, 1e-12,
+                "manual zoom clamps at the wide minimum");
 
     cam.update(0.0, 0.0, R + 20.0, 0.0, 0, true);
     check(cam.mode() == lander::CameraMode::kAuto, "M toggles back AUTO");
@@ -258,7 +259,7 @@ void test_full_revolution_anchor_and_zoom() {
                     "manual zoom-out sweep preserves vertical anchor");
     }
     check_close(cam.zoom(), p.zoom_min, 1e-9,
-                "manual zoom sweeps down to the 0.2X minimum");
+                "manual zoom sweeps down to the wide minimum");
 
     const double auto_y = lander::kReferenceRadius + 20.0;
     cam.snap(0.0, auto_y);
@@ -573,36 +574,57 @@ void test_angle_transition_preserves_simulation() {
           "camera transition does not change reference-body selection");
 }
 
-void test_system_destination_framing() {
+// M05-R3-13: the SYSTEM camera never auto-pans or auto-zooms. The focus is
+// always exactly the ship and the zoom is only ever changed by the wheel
+// (or the entry default), regardless of where the destination body is. A
+// destination that is out of frame is reported by the offscreen indicator
+// and the HUD, never by moving the camera.
+void test_system_destination_never_moves_camera() {
     lander::Camera cam;
     const lander::CameraParams& p = cam.params();
     cam.snap(0.0, lander::kReferenceRadius + 20.0);
     cam.set_system(true);
 
+    // Close destination: the ship stays exactly centred and the zoom stays
+    // at the entry default.
     cam.set_system_destination(100.0, 0.0);
     cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
-    check_close(cam.zoom(), lander::system_frame_zoom(100.0, p), 1.0e-12,
-                "near destination uses the fitted true-scale zoom");
-    check_close(cam.center_x(), 50.0, 1.0e-12,
-                "near destination frames the ship/destination midpoint");
+    check_close(cam.zoom(), p.system_zoom, 1.0e-12,
+                "a close destination does not change the SYSTEM zoom");
+    check_close(cam.center_x(), 0.0, 1.0e-12,
+                "a close destination keeps the ship exactly centred x");
     check_close(cam.center_y(), 0.0, 1.0e-12,
-                "near destination keeps the midpoint y");
+                "a close destination keeps the ship exactly centred y");
+    const ScreenPos ship = to_screen(0.0, 0.0, cam);
+    check_close(ship.x, p.window_width / 2.0, 1.0e-7,
+                "the ship sits at the exact viewport centre (x)");
+    check_close(ship.y, p.window_height / 2.0, 1.0e-7,
+                "the ship sits at the exact viewport centre (y)");
 
+    // Far destination: the same invariants hold.
     cam.set_system_destination(100000.0, 0.0);
     cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     check_close(cam.zoom(), p.system_zoom, 1.0e-12,
-                "a destination that cannot fit readably uses the default zoom");
+                "a far destination does not change the SYSTEM zoom");
     check_close(cam.center_x(), 0.0, 1.0e-12,
-                "an unfittable destination keeps the ship centred");
+                "a far destination keeps the ship exactly centred x");
+    check_close(cam.center_y(), 0.0, 1.0e-12,
+                "a far destination keeps the ship exactly centred y");
 
+    // The wheel is the only zoom control, and its result is preserved when
+    // the destination changes.
     cam.set_system_destination(100.0, 0.0);
-    cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     cam.update(0.0, 0.0, 0.0, 0.0, -1, false);
-    check(cam.system_zoom_manual(), "wheel input marks the SYSTEM zoom manual");
     const double manual_zoom = cam.zoom();
+    check(manual_zoom != p.system_zoom, "wheel input changes the zoom");
+    cam.set_system_destination(50000.0, -300.0);
     cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     check_close(cam.zoom(), manual_zoom, 1.0e-12,
-                "manual SYSTEM zoom is preserved while the destination is visible");
+                "changing the destination preserves the wheel zoom");
+    check_close(cam.center_x(), 0.0, 1.0e-12,
+                "the focus never moves to a ship/destination midpoint");
+    check(cam.has_system_destination(),
+          "the destination is still tracked for the offscreen indicator");
 }
 
 void test_offscreen_indicator() {
@@ -737,7 +759,7 @@ int main() {
     test_ship_representation_threshold();
     test_angle_transition_shortest_path();
     test_angle_transition_preserves_simulation();
-    test_system_destination_framing();
+    test_system_destination_never_moves_camera();
     test_system_smooth_zoom_and_no_local_switch();
     test_offscreen_indicator();
     test_marker_triangle_orientation();

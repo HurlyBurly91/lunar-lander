@@ -6,10 +6,12 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M05-R3 (camera readability, explicit HUD, reaction-wheel damping,
-navigation/gravity overlay, explicit CW/CCW circularize, triple-tap guards for
-`N` / `O` / `Shift+O`, compact crash-dialog geometry, tidal locking for both
-moons)
+Phase: M05-R3 extension (M05-R3-10..16: `R x3` guarded retry, wider LOCAL
+manual zoom, inertial starfield background, SYSTEM no-auto-pan, adaptive zoom
+display formatting, `B x3` body-synchronous orbit initializer, `T x3`
+ballistic inter-body transfer initializer) — automated work complete,
+awaiting user confirmation of H16..H21 (and the still-open M05-R1/R2/R3
+H-items)
 
 M05-R1 and M05-R2 automated work is complete, but their human-verification
 items remain open. Human verification of the M05-R2 build produced the
@@ -26,12 +28,33 @@ and pads rotate rigidly with their body, landed attachment and takeoff
 inherit the full surface-point velocity, landing is evaluated against the
 rotating surface point, and the contract destination pad is a moving target.
 
-All automated work for M05-R3 is complete (2026-09-29): clean build, all
-five test suites pass (including the new tidal-locking tests), whitespace
-check clean, headless GUI smoke OK. The milestone now awaits user
-confirmation of every still-open human-verification item (M05-R1, M05-R2,
-and M05-R3 H01..H15). M05 remains open and no completion record has been
-written.
+All automated work for M05-R3-01..09 was complete (2026-09-29): clean build,
+all five test suites pass (including the new tidal-locking tests), whitespace
+check clean, headless GUI smoke OK.
+
+Human verification of that build produced a further set of findings,
+persisted as M05-R3-10..16 (2026-09-29): `R` retry must use the same
+triple-tap protection as the other guarded controls; LOCAL manual zoom must
+reach a scale range similar to SYSTEM while keeping the reference body
+"down"; the starfield must become an inertial background that rotates with
+the final presentation camera angle (replacing the fixed screen-space
+backdrop); the SYSTEM camera must never auto-pan toward the destination
+(ship always exactly centred); zoom displays need unambiguous adaptive
+formatting (e.g. `0.04X`, `1.00X`); and two one-shot debug initializers are
+requested, `B x3` (body-synchronous orbit around the source body, far side
+from the target) and `T x3` (ballistic inter-body transfer computed with the
+real two-body gravity), both triple-tap guarded, neither an autopilot.
+
+Automated work for M05-R3-10..16 is complete (2026-09-29): clean build,
+all five test suites pass (including the new guarded-key, wide-zoom,
+inertial-starfield, SYSTEM no-pan, sync-orbit, and transfer tests),
+whitespace check clean, headless GUI smoke OK. See TASKS.md for per-item
+evidence, including the transfer solver design and the companion-source
+sync-orbit drift caveat.
+
+All still-open human-verification items (M05-R1, M05-R2, M05-R3
+H01..H15, and the new H16..H21) remain open until explicitly confirmed by
+the user. M05 remains open and no completion record has been written.
 
 M05 turns the M04 flight simulation into the first complete game loop by
 extending the world to a compact two-body system: a 1/9-scale companion

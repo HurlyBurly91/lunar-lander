@@ -595,9 +595,14 @@ This is a manual pilot aid, not an automatic stabilization system.
 
 Guard the dangerous/debug controls with a reusable triple-tap mechanism:
 
+- `R x3` fires the existing same-seed retry/restart action (M05-R3-10: `R`
+  joins the guarded set; a single press no longer restarts).
 - `N x3` fires the existing NEW SEED action.
 - `O x3` fires circularize CW.
 - `Shift+O x3` fires circularize CCW.
+- `B x3` fires the body-synchronous orbit debug initializer (M05-R3-15).
+- `T x3` fires the ballistic inter-body transfer debug initializer
+  (M05-R3-16).
 - require three discrete key-down events; holding or autorepeat must not count
 - `O` and `Shift+O` are distinct sequences
 - a mismatched guarded chord resets/restarts the sequence appropriately
@@ -611,6 +616,53 @@ Guard the dangerous/debug controls with a reusable triple-tap mechanism:
 
 This is an input-presentation guard. It must not change the underlying NEW
 SEED or circularize state changes.
+
+---
+
+## Debug orbit/transfer initializers (M05-R3-15/16)
+
+Add two one-shot developer initializers, both triple-tap guarded like the
+other debug controls. They are deliberate debug helpers, not autopilots: each
+performs exactly one state mutation and then the ship flies under ordinary
+two-body physics with no continuing correction, arrival burn, auto-landing,
+or hidden stabilization.
+
+### `B x3` — body-synchronous orbit
+
+- Source body: the landed body if the ship is landed, otherwise the current
+  reference body.
+- Target body: the other body.
+- Synchronous angular velocity equals the binary angular velocity
+  (`2*pi / binary_period`, same direction as the binary orbit).
+- Circular radius: `r = cbrt(mu_source / omega_sync^2)`.
+- Initial position: outside the source body, on the side opposite the target
+  body.
+- Initial velocity: source body ephemeris velocity plus the synchronous
+  tangential velocity, with no relative radial velocity.
+- Resulting state: unlanded, non-crashed, throttle 0, angular rate 0,
+  documented attitude; contract, score, fuel, seed, and phase preserved.
+- Expected sanity values (derived, not hard-coded): primary case `r` about
+  597.5 m (altitude about 265.2 m, speed about 17.3 m/s); companion case
+  `r` about 138.1 m (altitude about 101.2 m, speed about 4.0 m/s).
+
+### `T x3` — ballistic inter-body transfer
+
+- Source: the landed body if landed, otherwise the current reference body.
+- Target: the other body.
+- Compute a ballistic arc using the actual two-body gravity of both bodies
+  and the bodies' future ephemeris positions, starting from a small clearance
+  shell above the source body and arriving near the target body's surface
+  after a chosen flight time.
+- Solve numerically (for example a shooting method with Newton iteration over
+  a small set of candidate flight times); reject implausible solutions (NaN,
+  terrain penetration before arrival, terminal miss beyond tolerance); rank
+  valid solutions deterministically.
+- If a solution is found: set the ship's position and velocity once, unland
+  the ship, clear crashed state; throttle 0, angular rate 0; seed, score,
+  contract state, and phase preserved.
+- If no plausible solution exists: leave the ship state unchanged and show a
+  readable "transfer no solution" message.
+- After activation the ship flies under ordinary physics only.
 
 ---
 
@@ -676,7 +728,10 @@ Requirements:
   moons
 - both moon positions use their true simulation coordinates
 - no fake compression in rendering
-- stars remain the accepted fixed screen-space backdrop
+- stars are a decorative backdrop (SUPERSEDED by M05-R3-12: the starfield is
+  an inertial background that rotates with the final presentation camera
+  angle; it does not parallax-translate with the world and is unaffected by
+  mode, reference body, phase, or pan)
 - include a minimum-size ship marker when the correctly scaled lander would be
   difficult to see, and switch to a real lander representation once it is
   readable
@@ -684,8 +739,11 @@ Requirements:
 - rendered SYSTEM zoom eases toward the target rather than jumping
 - SYSTEM zoom is clamped between a wide minimum and a close maximum of at
   least ~`1.0x` (`2.0x` is the chosen implementation target)
-- destination framing respects manual/readability zoom; otherwise center the
-  ship and use the offscreen indicator
+- the ship stays at the exact viewport centre (SUPERSEDED by M05-R3-13: the
+  SYSTEM camera never auto-pans, auto-zooms, or re-centres toward the
+  destination; the destination is shown only through the offscreen
+  direction indicator, `DIST` / `V REL` / `RANGE` readouts, and the
+  destination marker/overlay)
 
 Use an initial system zoom on the order of:
 
@@ -988,7 +1046,26 @@ Add tests covering at least:
 - SYSTEM view does not auto-switch back to LOCAL
 - the SYSTEM ship marker/full-lander switch uses a readable projected-size
   threshold and preserves attitude continuity
-- starfield remains fixed in screen space
+- the SYSTEM camera never auto-pans: the ship stays at the exact viewport
+  centre at every zoom and across destination changes (M05-R3-13; supersedes
+  the destination auto-fit framing of M05-R3-02)
+- starfield is an inertial background: it rotates with the final presentation
+  camera angle, does not parallax-translate, is unaffected by mode/reference
+  body/phase/pan, returns to its base positions after a 360-degree camera
+  rotation, and is deterministic per seed (M05-R3-12; supersedes "starfield
+  remains fixed in screen space")
+- LOCAL manual zoom reaches a wide minimum similar to the SYSTEM wide
+  minimum while LOCAL AUTO keeps the readability floor (M05-R3-11)
+- HUD zoom displays use unambiguous adaptive formatting such as `0.04X`,
+  `0.10X`, `0.25X`, `1.00X` (M05-R3-14)
+- `R x3` fires the same-seed retry; single/double presses do nothing
+  (M05-R3-10)
+- the `B x3` synchronous-orbit initializer places a one-shot co-rotating
+  circular orbit state around the source body, far side from the target,
+  with no continuing correction (M05-R3-15)
+- the `T x3` transfer initializer deterministically solves a real two-body
+  ballistic arc, or leaves the state unchanged and reports no solution
+  (M05-R3-16)
 - moving-body render interpolation is smooth at representative render rates
 
 ### HUD / navigation cues
@@ -1071,7 +1148,11 @@ Human verification must include:
 - returning toward the primary is possible
 - no visible coordinate-frame teleport occurs when changing reference body or
   camera view
-- stars remain fixed in screen space
+- stars form an inertial backdrop that rotates consistently with the scene's
+  camera rotation in both LOCAL and SYSTEM, with no drift from zooming,
+  panning, mode/reference switches, or binary phase, and remains visually
+  pleasant at all camera angles (M05-R3-12; supersedes "stars remain fixed in
+  screen space")
 - M04 flame/camera/orbit presentation remains smooth
 - LOCAL AUTO keeps the lander readable at altitude (~16 px major/height)
 - SYSTEM mouse-wheel zoom is smooth from wide to close and does not
@@ -1095,6 +1176,24 @@ Human verification must include:
 - landing on a rotating pad is achievable and the contract loop still
   completes end to end
 - `DIST` / `V REL` / range-rate track the moving destination pad sensibly
+- `R x3` retry feels deliberate with clear progress feedback, and a single
+  `R` no longer restarts (M05-R3-10)
+- LOCAL manual wide zoom is smooth, reaches a scale range similar to SYSTEM,
+  keeps the reference body clearly "down", and never changes the screen
+  orientation (M05-R3-11)
+- the SYSTEM view no longer pans or auto-zooms toward the destination; the
+  ship stays exactly centred at every zoom and the destination remains
+  trackable through the indicator, `DIST` / `V REL` / `CLOSE-OPEN`, and the
+  overlay (M05-R3-13)
+- HUD zoom displays are unambiguous at wide values such as `0.04X`
+  (M05-R3-14)
+- SYNC ORBIT (`B x3`) begins a smooth, visible co-rotating circular orbit
+  around the source body on the far side from the target body, with
+  acceptable drift and no autopilot feel (M05-R3-15)
+- TRANSFER (`T x3`) places the ship on a visible ballistic arc from the
+  source body to the other moon that arrives near the target's surface without
+  thrust; the no-solution message appears when applicable; it feels like a
+  debug helper, not an autopilot (M05-R3-16)
 
 The coding model is text-only and must not inspect screenshots.
 
@@ -1124,8 +1223,11 @@ Do not implement in M05:
 - aerodynamics
 - time warp
 - docking
-- orbital autopilot
-- trajectory prediction
+- orbital autopilot (continuing automatic stabilization is excluded; the
+  one-shot debug initializers from M05-R3-15/16 place the ship once and are
+  not autopilots)
+- trajectory prediction (as a gameplay feature; the M05-R3-16 debug transfer
+  solver is a one-shot initializer, not a predicted-flight gameplay mode)
 - maneuver nodes
 - patched conics
 - sphere-of-influence physics switching
