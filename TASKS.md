@@ -1,7 +1,7 @@
 # Active Task
 
 Milestone: M05
-Request: M05-R1, M05-R2
+Request: M05-R1, M05-R2, M05-R3
 State: AWAITING HUMAN VERIFICATION
 
 ## Bootstrap note
@@ -19,6 +19,11 @@ summary. The milestone is now awaiting human verification: every open
 H-item remains open and is not closed until the user confirms each one. No M05
 completion record is written and M05 is not set to COMPLETE until that human
 acceptance happens.
+
+All automated work for M05-R3 (the camera/HUD/control fixes M05-R3-01..08 and
+the tidal-locking requirement M05-R3-09) is complete as of 2026-09-29; see the
+per-item evidence below. The M05-R3 group now awaits user confirmation of
+H01..H15. No M05 completion record exists yet.
 
 M05-R1 human verification (2026-09-28) found three presentation failures:
 (1) the local camera snaps/teleports when the automatically selected reference
@@ -775,6 +780,442 @@ prediction, maneuver nodes, autopilot, or other flight-computer features.
   Files: include/lander/camera.hpp, src/gui.cpp
   Evidence: lander::marker_triangle rendered in draw_lander
 
+## M05-R3 — human-verification feedback: camera readability, HUD clarity, reaction-wheel and circularize controls, tidal locking
+
+Source: USER (human-verification feedback on the M05-R2 build, 2026-09-28)
+
+Request group: M05-R3
+
+Status: AWAITING HUMAN VERIFICATION
+
+Supersedes: direction-preservation behavior for the `O` circularize control; the new explicit CW/CCW requirement is authoritative. M05-R3-09 additionally supersedes the M05 "Body rotation" non-goal (originally: "Do not add axial rotation in M05"; tidal locking, body spin, and rotational surface velocity listed as non-goals/future work): both moons are now tidally locked and the change is recorded in the milestone spec.
+
+### User requirements
+
+- [x] M05-R3-01 LOCAL AUTO readability floor
+  - Keep the LOCAL reference-body-relative camera, the exact M04 anchor, and the accepted near-surface AUTO behavior.
+  - Add a screen-space projected-lander readability floor targeting approximately `16 px` for the lander's major/height dimension.
+  - LOCAL AUTO must stop zooming out once that projected floor is reached.
+  - SYSTEM may still provide wider context; LOCAL prioritizes flying the spacecraft.
+  - This is camera/presentation only; do not mutate world or physics state.
+  Source: USER
+  Evidence: kMinReadableLanderPx = 16 (include/lander/camera.hpp);
+  tests/test_camera.cpp::test_auto_zoom_readability
+- [x] M05-R3-02 SYSTEM smooth wide-to-close zoom and readable ship representation
+  - SYSTEM must remain inertial, presentation-only, true-scale, and must not automatically switch back to LOCAL.
+  - Mouse wheel must change SYSTEM target zoom multiplicatively.
+  - Rendered SYSTEM zoom must ease toward the target rather than jumping.
+  - Keep a useful wide minimum near the current system minimum.
+  - Allow a maximum of at least ~`1.0x`, with `2.0x` as the chosen implementation target.
+  - Clamp SYSTEM zoom to its minimum and maximum.
+  - Destination framing must respect manual/readability zoom; otherwise center the ship and use the offscreen indicator.
+  - Switch from the wide oriented marker to a real lander representation at a readable threshold without a visible attitude pop.
+  Source: USER
+  Evidence: tests/test_camera.cpp::test_system_smooth_zoom_and_no_local_switch,
+  test_system_mode_zoom_clamp, test_system_destination_framing; src/gui.cpp
+  wheel handling and SYSTEM rendering
+- [x] M05-R3-03 Explicit reference-frame HUD readouts
+  - Replace opaque abbreviations with clear fields such as `REF`, `JOB`, `ALT`, `V RAD`, `V TAN`, `ATT`, `SPIN`, `ORB`, `THR`, `FUEL`, `DIST`, `V REL`, and `CLOSE`/`OPEN`/`HOLD`.
+  - `V RAD` / `V TAN` are relative to the current `REF`.
+  - `SPIN` comes from `State::omega`, shown in deg/s.
+  - `ORB` is relative tangential velocity divided by relative radial distance.
+  - `V REL` is target-body-relative speed.
+  - Signed range rate must be shown directionally, not as an ambiguous `DV` or `RATE`.
+  Source: USER
+  Evidence: tests/test_sim.cpp::test_hud_helper_readouts (spin_deg_per_s,
+  orbital_rate, range_rate_label); src/gui.cpp::draw_hud renders the explicit
+  labels; V REL/CLOSE-OPEN use the moving destination pad (M05-R3-09)
+- [x] M05-R3-04 Reaction-wheel angular-rate damping
+  - Add an unused, documented manual key.
+  - While held, apply a finite angular acceleration opposite `omega`.
+  - Taper or clamp the effect near zero.
+  - Release ends the damping.
+  - No direct `omega = 0`, no translation/teleport, no autopilot, and no fuel-consumption requirement.
+  Source: USER
+  Evidence: tests/test_sim.cpp::test_reaction_wheel_damping; src/sim.cpp
+  integrate_flight finite tapered damping; src/gui.cpp `E` key
+  (SDL_SCANCODE_E)
+- [x] M05-R3-05 Navigation/gravity vector overlay
+  - Add a compact screen-space overlay near the spacecraft showing target direction, target-relative velocity, net gravity, and the individual primary/companion gravity contributions.
+  - Show magnitudes such as `G0`, `G1`, and `GNET`.
+  - Use a monotonic, documented scaling.
+  - Preserve the existing offscreen target indicator.
+  - Add an explicit overlay toggle; prefer `G` if unused. Default ON for this development branch.
+  - Do not fake gravity or alter reference-body selection.
+  - No trajectory prediction or autopilot.
+  Source: USER
+  Evidence: tests/test_sim.cpp::test_navigation_cues,
+  tests/test_binary.cpp::test_gravity_from_matches_total (true two-body
+  fields); tests/test_camera.cpp::test_ship_representation_threshold (monotonic
+  cue scaling); src/gui.cpp::draw_navigation_overlay with `G` toggle, default
+  on; offscreen indicator preserved
+- [x] M05-R3-06 Explicit CW/CCW developer circularize
+  - `O` = clockwise.
+  - `Shift+O` = counter-clockwise.
+  - Use the current `REF` body.
+  - Zero relative radial velocity.
+  - Set tangential magnitude to `sqrt(mu_ref / r)`.
+  - Choose the tangential sign for the requested direction.
+  - Add the current reference-body global velocity.
+  - Apply as one instantaneous state change only.
+  - Update help text.
+  Source: USER
+  Evidence: tests/test_sim.cpp::test_circularize_directions,
+  test_circularize_state; src/sim.cpp::circularize(ccw); src/gui.cpp
+  `O` / `Shift+O` (triple-tap guarded, M05-R3-07); help text updated
+- [x] M05-R3-07 Triple-tap guards for dangerous/debug controls
+  - Guard the existing `N` NEW SEED action and the M05-R3-06 circularize
+    actions with a reusable triple-tap mechanism.
+  - `N x3` fires the existing NEW SEED action.
+  - `O x3` fires circularize CW.
+  - `Shift+O x3` fires circularize CCW.
+  - Require three discrete key-down events; holding or autorepeat must not
+    count.
+  - `O` and `Shift+O` are distinct sequences.
+  - A mismatched guarded chord resets/restarts the sequence appropriately.
+  - Partial sequences expire after roughly 600-800 ms between taps (implementation
+    target: 700 ms).
+  - Use real input/presentation time so the guard works while paused or crashed.
+  - Fire exactly once on tap 3, then clear the sequence.
+  - Taps 1 and 2 must not mutate simulation state.
+  - Add compact `1/3` and `2/3` HUD feedback if practical.
+  - Update help/usage text to show `N x3`, `O x3`, and `SHIFT+O x3`.
+  - Implement the guard as reusable logic and add automated tests for
+    single/double/triple press, timeout, autorepeat/holding, mixed
+    `O` / `Shift+O` sequences, and exact one-shot activation.
+  Source: USER
+  Evidence: tests/test_guarded_actions.cpp (single/double no-fire, one-shot
+  triple, timeout, autorepeat ignored, mixed O/Shift+O, progress label
+  expiry); src/gui.cpp TripleTapGuard wiring for N/O/Shift+O with `1/3`,
+  `2/3` HUD feedback; help/usage text shows `N x3`, `O x3`, `SHIFT+O x3`
+- [x] M05-R3-08 Compact crash-dialog geometry
+  - Fix the crash-dialog rendering bug seen after crashing into the companion,
+    where the CRASHED dialog becomes a tall rectangular column extending to the
+    bottom of the viewport.
+  - Make the dialog compact and content-sized/bounded.
+  - PRIMARY and COMPANION crashes must produce identical modal geometry.
+  - Modal dimensions must not depend on terrain clipping, reference body,
+    camera mode, or SYSTEM zoom.
+  - Preserve the existing crash text and actions.
+  - Add a geometry/helper test if practical.
+  Source: USER
+  Evidence: tests/test_camera.cpp::test_crash_modal_geometry (content-sized,
+  body/mode/zoom-independent, within viewport);
+  include/lander/camera.hpp::crash_modal_rect; src/gui.cpp::draw_overlay
+  centered modal with the existing text/actions
+- [x] M05-R3-09 Tidal locking: both moons rotate as real bodies
+  - Both moons are tidally locked to each other: real body rotation in the
+    simulation, not a visual-only effect.
+  - `body_rotation(t) = theta(t) - theta0`: zero at `t = 0`, same angular
+    rate and direction as the binary line of centres
+    (`omega_spin = omega_binary`, about a 216.94 s period for the canonical
+    binary).
+  - `world_angle = body_local_angle + body_rotation(t)`; use the inverse
+    (world angle minus `body_rotation(t)`) for terrain/collision queries.
+    Terrain is never regenerated or re-sampled; it rotates rigidly with the
+    body.
+  - Surface-point velocity:
+    `v_surface = v_body_center + omega x r_local_world`
+    (2D: `(-omega * y, +omega * x)` for the world offset `(x, y)` from the
+    body centre).
+  - Landed attachment rides the rotating surface: world position is the body
+    centre plus the local surface point rotated by `body_rotation(t)`;
+    velocity is the full surface-point velocity; the stored landed arc stays
+    body-local.
+  - Takeoff inherits the full surface-point velocity; no respawn/teleport.
+  - Landing contact and the safe/unsafe evaluation use ship velocity relative
+    to the surface-point velocity (not the body centre velocity alone).
+  - The contract destination pad has a time-varying world position and
+    velocity; HUD `DIST`, `V REL`, and `CLOSE`/`OPEN`/`HOLD` use the moving
+    pad.
+  - Preserve gravity, ephemeris, the 600 m separation, fixed-step
+    integration, reference-body selection, scoring, and determinism.
+  Source: USER
+  Evidence: tests/test_binary.cpp::test_body_rotation_law,
+  test_local_world_angle_transform, test_surface_point_velocity,
+  test_ephemeris_gravity_unchanged; tests/test_sim.cpp::
+  test_landed_attachment_rotating, test_takeoff_inherits_surface_velocity,
+  test_landing_vs_rotating_surface, test_destination_pad_moving_target,
+  test_rotating_determinism; existing suites updated to the rotating
+  surface-point frame (tests/test_sim.cpp state_relative,
+  test_landing_rules, test_navigation_cues; tests/test_binary.cpp
+  test_relative_kinematics); src/sim.cpp, src/gui.cpp
+
+### Constraints / non-goals
+
+- [x] M05-R3-P01 Preserve the M04 exact local player anchor, local reference frame, and authoritative fixed-step physics.
+  Evidence: tests/test_camera.cpp::test_full_revolution_anchor_and_zoom,
+  test_camera_does_not_modify_simulation_or_terrain;
+  tests/test_sim.cpp::test_fixed_step_determinism
+- [x] M05-R3-P02 SYSTEM camera remains presentation-only; it must not change simulation state or auto-switch to LOCAL.
+  Evidence: tests/test_camera.cpp::test_system_smooth_zoom_and_no_local_switch,
+  test_system_mode_no_resave_and_snap_keeps_system
+- [x] M05-R3-P03 Reaction-wheel damping must not teleport, translate, zero `omega` directly, consume fuel, or become an autopilot.
+  Evidence: tests/test_sim.cpp::test_reaction_wheel_damping (finite damped
+  decay, no position/velocity change, no fuel use, no direct zeroing)
+- [x] M05-R3-P04 Navigation/gravity overlay must not fake gravity, alter reference-body selection, add trajectory prediction, or add autopilot.
+  Evidence: tests/test_sim.cpp::test_navigation_cues (true inverse-square
+  fields, real relative velocity); tests/test_sim.cpp::
+  test_reference_body_influence unchanged
+- [x] M05-R3-P05 Circularize remains a one-time developer state change; no continuing stabilization force.
+  Evidence: tests/test_sim.cpp::test_circularize_state (single instantaneous
+  state change; subsequent steps are ordinary physics)
+- [x] M05-R3-P06 Existing unresolved M05-R1 and M05-R2 human-verification items remain open unless the user explicitly passes them.
+  Evidence: this ledger keeps every M05-R1/M05-R2 H-item open; M05-R3
+  H01..H15 are all open
+- [x] M05-R3-P07 Text-only model: do not inspect screenshots or generated image artifacts.
+  Evidence: no image file was read in this work; GUI verification used exit
+  status, logs, and numerical tests only
+- [x] M05-R3-P08 Triple-tap guarding is input/presentation only; it must not
+  change circularize physics, NEW SEED semantics, simulation timing, or
+  reference-body behavior.
+  Evidence: include/lander/guarded_actions.hpp is a pure input helper (no
+  simulation types); tests/test_guarded_actions.cpp; circularize and reset
+  semantics covered by the unchanged sim tests
+- [x] M05-R3-P09 The crash dialog remains a presentation modal; fixing its
+  geometry must not change crash detection, contract state, score, restart
+  actions, or simulation state.
+  Evidence: tests/test_camera.cpp::test_crash_modal_geometry (pure geometry
+  helper); tests/test_sim.cpp::test_crash_rules, test_terminal_state_is_frozen
+  unchanged and passing
+- [x] M05-R3-P10 Do not add a general modal framework, options system, or new
+  game architecture for M05-R3-07/M05-R3-08.
+  Evidence: only the small `guarded_actions.hpp` helper and the
+  `crash_modal_rect` screen-geometry helper were added; no new subsystems
+- [x] M05-R3-P11 The rotation must not change the binary ephemeris, gravity,
+  the 600 m separation, fixed-step integration, reference-body selection,
+  scoring, or determinism; it only changes body-local to world mapping and
+  surface velocities.
+  Evidence: tests/test_binary.cpp::test_ephemeris_gravity_unchanged (closed-
+  form positions/velocities/gravity, 600 m separation, ~216.94 s period, no
+  force from rotation); tests/test_sim.cpp::test_rotating_determinism,
+  test_fixed_step_determinism; full ctest suite
+- [x] M05-R3-P12 No respawn/teleport of a landed or departing ship: takeoff
+  inherits the full surface-point velocity; the crashed state remains
+  terminal.
+  Evidence: tests/test_sim.cpp::test_takeoff_inherits_surface_velocity
+  (trajectory-identical manual release), test_landed_attachment_rotating,
+  test_terminal_state_is_frozen
+
+### Derived implementation tasks
+
+- [x] M05-R3-D01 Add readability constants/params and use them in LOCAL AUTO zoom selection.
+  Files: include/lander/camera.hpp (kLanderMajorMetres, kMinReadableLanderPx,
+  camera_readability_zoom)
+- [x] M05-R3-D02 Add SYSTEM target-zoom state, wheel handling, smoothing, clamping, and destination-framing rules.
+  Files: src/camera.cpp (target zoom easing/clamp), src/gui.cpp (wheel,
+  destination framing)
+- [x] M05-R3-D03 Use the shared projected-lander readability threshold for the SYSTEM ship marker/full-lander switch.
+  Files: include/lander/camera.hpp::lander_uses_full_model, src/gui.cpp
+- [x] M05-R3-D04 Add pure HUD/navigation helper functions and rewrite the HUD panel with explicit labels.
+  Files: include/lander/sim.hpp (spin_deg_per_s, orbital_rate,
+  range_rate_label), src/gui.cpp::draw_hud
+- [x] M05-R3-D05 Add reaction-wheel input/config fields and integrate finite damped angular acceleration into `integrate_flight`.
+  Files: include/lander/sim.hpp (Input::reaction_wheels,
+  Config::reaction_wheel_*), src/sim.cpp::integrate_flight, src/gui.cpp (`E`)
+- [x] M05-R3-D06 Add per-body gravity helper(s) and a navigation-cue helper, then render the compact screen-space overlay with a `G` toggle.
+  Files: include/lander/sim.hpp (gravity_from, navigation_cues), src/sim.cpp,
+  src/gui.cpp::draw_navigation_overlay
+- [x] M05-R3-D07 Change circularize to explicit CW/CCW using `O` / `Shift+O` while preserving the one-time developer-state-change semantics.
+  Files: src/sim.cpp::circularize(ccw), src/gui.cpp (`O` / `Shift+O`)
+- [x] M05-R3-D08 Update/extend automated tests and verification evidence.
+  Files: tests/test_camera.cpp, tests/test_sim.cpp, tests/test_binary.cpp,
+  tests/test_guarded_actions.cpp, this ledger
+- [x] M05-R3-D09 Add a reusable triple-tap guarded-action helper and integrate
+  it for `N`, `O`, and `Shift+O`, ignoring autorepeat and using real
+  input/presentation time.
+  Files: include/lander/guarded_actions.hpp, src/gui.cpp
+- [x] M05-R3-D10 Add compact triple-tap progress feedback and update
+  help/usage text for the guarded controls.
+  Files: src/gui.cpp (HUD progress line, usage text)
+- [x] M05-R3-D11 Make the crash dialog a compact, content-sized screen-space
+  modal with identical geometry for primary/companion crashes, independent of
+  terrain clipping, reference body, camera mode, and SYSTEM zoom.
+  Files: include/lander/camera.hpp::crash_modal_rect, src/gui.cpp::draw_overlay
+- [x] M05-R3-D12 Add `BinarySystem::body_rotation(t)` (= `theta(t) - theta0`)
+  and document the rigid-body rotation convention (both bodies, same
+  rate/direction as the line of centres, zero at t=0).
+  Files: include/lander/binary.hpp::body_rotation, src/binary.cpp
+- [x] M05-R3-D13 Route terrain/collision queries through the inverse transform
+  (world angle minus `body_rotation(t)`) and make `attached_state` /
+  `attach_to_body` place the ship at the rotated surface point with the full
+  surface-point velocity.
+  Files: src/sim.cpp (surface_radius_at/altitude_at rotation param,
+  attached_state, attach_to_body via binary SurfacePoint)
+- [x] M05-R3-D14 Update `try_takeoff` to inherit the full surface-point
+  velocity and update `resolve_ground_contact` to evaluate relative
+  velocity/attitude against the rotating surface point; landing stores the
+  body-local arc and the surface-point velocity.
+  Files: src/sim.cpp::try_takeoff, src/sim.cpp::resolve_ground_contact
+- [x] M05-R3-D15 Make the contract destination pad (navigation cues, HUD
+  `DIST`/`V REL`/`RANGE`, contract banner/destination marker) use the pad's
+  time-varying world position and surface-point velocity; render body
+  terrain/pads rotated by `body_rotation(t)`.
+  Files: src/sim.cpp (moving-pad navigation_cues), src/gui.cpp (rotated
+  terrain/pad rendering, destination marker)
+
+### Automated verification
+
+- [x] M05-R3-V01 LOCAL AUTO projected-size floor
+  - After high-altitude AUTO flight, assert `camera.scale() * lander_major_metres >= 16` (within tolerance).
+  - Assert near-surface AUTO still meets the same projected-size floor.
+  - Assert the M04 anchor and local-frame behavior are unchanged for a representative case.
+  Evidence: tests/test_camera.cpp::test_auto_zoom_readability (floor at
+  altitude and near-surface; anchor preserved by
+  test_full_revolution_anchor_and_zoom)
+- [x] M05-R3-V02 SYSTEM smooth zoom
+  - Wheel input changes target zoom in the correct direction.
+  - Rendered zoom eases toward target over multiple positive-dt updates.
+  - Zoom remains clamped to `[system_zoom_min, system_zoom_max]`.
+  - SYSTEM angle remains inertial (`0` or unchanged by local motion).
+  - SYSTEM mode does not auto-switch to LOCAL.
+  - Destination framing respects manual/readability zoom; otherwise center ship + offscreen indicator.
+  Evidence: tests/test_camera.cpp::test_system_smooth_zoom_and_no_local_switch,
+  test_system_mode_zoom_clamp, test_system_destination_framing
+- [x] M05-R3-V03 Ship representation threshold
+  - Expose/test the marker-vs-full-lander threshold using the same projected-size constant.
+  - Assert the marker and full lander use the same attitude transform at the threshold.
+  Evidence: tests/test_camera.cpp::test_ship_representation_threshold
+- [x] M05-R3-V04 HUD helper definitions
+  - Test `spin_deg_per_s`, `ORB` (relative tangential / relative radial), `V REL` (target-body-relative speed), and signed range-rate label (`CLOSE`/`OPEN`/`HOLD`).
+  - Assert signs and zero cases behave correctly.
+  Evidence: tests/test_sim.cpp::test_hud_helper_readouts
+- [x] M05-R3-V05 Reaction-wheel damping
+  - Held damping reduces `|omega|` over time without setting it directly to zero.
+  - Taper near zero is finite and stable.
+  - Release stops further damping.
+  - No position/velocity translation occurs from the damping itself.
+  - No fuel is consumed by the damping itself.
+  Evidence: tests/test_sim.cpp::test_reaction_wheel_damping
+- [x] M05-R3-V06 Navigation/gravity cues
+  - Per-body gravity helpers match the analytical two-body expressions.
+  - Net gravity equals the vector sum of the per-body contributions.
+  - Target direction and target-relative velocity use the correct contract destination and body velocity.
+  - Overlay scaling is monotonic in the linear region.
+  Evidence: tests/test_sim.cpp::test_navigation_cues,
+  tests/test_binary.cpp::test_gravity_from_matches_total,
+  tests/test_camera.cpp::test_ship_representation_threshold (monotonic cue
+  scale)
+- [x] M05-R3-V07 Explicit CW/CCW circularize
+  - `O` produces clockwise relative tangential velocity.
+  - `Shift+O` produces counter-clockwise relative tangential velocity.
+  - Relative radial velocity is zero.
+  - Tangential magnitude is `sqrt(mu_ref / r)`.
+  - Global ship velocity equals reference-body velocity plus the chosen relative orbital velocity.
+  - Position, angle, and fuel are unchanged by the circularize itself.
+  Evidence: tests/test_sim.cpp::test_circularize_directions,
+  test_circularize_state
+- [x] M05-R3-V08 Full verification commands
+  - `cmake --build build`
+  - `ctest --test-dir build --output-on-failure`
+  - `git diff --check`
+  - Existing headless GUI smoke paths
+  Evidence: see the M05-R3 entry in `## Verification evidence` (2026-09-29
+  run: clean build, 5/5 ctest, no whitespace errors, headless smoke OK)
+- [x] M05-R3-V09 Triple-tap guarded-action helper
+  - Single and double presses return no action and do not fire.
+  - Third press within the 700 ms window fires exactly once and clears.
+  - A fourth/immediate press after firing starts a new sequence rather than
+    refiring.
+  - Timeout between taps resets the sequence.
+  - Autorepeat/holding input is ignored.
+  - `O` and `Shift+O` sequences are independent; a mismatched chord
+    resets/restarts appropriately.
+  - The progress label exposes `1/3` and `2/3` states and expires with the
+    sequence.
+  Evidence: tests/test_guarded_actions.cpp (all requirement-list cases)
+- [x] M05-R3-V10 Crash-dialog geometry helper
+  - The computed modal rectangle is content-sized/bounded for the existing
+    crash text/actions.
+  - Primary and companion crash inputs produce the same modal rectangle.
+  - The rectangle is independent of terrain clipping, reference body, camera
+    mode, and SYSTEM zoom.
+  - The rectangle remains within a representative viewport.
+  Evidence: tests/test_camera.cpp::test_crash_modal_geometry
+- [x] M05-R3-V11 Rotation law and tidal-lock invariant
+  - `body_rotation(0) = 0` and `body_rotation(t) = theta(t) - theta0` at
+    multiple t.
+  - `d(body_rotation)/dt = omega_binary`; period about 216.94 s.
+  - Both bodies share the rate/direction; the primary's face toward the
+    companion (and vice versa) is invariant over a full orbit.
+  Evidence: tests/test_binary.cpp::test_body_rotation_law
+- [x] M05-R3-V12 Local to world angle transform
+  - `world = local + rotation`; the inverse recovers the local angle
+    (mod 2 pi) at multiple bodies/times/angles.
+  - Terrain radius queried via the inverse at a world angle equals the
+    local-angle query.
+  Evidence: tests/test_binary.cpp::test_local_world_angle_transform
+- [x] M05-R3-V13 Surface-point velocity
+  - `v_surface(t) = v_center(t) + (-omega * y, +omega * x)` for the world
+    offset, checked at multiple times/arcs.
+  - Equals the finite-difference time derivative of the analytic surface
+    point's position.
+  - Zero offset (centre) gives exactly the centre velocity.
+  Evidence: tests/test_binary.cpp::test_surface_point_velocity
+- [x] M05-R3-V14 Landed attachment on a rotating body
+  - `attached_state`/`attach` position equals centre + rotated local surface
+    point at multiple times; radial distance equals the surface radius (stays
+    on the surface).
+  - Velocity equals the full surface-point velocity.
+  - The stored landed arc is unchanged over time; the nose points along the
+    local radial.
+  Evidence: tests/test_sim.cpp::test_landed_attachment_rotating
+- [x] M05-R3-V15 Takeoff inherits the full surface-point velocity
+  - After takeoff from a rotating pad, the ship's velocity equals the
+    surface-point velocity at release (not the centre velocity alone);
+    position is unchanged at the release instant.
+  Evidence: tests/test_sim.cpp::test_takeoff_inherits_surface_velocity
+- [x] M05-R3-V16 Landing/crash relative to the rotating surface
+  - A ship matching the surface-point velocity within the safe thresholds
+    lands safely; a ship with only the centre-relative velocity safe but a
+    large surface-relative tangential velocity crashes.
+  - The post-landing state carries the surface-point velocity and the
+    body-local arc of the contact point.
+  Evidence: tests/test_sim.cpp::test_landing_vs_rotating_surface
+- [x] M05-R3-V17 Contract destination pad is a moving target
+  - `navigation_cues` target position/velocity equal the destination pad's
+    analytic rotating-surface point at multiple times.
+  - The pad world position is time-varying (differs at two times) and
+    consistent with body centre + rotation.
+  Evidence: tests/test_sim.cpp::test_destination_pad_moving_target
+- [x] M05-R3-V18 Determinism with rotating bodies
+  - Two same-seed simulations with identical input sequences (including a
+    landing on the companion and a takeoff) produce bit-identical states;
+    reset restores the same rotation phase.
+  Evidence: tests/test_sim.cpp::test_rotating_determinism
+- [x] M05-R3-V19 Ephemeris/gravity/period unchanged
+  - Binary position/velocity/gravity samples and the ~216.94 s period match
+    the pre-rotation values; the rotation adds no force to free flight.
+  Evidence: tests/test_binary.cpp::test_ephemeris_gravity_unchanged
+
+### Human verification
+
+- [ ] M05-R3-H01 LOCAL AUTO keeps the lander readable at altitude (~16 px major/height) and does not zoom out until the ship is a dot.
+- [ ] M05-R3-H02 SYSTEM mouse-wheel zoom feels smooth from wide to close, does not auto-switch to LOCAL, and the lander becomes clearly readable at close zoom without an attitude pop.
+- [ ] M05-R3-H03 The navigation/gravity vector overlay is useful, compact, and not visually cluttered; `G` toggles it.
+- [ ] M05-R3-H04 HUD labels are explicit and consistent with the chosen reference/destination frames.
+- [ ] M05-R3-H05 Reaction-wheel damping feels controllable and gentle, not a hard stop or autopilot.
+- [ ] M05-R3-H06 `O` / `Shift+O` circularize direction is intuitive and matches the expected CW/CCW orbit.
+- [ ] M05-R3-H07 Re-run affected M05-R1/M05-R2 flows (primary/companion flight, SYSTEM view, landing, takeoff, contract loop) and confirm no regressions.
+- [ ] M05-R3-H08 `N x3`, `O x3`, and `Shift+O x3` feel deliberate; single/double
+  presses do not accidentally restart or circularize, and the compact progress
+  feedback is understandable.
+- [ ] M05-R3-H09 The CRASHED dialog is compact and identical in shape for
+  primary/companion crashes, with no tall column artifact, while preserving the
+  existing text/actions.
+- [ ] M05-R3-H10 Each moon visibly keeps the same face toward the other while
+  orbiting (terrain relief/pads rotate with the body, not a fixed texture).
+- [ ] M05-R3-H11 A landed ship rides the moving surface without slipping,
+  popping, or teleporting.
+- [ ] M05-R3-H12 Takeoff from a rotating surface departs with the surface
+  motion (no visible jump); landing on a rotating pad is achievable.
+- [ ] M05-R3-H13 The contract loop completes end to end with rotating bodies
+  (including the return contract).
+- [ ] M05-R3-H14 `DIST`/`V REL`/`CLOSE-OPEN` track the moving destination pad
+  sensibly.
+- [ ] M05-R3-H15 No regressions in M05-R1/R2/R3-01..08 flows (flight, SYSTEM
+  view, camera, HUD, guarded controls, crash dialog).
+
 ## Verification evidence
 
 Automated execution summary (all re-run this session):
@@ -812,7 +1253,31 @@ M05-R2 (automated work complete, awaiting human re-verification):
   `build/lander_gui`): default spawn, `--system-view`, and
   `--orbit-demo --system-view` all ran for 120 frames and exited 0.
 
-The only remaining M05 work is human verification: M05-R2-H01..H04 (which
-re-verify failed M05-R1-H03/H04/H05) and any still-open M05-R1 human
-items. M05 stays open, with no completion record, until the user confirms
-those items.
+M05-R3 (automated work complete, awaiting human verification) — run on
+2026-09-29:
+
+- Build: `cmake --build build --parallel` -> clean, exit 0 (M05-R3-V08).
+- Tests: `ctest --test-dir build --output-on-failure` -> 5/5 passed
+  (lander_tests, lander_binary_tests, lander_camera_tests,
+  lander_starfield_tests, lander_guarded_actions_tests) (M05-R3-V08).
+  The new/updated tests cover the LOCAL AUTO readability floor, smooth
+  SYSTEM zoom/clamping/destination framing, the shared ship-representation
+  threshold, the explicit HUD helper readouts, reaction-wheel damping,
+  true-field navigation/gravity cues, explicit CW/CCW circularize, the
+  triple-tap guarded-action helper, the compact crash-modal geometry, and
+  the tidal-locking suite (rotation law, local/world angle transform,
+  surface-point velocity, rotating landed attachment, takeoff velocity
+  inheritance, landing/crash vs the rotating surface, moving destination
+  pad, determinism with rotating bodies, unchanged ephemeris/gravity/
+  period).
+- Whitespace: `git diff --check` -> no errors (M05-R3-V08).
+- Headless GUI smoke (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`,
+  `build/lander_gui`, 10 s `timeout`): ran to the timeout with no crash;
+  final state `state=landed ticks=1199` (M05-R3-V08).
+- No image files were read at any point (text-only constraint,
+  M05-R3-P07).
+
+The only remaining M05 work is human verification: the still-open M05-R1
+items, M05-R2-H01..H04 (which re-verify the failed M05-R1-H03/H04/H05),
+and M05-R3-H01..H15. M05 stays open, with no completion record, until the
+user confirms those items.

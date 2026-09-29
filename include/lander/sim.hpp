@@ -21,6 +21,11 @@ struct Config {
     double safe_vertical_speed{2.0};
     double safe_horizontal_speed{1.0};
     double safe_angle_rad{0.15};
+    // M05-R3: finite angular damping for the manual reaction-wheel control.
+    // The full acceleration is applied only when `|omega|` reaches the taper
+    // rate; it tapers linearly toward zero and never zeroes omega directly.
+    double reaction_wheel_accel{0.8};
+    double reaction_wheel_taper{0.25};
 };
 
 struct State {
@@ -62,6 +67,8 @@ struct Input {
     bool rotate_left{false};
     bool rotate_right{false};
     double main_throttle{0.0};
+    // M05-R3: manual reaction-wheel angular-rate damping (polled key).
+    bool reaction_wheels{false};
 };
 
 struct LocalVelocity {
@@ -70,18 +77,21 @@ struct LocalVelocity {
 };
 
 // Body-relative navigation helpers. All quantities are relative to the
-// given body's centre (bpos) and its ephemeris velocity (bvel). The bodies
-// do not spin in M05, so a body's local frame coincides with the world
-// frame and local angles are world angles.
+// given body's centre (bpos) and the velocity passed as bvel; ground and
+// landing checks pass the rotating surface point's velocity so the relative
+// components include the tidal-lock spin (M05-R3).
 double radial_distance(const State& state, const Vec2& bpos);
 double local_up_angle(const State& state, const Vec2& bpos);
 double local_attitude_angle(const State& state, const Vec2& bpos);
 LocalVelocity local_velocity(const State& state, const Vec2& bpos,
-                             const Vec2& bvel);
+                              const Vec2& bvel);
+// The terrain arc (and surface radius) below `state`: the world angle from
+// the body centre converted to a body-local angle by subtracting the
+// body's tidal-lock spin `body_rotation` (0.0 for a non-spinning body).
 double surface_radius_at(const Terrain& terrain, const State& state,
-                          const Vec2& bpos);
+                          const Vec2& bpos, double body_rotation = 0.0);
 double altitude_at(const Terrain& terrain, const State& state,
-                    const Vec2& bpos);
+                    const Vec2& bpos, double body_rotation = 0.0);
 // Presentation: the ship's local angular rate (rad/s) about the given body's
 // centre: the body-relative tangential velocity divided by the body-relative
 // radial distance. Zero at the exact body centre. The sign encodes direction.
@@ -95,6 +105,44 @@ double local_angular_velocity(const State& state, const Vec2& bpos,
 double target_range_rate(const Vec2& ship_pos, const Vec2& ship_vel,
                           const Vec2& target_pos, const Vec2& target_vel);
 
+// M05-R3: the ship's local angular rate (rad/s) about a body's centre,
+// presented in degrees per second for the HUD.
+inline double spin_deg_per_s(const State& state) {
+    return state.omega * (180.0 / kPi);
+}
+
+// M05-R3: relative tangential velocity divided by relative radial distance
+// (the "ORB" readout). Same definition as local_angular_velocity, exposed
+// with an explicit HUD name.
+double orbital_rate(const State& state, const Vec2& bpos,
+                     const Vec2& bvel);
+
+// M05-R3: directional label for a signed range rate. Negative range rates
+// are closing, positive range rates are opening.
+const char* range_rate_label(double range_rate, double tolerance = 0.05);
+
+// M05-R3: pure navigation/gravity cues for the compact screen-space overlay.
+// The target is the contract destination base pad: a point fixed on the
+// destination body's rotating surface, so both its position and its velocity
+// track the tidal-lock spin; the relative velocity is the ship's minus that
+// surface point's velocity. All gravity is the true two-body inverse-square
+// field (no faking).
+struct NavCues {
+    Vec2 target_position{};
+    Vec2 target_direction{};
+    double target_distance{};
+    Vec2 relative_velocity{};
+    double relative_speed{};
+    Vec2 gravity_primary{};
+    Vec2 gravity_companion{};
+    Vec2 net_gravity{};
+    double g_primary{};
+    double g_companion{};
+    double g_net{};
+};
+NavCues navigation_cues(const State& state, const BinarySystem& system,
+                         double t, int destination_body);
+
 // M05-R2: deterministic reference-body selection by local gravitational
 // influence, `mu / distance^2`, with hysteresis. The current body is kept
 // unless the other body's influence exceeds `margin *` the current influence;
@@ -104,8 +152,9 @@ int reference_body_for(double mu0, double mu1, double distance0,
 
 // Presentation only: the state of a ship attached to `body_index` at the
 // body-local surface arc `landed_arc`, at ephemeris time `t`. The position
-// is the body's surface point at that arc, the velocity is the body's
-// ephemeris velocity, and the nose points along the local vertical.
+// is the body's surface point at that arc (tidal-lock spin included), the
+// velocity is that surface point's full inertial velocity (translational
+// plus spin), and the nose points along the local vertical (radial out).
 State attached_state(const BinarySystem& system, int body_index,
                      double landed_arc, double t);
 
@@ -171,8 +220,10 @@ public:
 
     // One-time developer control: set the velocity for a circular orbit
     // around the current reference body (body-relative circular speed plus
-    // the body's own ephemeris velocity). No continuing stabilization.
-    void circularize();
+    // the body's own ephemeris velocity). Clockwise is the default;
+    // `counter_clockwise` reverses the tangential direction. No continuing
+    // stabilization.
+    void circularize(bool counter_clockwise = false);
     // Refill the fuel tank; allowed in flight and on the ground, never
     // after a crash.
     void refuel();

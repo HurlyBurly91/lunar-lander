@@ -291,18 +291,52 @@ Reset with the same seed must restore the same binary phase.
 
 ---
 
-## Body rotation
+## Body rotation (M05-R3)
 
-Do not add axial rotation in M05.
+SUPERSEDES the original "do not add axial rotation in M05" non-goal: M05-R3
+adds tidal locking.
 
-Each moon translates around the barycentre but does not spin about its own
-centre.
+Both moons are tidally locked to each other: each body spins about its own
+centre with the same angular rate and direction as the binary line of centres.
 
-Therefore a point fixed on a body's surface has the body's translational
-velocity in M05.
+    body_rotation(t) = theta(t) - theta0
 
-Tidal locking, body spin, rotational surface velocity, and day/night cycles are
-future work.
+The rotation is zero at `t = 0` and equals the binary phase for all time; the
+spin rate is the binary orbital rate (`omega_binary`, about a 216.94 s period
+for the canonical binary). This is real body rotation in the simulation, not
+a visual-only effect.
+
+A terrain feature at body-local angle `phi` appears at world angle:
+
+    world_angle = body_local_angle + body_rotation(t)
+
+The inverse (world angle minus `body_rotation(t)`) is used for terrain and
+collision queries, so a body's generated terrain is never regenerated or
+re-sampled; it simply rotates rigidly with the body.
+
+A point fixed on a body's surface at local angle `phi` carries the full
+rotating-surface velocity:
+
+    v_surface = v_body_center + omega_spin x r_local_world
+    2D:        v_surface = v_center + (-omega * y, +omega * x)
+
+where `(x, y)` is the point's offset from the body centre in world
+coordinates.
+
+A landed ship rides the rotating surface: its attachment arc stays body-local
+while its world position and velocity follow the surface point. Takeoff
+inherits the full surface-point velocity (no respawn/teleport). Landing
+contact and the safe/unsafe evaluation use the ship velocity relative to the
+surface-point velocity.
+
+The contract destination pad is fixed to the rotating surface, so it has a
+time-varying world position and velocity; HUD distance, relative speed, and
+range-rate readouts use the moving pad.
+
+Gravity, ephemeris, the 600 m separation, fixed-step integration, reference
+body selection, and determinism are unchanged by the rotation.
+
+Day/night cycles remain future work.
 
 ---
 
@@ -420,15 +454,18 @@ Collision must be checked against both body surfaces.
 For each body:
 
 1. subtract the body's centre from ship position
-2. compute body-local longitude
+2. compute the world angle, then the body-local longitude by subtracting
+   `body_rotation(t)` (M05-R3)
 3. query that body's terrain radius
 4. compare relative radial distance to surface radius
 
 On contact, evaluate:
 
 - whether contact is on a landing pad
-- body-relative radial velocity
-- body-relative tangential velocity
+- radial velocity of the ship relative to the rotating surface point
+  (M05-R3: ship velocity minus the surface point velocity, not just the
+  body's centre translational velocity)
+- tangential velocity in the same relative frame
 - local radial landing attitude
 
 Do not use global `vx/vy` landing thresholds.
@@ -454,10 +491,13 @@ While landed:
 
 - system time continues
 - both moons continue their binary orbit
-- the ship moves with the landed body's translational motion
-- the ship remains attached to the same body-local surface location
-- global ship velocity follows the body's translational velocity
-- the ship remains locally upright
+- the ship moves with the landed body's rotating surface: its world position
+  is the body centre plus the local surface point rotated by
+  `body_rotation(t)` (M05-R3)
+- the ship remains attached to the same body-local surface arc
+- global ship velocity follows the full surface-point velocity (centre
+  translational velocity plus the rotational surface velocity, M05-R3)
+- the ship remains locally upright (nose along the local radial direction)
 - no hidden orbital integration acts on the attached ship
 
 Crashed state may remain terminal for M05.
@@ -476,7 +516,9 @@ the surface.
 At minimum, takeoff must:
 
 - begin from the actual moving body's position
-- inherit the body's current global translational velocity
+- inherit the full current surface-point velocity (M05-R3: centre
+  translational velocity plus the rotational surface velocity at the pad,
+  not the centre velocity alone)
 - begin from the current pad
 - transition cleanly from attached/landed to free flight
 - use ordinary spacecraft thrust and gravity immediately after release
@@ -493,9 +535,14 @@ Do not create a general wheel/contact dynamics system.
 
 ## Circularize developer control
 
-Preserve the M04 `O` developer control, but generalize it to moving bodies.
+Preserve the M04 `O` developer control, but generalize it to moving bodies and
+give it explicit orbit direction.
 
-`O` must circularize relative to the currently selected/reference body.
+`O` must circularize clockwise relative to the currently selected/reference
+body.
+
+`Shift+O` must circularize counter-clockwise relative to the currently
+selected/reference body.
 
 For body i:
 
@@ -509,8 +556,8 @@ Set:
 
 - relative radial velocity to zero
 - relative tangential speed to `v_circular`
-- preserve meaningful existing relative tangential direction
-- default consistently when relative tangential velocity is essentially zero
+- choose the relative tangential sign for the requested CW/CCW direction
+  (do not infer the direction from the current velocity)
 
 Then:
 
@@ -519,11 +566,64 @@ Then:
 
 Do not forget the body's global velocity.
 
-`O` remains a one-time developer state change.
+The circularize control remains a one-time developer state change.
 
 No continuing stabilization is permitted.
 
 Preserve `F` refuel.
+
+---
+
+## Reaction-wheel angular-rate damping
+
+Add a small manual reaction-wheel control for angular-rate damping.
+
+Requirements:
+
+- use an unused, documented key
+- while held, apply a finite angular acceleration opposite `State::omega`
+- taper or clamp the effect near zero
+- release ends the damping
+- do not directly set `omega = 0`
+- do not add translation, teleport, autopilot, or fuel consumption
+
+This is a manual pilot aid, not an automatic stabilization system.
+
+---
+
+## Guarded dangerous/debug controls
+
+Guard the dangerous/debug controls with a reusable triple-tap mechanism:
+
+- `N x3` fires the existing NEW SEED action.
+- `O x3` fires circularize CW.
+- `Shift+O x3` fires circularize CCW.
+- require three discrete key-down events; holding or autorepeat must not count
+- `O` and `Shift+O` are distinct sequences
+- a mismatched guarded chord resets/restarts the sequence appropriately
+- partial sequences expire after roughly 600-800 ms between taps
+  (implementation target: 700 ms)
+- use real input/presentation time so the guard works while paused or crashed
+- fire exactly once on tap 3, then clear the sequence
+- taps 1 and 2 must not mutate simulation state
+- show compact `1/3` and `2/3` progress feedback when practical
+- update help/usage text to show `N x3`, `O x3`, and `SHIFT+O x3`
+
+This is an input-presentation guard. It must not change the underlying NEW
+SEED or circularize state changes.
+
+---
+
+## Crash dialog geometry
+
+The crash dialog must be a compact, content-sized, screen-space modal.
+
+- PRIMARY and COMPANION crashes must produce identical modal geometry.
+- Modal dimensions must not depend on terrain clipping, reference body,
+  camera mode, or SYSTEM zoom.
+- The dialog must not grow into a tall column extending to the bottom of the
+  viewport.
+- Preserve the existing crash text and actions.
 
 ---
 
@@ -577,8 +677,15 @@ Requirements:
 - both moon positions use their true simulation coordinates
 - no fake compression in rendering
 - stars remain the accepted fixed screen-space backdrop
-- include a minimum-size ship marker if the correctly scaled lander would be
-  difficult to see
+- include a minimum-size ship marker when the correctly scaled lander would be
+  difficult to see, and switch to a real lander representation once it is
+  readable
+- mouse wheel changes a target SYSTEM zoom multiplicatively
+- rendered SYSTEM zoom eases toward the target rather than jumping
+- SYSTEM zoom is clamped between a wide minimum and a close maximum of at
+  least ~`1.0x` (`2.0x` is the chosen implementation target)
+- destination framing respects manual/readability zoom; otherwise center the
+  ship and use the offscreen indicator
 
 Use an initial system zoom on the order of:
 
@@ -595,7 +702,12 @@ The exact SYSTEM zoom may be tuned slightly during human verification.
 
 Do not modify world geometry to make it fit the camera.
 
-Preserve the existing local AUTO/MANUAL camera behavior.
+Preserve the existing local AUTO/MANUAL camera behavior, but add a
+screen-space projected-lander readability floor to LOCAL AUTO:
+
+- target approximately `16 px` for the lander's major/height dimension
+- stop LOCAL AUTO zoom-out once that projected floor is reached
+- preserve the M04 exact player anchor and near-surface behavior
 
 Use a separate explicit SYSTEM-view control rather than overloading physical
 reference-body selection with camera behavior.
@@ -635,14 +747,36 @@ Preserve the M04 HUD where practical.
 
 Add compact information needed for two-body flight.
 
-At minimum show:
+At minimum show explicit fields for:
 
-- reference body
-- contract destination body/base
-- distance to target
-- relative velocity useful for interception
+- reference body (`REF`)
+- contract destination body/base (`JOB`)
+- altitude (`ALT`)
+- reference-relative radial velocity (`V RAD`)
+- reference-relative tangential velocity (`V TAN`)
+- local attitude (`ATT`)
+- spacecraft spin rate from `State::omega` (`SPIN`)
+- orbit rate from relative tangential velocity / relative radial distance
+  (`ORB`)
+- throttle (`THR`)
+- fuel (`FUEL`)
+- distance to target (`DIST`)
+- target-body-relative speed (`V REL`)
+- directional range-rate state (`CLOSE` / `OPEN` / `HOLD`)
 
-The exact presentation may use compact labels.
+The exact presentation may use compact labels, but the labels must be explicit
+enough that a player can tell which frame each velocity/rate is measured in.
+
+`DIST`, `V REL`, and the range-rate state are measured against the contract
+destination pad, which is fixed to a rotating surface (M05-R3) and therefore
+has a time-varying world position and velocity.
+
+Also add a compact screen-space navigation/gravity vector overlay near the
+spacecraft showing target direction, target-relative velocity, net gravity, and
+the individual primary/companion gravity contributions (`G0`, `G1`, `GNET`).
+The overlay must be toggleable (prefer `G` if unused), default ON for this
+development branch, presentation-only, and must not add trajectory prediction
+or autopilot.
 
 Do not turn M05 into a flight-computer UI project.
 
@@ -819,33 +953,83 @@ Add tests covering at least:
 
 ### Landed attachment and takeoff
 
-- landed ship remains attached to the same local surface location as its body
-  moves
-- landed ship inherits body global translational velocity
+- landed ship remains attached to the same body-local surface arc as its body
+  translates and rotates
+- landed ship position/velocity equal the full rotating surface point
+  (centre velocity plus rotational surface velocity)
 - system time/body ephemeris continues while landed
 - valid takeoff transitions to free flight without teleporting
-- takeoff begins with the body's current global velocity
+- takeoff begins with the full surface-point velocity
 - insufficient outward thrust does not create surface jitter
 
 ### Circularize
 
 - `O` around the primary uses primary-relative velocity plus primary global
-  velocity
+  velocity and produces a clockwise orbit
+- `Shift+O` around the primary produces a counter-clockwise orbit
 - `O` around the companion uses companion-relative velocity plus companion
-  global velocity
+  global velocity and produces a clockwise orbit
+- `Shift+O` around the companion produces a counter-clockwise orbit
 - relative radial velocity becomes approximately zero
-- relative tangential velocity equals `sqrt(mu_i/r)`
+- relative tangential velocity equals `sqrt(mu_i/r)` with the requested sign
 - no continuing stabilization force exists
 
 ### Camera/presentation
 
 - M04 exact local player anchor remains intact
+- LOCAL AUTO stops zooming out at the projected-lander readability floor
+  (~`16 px` major/height)
 - SYSTEM view does not change simulation state
 - SYSTEM view uses true body positions
 - system camera can place both bodies in a useful view at the initial 600 m
   separation
+- SYSTEM mouse-wheel zoom changes target zoom in the correct direction, eases
+  toward the target, and remains clamped
+- SYSTEM view does not auto-switch back to LOCAL
+- the SYSTEM ship marker/full-lander switch uses a readable projected-size
+  threshold and preserves attitude continuity
 - starfield remains fixed in screen space
 - moving-body render interpolation is smooth at representative render rates
+
+### HUD / navigation cues
+
+- HUD helper definitions are testable and use the documented frames:
+  - `SPIN` = `State::omega` in deg/s
+  - `ORB` = relative tangential velocity / relative radial distance
+  - `V REL` = target-body-relative speed
+  - range-rate sign maps to `CLOSE` / `OPEN` / `HOLD`
+- per-body gravity helpers match the analytical two-body expressions
+- net gravity equals the vector sum of the per-body gravity contributions
+- target direction and target-relative velocity use the correct contract
+  destination and body velocity
+
+### Reaction-wheel damping
+
+- held damping reduces `|omega|` over time without directly setting it to zero
+- the damping tapers near zero
+- release stops further damping
+- the damping does not move the ship, change fuel, or act as an autopilot
+
+### Tidal locking (M05-R3)
+
+- `body_rotation(0)` is zero and `body_rotation(t) = theta(t) - theta0`
+- both bodies rotate at the binary orbital rate in the same direction, and the
+  primary's face toward the companion (and vice versa) is invariant over a full
+  orbit
+- world angle = local angle + `body_rotation(t)`; the inverse recovers the
+  local angle
+- a surface point's velocity equals centre velocity plus
+  `omega x r` (checked against the time derivative of its position)
+- a landed ship rides the rotating surface: position and velocity match the
+  analytic surface point at multiple times, and its stored arc is unchanged
+- takeoff inherits the full surface-point velocity, not just the centre
+  velocity
+- landing/crash evaluation uses ship velocity relative to the rotating surface
+  point
+- the contract destination pad position/velocity are time-varying and match
+  the rotating surface (navigation cues use the moving pad)
+- same-seed determinism is preserved with rotating bodies
+- binary ephemeris, gravity, and period are unchanged by the rotation
 
 ### Contracts
 
@@ -889,6 +1073,28 @@ Human verification must include:
   camera view
 - stars remain fixed in screen space
 - M04 flame/camera/orbit presentation remains smooth
+- LOCAL AUTO keeps the lander readable at altitude (~16 px major/height)
+- SYSTEM mouse-wheel zoom is smooth from wide to close and does not
+  auto-switch to LOCAL
+- the SYSTEM lander becomes clearly readable at close zoom without an attitude
+  pop
+- the navigation/gravity vector overlay is useful, compact, and toggleable
+  with `G`
+- HUD labels are explicit and consistent with their reference/destination
+  frames
+- reaction-wheel damping feels controllable and gentle, not a hard stop or
+  autopilot
+- `O` / `Shift+O` circularize direction is intuitive and matches the expected
+  CW/CCW orbit
+- each moon visibly keeps the same face toward the other as the pair orbits
+  (tidal locking reads as rotation of the terrain, not a fixed texture)
+- terrain relief and pads rotate with their body (a landed ship rides the
+  moving surface without slipping or teleporting)
+- takeoff from a rotating surface departs with the surface motion (no visible
+  jump)
+- landing on a rotating pad is achievable and the contract loop still
+  completes end to end
+- `DIST` / `V REL` / range-rate track the moving destination pad sensibly
 
 The coding model is text-only and must not inspect screenshots.
 
@@ -912,8 +1118,8 @@ Do not implement in M05:
 - procedural contract generation
 - more than the primary and one companion
 - numerical N-body integration of moon-moon motion
-- body axial rotation
-- tidal locking
+- body axial rotation / tidal locking (SUPERSEDED by M05-R3: both moons are
+  tidally locked; see the "Body rotation (M05-R3)" section)
 - atmosphere
 - aerodynamics
 - time warp

@@ -15,7 +15,7 @@ enum class CameraMode {
 
 struct CameraParams {
     double base_scale = 14.0;
-    double overview_zoom = 0.40;
+    double overview_zoom = 0.46;
     double landing_zoom = 1.40;
     double alt_to_landing = 18.0;
     double alt_to_overview = 25.0;
@@ -29,16 +29,37 @@ struct CameraParams {
     double window_height = 720.0;
     // SYSTEM view (M05): an inertial, unrotated view of the whole binary.
     // The default 0.04 gives 0.56 px/m at base_scale 14, enough to see the
-    // 600 m separation inside a 1280 px viewport.
+    // 600 m separation inside a 1280 px viewport. M05-R3 allows zooming up
+    // to 2.0 (28 px/m) so the ship itself can become readable without
+    // leaving the inertial system view.
     double system_zoom = 0.04;
     double system_zoom_min = 0.01;
-    double system_zoom_max = 0.10;
+    double system_zoom_max = 2.0;
     double system_viewport_margin = 80.0;
     double angle_transition_time = 0.35;
     double angle_jump_threshold = 0.4;
 };
 
 inline constexpr double kHalfPi = 0.5 * 3.14159265358979323846;
+inline constexpr double kLanderMajorMetres = 2.5;
+inline constexpr double kMinReadableLanderPx = 16.0;
+inline constexpr double kTargetCueLengthPx = 24.0;
+inline constexpr double kVelocityCueScale = 2.5;
+inline constexpr double kGravityCueScale = 18.0;
+inline constexpr double kCueMaxLengthPx = 96.0;
+
+inline bool lander_uses_full_model(double scale) {
+    return scale * kLanderMajorMetres >= kMinReadableLanderPx - 1.0e-12;
+}
+
+inline double camera_readability_zoom(const CameraParams& p) {
+    return kMinReadableLanderPx / (p.base_scale * kLanderMajorMetres);
+}
+
+inline double cue_arrow_length(double magnitude, double px_per_unit,
+                               double max_px) {
+    return std::clamp(magnitude * px_per_unit, 0.0, max_px);
+}
 
 inline double system_frame_zoom(double distance, const CameraParams& p) {
     if (distance < 1.0e-6) {
@@ -62,7 +83,8 @@ inline constexpr double kNoTargetAngle =
 class Camera {
 public:
     Camera() = default;
-    explicit Camera(const CameraParams& params) : params_(params) {}
+    explicit Camera(const CameraParams& params)
+        : params_(params), system_target_zoom_(params.system_zoom) {}
 
     // Presentation-only system view: inertial (unrotated) framing of the
     // whole binary with the ship at the viewport centre. Entering it saves
@@ -78,6 +100,7 @@ public:
             saved_wants_landing_ = wants_landing_;
             mode_ = CameraMode::kSystem;
             zoom_ = params_.system_zoom;
+            system_target_zoom_ = params_.system_zoom;
             system_zoom_manual_ = false;
             angle_transition_active_ = false;
             angle_ = 0.0;
@@ -89,6 +112,7 @@ public:
             mode_ = saved_mode_;
             zoom_ = saved_zoom_;
             wants_landing_ = saved_wants_landing_;
+            system_target_zoom_ = params_.system_zoom;
             system_zoom_manual_ = false;
             angle_transition_active_ = false;
         }
@@ -103,6 +127,8 @@ public:
             angle_initialized_ = true;
             angle_transition_active_ = false;
             system_zoom_manual_ = false;
+            system_target_zoom_ = params_.system_zoom;
+            zoom_ = params_.system_zoom;
             focus_x_ = target_x_;
             focus_y_ = target_y_;
             return;
@@ -141,6 +167,7 @@ public:
     double system_destination_x() const { return system_destination_x_; }
     double system_destination_y() const { return system_destination_y_; }
     bool system_zoom_manual() const { return system_zoom_manual_; }
+    double system_target_zoom() const { return system_target_zoom_; }
 
     void update(double dt, double target_x, double target_y, double altitude,
                 int wheel_delta, bool toggle_mode,
@@ -150,14 +177,42 @@ public:
 
         if (mode_ == CameraMode::kSystem) {
             // Inertial framing: fixed angle, ship at the exact viewport
-            // centre (no local anchor offset), wheel clamped to the system
-            // zoom range. Local mode/zoom/want-landing state is untouched.
+            // centre (no local anchor offset), wheel changing the target
+            // zoom multiplicatively, rendered zoom easing toward that target.
+            // Local mode/zoom/want-landing state is untouched.
             if (wheel_delta > 0) {
-                zoom_ *= 1.0 + params_.wheel_step;
+                system_target_zoom_ *= 1.0 + params_.wheel_step;
                 system_zoom_manual_ = true;
             } else if (wheel_delta < 0) {
-                zoom_ *= 1.0 - params_.wheel_step;
+                system_target_zoom_ *= 1.0 - params_.wheel_step;
                 system_zoom_manual_ = true;
+            }
+            system_target_zoom_ = clamp(
+                system_target_zoom_, params_.system_zoom_min,
+                params_.system_zoom_max);
+
+            if (has_system_destination_ && !system_zoom_manual_) {
+                const double dx = system_destination_x_ - target_x_;
+                const double dy = system_destination_y_ - target_y_;
+                const double distance = std::hypot(dx, dy);
+                const double available =
+                    0.5 * std::min(params_.window_width, params_.window_height) -
+                    params_.system_viewport_margin;
+                if (available > 0.0 &&
+                    distance * params_.base_scale * params_.system_zoom_min <=
+                        2.0 * available + 1.0e-9) {
+                    system_target_zoom_ =
+                        system_frame_zoom(distance, params_);
+                } else {
+                    system_target_zoom_ = params_.system_zoom;
+                }
+            }
+
+            if (dt <= 0.0) {
+                zoom_ = system_target_zoom_;
+            } else {
+                const double a = 1.0 - std::exp(-params_.zoom_rate * dt);
+                zoom_ += (system_target_zoom_ - zoom_) * a;
             }
             zoom_ = clamp(zoom_, params_.system_zoom_min,
                           params_.system_zoom_max);
@@ -173,25 +228,13 @@ public:
                 const double available =
                     0.5 * std::min(params_.window_width, params_.window_height) -
                     params_.system_viewport_margin;
-                auto fits = [&](double z) {
+                const auto fits = [&](double z) {
                     return distance * params_.base_scale * z <=
                            2.0 * available + 1.0e-9;
                 };
-                if (available > 0.0) {
-                    if (!system_zoom_manual_) {
-                        if (fits(params_.system_zoom_min)) {
-                            zoom_ = system_frame_zoom(distance, params_);
-                        } else {
-                            zoom_ = params_.system_zoom;
-                        }
-                    }
-                    if (fits(zoom_)) {
-                        focus_x_ = 0.5 * (target_x_ + system_destination_x_);
-                        focus_y_ = 0.5 * (target_y_ + system_destination_y_);
-                    } else {
-                        focus_x_ = target_x_;
-                        focus_y_ = target_y_;
-                    }
+                if (available > 0.0 && fits(zoom_)) {
+                    focus_x_ = 0.5 * (target_x_ + system_destination_x_);
+                    focus_y_ = 0.5 * (target_y_ + system_destination_y_);
                 }
             }
             return;
@@ -218,9 +261,11 @@ public:
                 wants_landing_ = false;
             }
             if (dt > 0.0) {
-                const double target_zoom =
+                double target_zoom =
                     wants_landing_ ? params_.landing_zoom
                                    : params_.overview_zoom;
+                target_zoom = std::max(target_zoom,
+                                       camera_readability_zoom(params_));
                 const double a = 1.0 - std::exp(-params_.zoom_rate * dt);
                 zoom_ += (target_zoom - zoom_) * a;
             }
@@ -353,6 +398,7 @@ private:
     double angle_transition_remaining_ = 0.0;
     double angle_transition_total_ = 0.0;
     bool system_zoom_manual_ = false;
+    double system_target_zoom_ = 0.04;
     bool has_system_destination_ = false;
     double system_destination_x_ = 0.0;
     double system_destination_y_ = 0.0;
@@ -394,6 +440,47 @@ inline MarkerTriangle marker_triangle(double cx, double cy, double ship_angle,
     return {nose,
             {bx + px * 0.5 * size, by + py * 0.5 * size},
             {bx - px * 0.5 * size, by - py * 0.5 * size}};
+}
+
+struct ScreenRect {
+    int x{};
+    int y{};
+    int w{};
+    int h{};
+};
+
+// M05-R3-08: content-sized, screen-space crash-dialog geometry. The result
+// depends only on the modal's text content and the viewport, never on terrain
+// clipping, reference body, camera mode, or SYSTEM zoom.
+inline ScreenRect crash_modal_rect(int title_chars, int title_scale,
+                                   int score_chars, int score_scale,
+                                   int hint_chars, int hint_scale,
+                                   int viewport_width, int viewport_height) {
+    auto line_width = [](int chars, int scale) {
+        return std::max(0, chars * 6 * scale - scale);
+    };
+    constexpr int kPaddingX = 28;
+    constexpr int kPaddingY = 24;
+    constexpr int kGap = 16;
+
+    const int content_width = std::max(
+        std::max(line_width(title_chars, title_scale),
+                 line_width(score_chars, score_scale)),
+        line_width(hint_chars, hint_scale));
+    const int max_width = std::max(80, viewport_width - 48);
+    const int max_height = std::max(60, viewport_height - 48);
+    const int width = std::clamp(content_width + 2 * kPaddingX, 80,
+                                 max_width);
+    const int height = std::clamp(
+        2 * kPaddingY + 7 * title_scale + kGap + 7 * score_scale + kGap +
+            7 * hint_scale,
+        60, max_height);
+
+    const int x = std::clamp((viewport_width - width) / 2, 24,
+                             std::max(24, viewport_width - width - 24));
+    const int y = std::clamp((viewport_height - height) / 2, 24,
+                             std::max(24, viewport_height - height - 24));
+    return {x, y, width, height};
 }
 
 struct OffscreenIndicator {

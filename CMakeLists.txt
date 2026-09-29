@@ -80,3 +80,18 @@ target_compile_options(lander_starfield_tests PRIVATE
 )
 
 add_test(NAME lander_starfield_tests COMMAND lander_starfield_tests)
+
+# M05-R3: reusable triple-tap guarded-action logic, tested headlessly with no
+# SDL dependency.
+add_executable(lander_guarded_actions_tests
+    tests/test_guarded_actions.cpp
+)
+target_include_directories(lander_guarded_actions_tests PRIVATE include)
+target_compile_options(lander_guarded_actions_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_guarded_actions_tests
+         COMMAND lander_guarded_actions_tests)

@@ -1,6 +1,7 @@
 #include "lander/camera.hpp"
 #include "lander/sim.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -400,21 +401,128 @@ void test_system_mode_no_resave_and_snap_keeps_system() {
 void test_auto_zoom_readability() {
     lander::Camera cam;
     const lander::CameraParams& p = cam.params();
+    const double readable_zoom = lander::camera_readability_zoom(p);
     cam.snap(0.0, lander::kReferenceRadius + 20.0);
 
     drive_auto(cam, 30.0);
-    check(cam.scale() * 2.5 >= 2.0 + 1.0e-9,
-          "overview lander stays above the minimum-marker threshold");
-    check(cam.scale() >= 0.8 + 1.0e-9,
-          "overview scale keeps the lander visually readable");
+    check(cam.zoom() >= readable_zoom - 1.0e-9,
+          "AUTO overview zoom respects the projected-size readability floor");
+    check(cam.scale() * lander::kLanderMajorMetres >=
+              lander::kMinReadableLanderPx - 1.0e-9,
+          "overview projected lander stays readable");
+    check(lander::lander_uses_full_model(cam.scale()),
+          "overview scale renders the full lander");
 
     drive_auto(cam, 5.0);
-    check(cam.scale() * 2.5 >= 2.0 + 1.0e-9,
-          "landing lander stays above the minimum-marker threshold");
-    check(cam.scale() >= 0.8 + 1.0e-9,
-          "landing scale keeps the lander visually readable");
+    check(cam.zoom() >= readable_zoom - 1.0e-9,
+          "AUTO landing zoom respects the projected-size readability floor");
+    check(cam.scale() * lander::kLanderMajorMetres >=
+              lander::kMinReadableLanderPx - 1.0e-9,
+          "landing projected lander stays readable");
+    check(lander::lander_uses_full_model(cam.scale()),
+          "landing scale renders the full lander");
     check(cam.scale() <= p.base_scale * p.zoom_max + 1.0e-12,
           "local AUTO zoom remains bounded");
+}
+
+void test_ship_representation_threshold() {
+    const lander::CameraParams p{};
+    const double readable_scale =
+        p.base_scale * lander::camera_readability_zoom(p);
+
+    check(lander::lander_uses_full_model(readable_scale),
+          "the readability threshold uses the full model");
+    check(!lander::lander_uses_full_model(readable_scale * (1.0 - 1.0e-6)),
+          "just below the readability threshold uses the marker");
+    check(lander::lander_uses_full_model(p.base_scale * p.zoom_max),
+          "local maximum zoom uses the full model");
+    check(!lander::lander_uses_full_model(p.base_scale * p.zoom_min),
+          "local minimum zoom uses the marker");
+
+    // The marker and the full lander use the same attitude transform at the
+    // threshold: the marker nose direction equals the full model's local
+    // +y nose transformed by the ship attitude and camera angle.
+    const std::array<double, 4> ship_angles = {-0.3, 0.0, 0.7, 2.2};
+    const std::array<double, 4> camera_angles = {0.0, 0.4, -1.1, 3.0};
+    for (double ship_angle : ship_angles) {
+        for (double camera_angle : camera_angles) {
+            const auto marker =
+                lander::marker_triangle(0.0, 0.0, ship_angle, camera_angle,
+                                        10.0);
+            const lander::Vec2 marker_dir{marker.nose.x, marker.nose.y};
+            const double mlen = std::hypot(marker_dir.x, marker_dir.y);
+
+            const double nx = -std::sin(ship_angle);
+            const double ny = std::cos(ship_angle);
+            const double c = std::cos(camera_angle);
+            const double s = std::sin(camera_angle);
+            const double local_x = nx * c + ny * s;
+            const double local_y = -nx * s + ny * c;
+            const lander::Vec2 full_dir{local_x, -local_y};
+            const double flen = std::hypot(full_dir.x, full_dir.y);
+
+            check(mlen > 0.0, "marker nose is nonzero");
+            check_close(marker_dir.x / mlen, full_dir.x / flen, 1.0e-12,
+                        "marker nose matches the full model's attitude x");
+            check_close(marker_dir.y / mlen, full_dir.y / flen, 1.0e-12,
+                        "marker nose matches the full model's attitude y");
+        }
+    }
+
+    check_close(lander::cue_arrow_length(0.0, lander::kVelocityCueScale,
+                                         lander::kCueMaxLengthPx),
+                0.0, 1.0e-12, "zero magnitude gives a zero-length cue");
+    check_close(lander::cue_arrow_length(1.0, lander::kVelocityCueScale,
+                                         lander::kCueMaxLengthPx),
+                lander::kVelocityCueScale, 1.0e-12,
+                "small cues use the direct px/unit scale");
+    check_close(lander::cue_arrow_length(100.0, lander::kGravityCueScale,
+                                         lander::kCueMaxLengthPx),
+                lander::kCueMaxLengthPx, 1.0e-12, "large cues clamp to max");
+}
+
+void test_system_smooth_zoom_and_no_local_switch() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    const double dt = 1.0 / 60.0;
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);
+    cam.set_system(true);
+
+    check_close(cam.zoom(), p.system_zoom, 1.0e-12,
+                "SYSTEM starts at the default target zoom");
+    check_close(cam.system_target_zoom(), p.system_zoom, 1.0e-12,
+                "SYSTEM starts at the default target zoom");
+
+    cam.update(dt, 0.0, 0.0, 0.0, 1, false);
+    check(cam.mode() == lander::CameraMode::kSystem,
+          "wheeling in stays in SYSTEM view");
+    check_close(cam.angle(), 0.0, 1.0e-12, "SYSTEM wheel-in keeps angle 0");
+    check(cam.system_target_zoom() > cam.zoom() + 1.0e-9,
+          "a positive-dt wheel-in changes the target before the rendered zoom");
+    check(cam.zoom() > p.system_zoom + 1.0e-9,
+          "the rendered SYSTEM zoom eases toward the new target");
+
+    for (int i = 0; i < 600; ++i) {
+        cam.update(dt, 0.0, 0.0, 0.0, 1, false);
+    }
+    check_close(cam.system_target_zoom(), p.system_zoom_max, 1.0e-9,
+                "SYSTEM target zoom clamps at the wide-to-close maximum");
+    check_close(cam.zoom(), p.system_zoom_max, 1.0e-6,
+                "the rendered SYSTEM zoom reaches the maximum smoothly");
+    check(cam.mode() == lander::CameraMode::kSystem,
+          "a readable SYSTEM zoom does not switch to LOCAL");
+    check_close(cam.angle(), 0.0, 1.0e-12,
+                "a readable SYSTEM zoom stays inertial");
+
+    for (int i = 0; i < 900; ++i) {
+        cam.update(dt, 0.0, 0.0, 0.0, -1, false);
+    }
+    check_close(cam.system_target_zoom(), p.system_zoom_min, 1.0e-9,
+                "SYSTEM target zoom clamps at the wide minimum");
+    check_close(cam.zoom(), p.system_zoom_min, 1.0e-6,
+                "the rendered SYSTEM zoom reaches the minimum smoothly");
+    check(cam.mode() == lander::CameraMode::kSystem,
+          "a far SYSTEM zoom does not switch to LOCAL");
 }
 
 void test_angle_transition_shortest_path() {
@@ -472,7 +580,7 @@ void test_system_destination_framing() {
     cam.set_system(true);
 
     cam.set_system_destination(100.0, 0.0);
-    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     check_close(cam.zoom(), lander::system_frame_zoom(100.0, p), 1.0e-12,
                 "near destination uses the fitted true-scale zoom");
     check_close(cam.center_x(), 50.0, 1.0e-12,
@@ -481,18 +589,18 @@ void test_system_destination_framing() {
                 "near destination keeps the midpoint y");
 
     cam.set_system_destination(100000.0, 0.0);
-    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     check_close(cam.zoom(), p.system_zoom, 1.0e-12,
                 "a destination that cannot fit readably uses the default zoom");
     check_close(cam.center_x(), 0.0, 1.0e-12,
                 "an unfittable destination keeps the ship centred");
 
     cam.set_system_destination(100.0, 0.0);
-    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     cam.update(0.0, 0.0, 0.0, 0.0, -1, false);
     check(cam.system_zoom_manual(), "wheel input marks the SYSTEM zoom manual");
     const double manual_zoom = cam.zoom();
-    cam.update(1.0 / 60.0, 0.0, 0.0, 0.0, 0, false);
+    cam.update(0.0, 0.0, 0.0, 0.0, 0, false);
     check_close(cam.zoom(), manual_zoom, 1.0e-12,
                 "manual SYSTEM zoom is preserved while the destination is visible");
 }
@@ -560,6 +668,56 @@ void test_marker_triangle_orientation() {
                 "ship-down nose points screen-down");
 }
 
+// M05-R3-V10: the crash dialog is a compact, content-sized, screen-space
+// modal whose geometry is independent of body, terrain, camera mode, and
+// SYSTEM zoom.
+void test_crash_modal_geometry() {
+    // The existing crash dialog uses these three content lines. The character
+    // counts are the same for a PRIMARY crash and a COMPANION crash, so the
+    // modal geometry must be identical.
+    const int title_chars = 7;    // "CRASHED"
+    const int title_scale = 6;
+    const int score_chars = 12;   // "SCORE 123456"
+    const int score_scale = 3;
+    const int hint_chars = 26;    // "R RETRY   N x3 NEW SEED"
+    const int hint_scale = 2;
+
+    const auto primary = lander::crash_modal_rect(
+        title_chars, title_scale, score_chars, score_scale, hint_chars,
+        hint_scale, 1280, 720);
+    const auto companion = lander::crash_modal_rect(
+        title_chars, title_scale, score_chars, score_scale, hint_chars,
+        hint_scale, 1280, 720);
+    check(primary.x == companion.x && primary.y == companion.y &&
+              primary.w == companion.w && primary.h == companion.h,
+          "primary and companion crash modals have identical geometry");
+
+    check(primary.w > 0 && primary.h > 0, "the crash modal is bounded");
+    check(primary.w <= 1280 - 48 && primary.h <= 720 - 48,
+          "the crash modal stays inside the viewport margins");
+    check(primary.x >= 24 && primary.y >= 24,
+          "the crash modal respects the viewport margin");
+    check(primary.x + primary.w <= 1280 - 24 &&
+              primary.y + primary.h <= 720 - 24,
+          "the crash modal does not extend past the viewport");
+    check(primary.h < 240,
+          "the crash modal is compact rather than a tall column");
+
+    const auto wider = lander::crash_modal_rect(
+        title_chars, title_scale, score_chars + 8, score_scale, hint_chars,
+        hint_scale, 1280, 720);
+    check(wider.w > primary.w,
+          "the crash modal width grows with longer score content");
+    check(wider.h == primary.h,
+          "the crash modal height is content-sized by line count/scale");
+
+    const auto small_viewport = lander::crash_modal_rect(
+        title_chars, title_scale, score_chars, score_scale, hint_chars,
+        hint_scale, 320, 240);
+    check(small_viewport.w <= 320 - 48 && small_viewport.h <= 240 - 48,
+          "the crash modal clamps to a small viewport");
+}
+
 }  // namespace
 
 int main() {
@@ -576,11 +734,14 @@ int main() {
     test_system_mode_saves_restores_local_state();
     test_system_mode_no_resave_and_snap_keeps_system();
     test_auto_zoom_readability();
+    test_ship_representation_threshold();
     test_angle_transition_shortest_path();
     test_angle_transition_preserves_simulation();
     test_system_destination_framing();
+    test_system_smooth_zoom_and_no_local_switch();
     test_offscreen_indicator();
     test_marker_triangle_orientation();
+    test_crash_modal_geometry();
 
     if (failures == 0) {
         std::puts("All lander_camera_tests passed");

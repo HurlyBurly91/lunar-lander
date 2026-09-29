@@ -228,6 +228,56 @@ void test_gravity_superposition() {
           "companion field is present at the midpoint (not switched off)");
 }
 
+// M05-R3-V05: the per-body field exposed for the navigation overlay is the
+// same inverse-square contribution that the total field sums.
+void test_gravity_from_matches_total() {
+    const lander::Config config{};
+    const auto bin =
+        lander::BinarySystem::canonical(config.mu, 20ULL,
+                                        lander::companion_seed(20ULL));
+
+    for (double t : {0.0, 13.0, 77.0}) {
+        const lander::Vec2 p0 = bin.position(0, t);
+        const lander::Vec2 p1 = bin.position(1, t);
+        const std::vector<lander::Vec2> pts = {
+            {0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y)},
+            {p0.x + 120.0, p0.y - 30.0},
+            {p1.x - 50.0, p1.y + 20.0},
+            {-900.0, -250.0},
+        };
+        for (const lander::Vec2& p : pts) {
+            const lander::Vec2 g0 = bin.gravity_from(0, p, t);
+            const lander::Vec2 g1 = bin.gravity_from(1, p, t);
+            const lander::Vec2 total = bin.gravity(p, t);
+            check_close(g0.x + g1.x, total.x, 1.0e-12,
+                        "gravity() is the sum of gravity_from(0, ...)");
+            check_close(g0.y + g1.y, total.y, 1.0e-12,
+                        "gravity() is the sum of gravity_from(1, ...)");
+
+            for (int i = 0; i < 2; ++i) {
+                const lander::Vec2 q = bin.position(i, t);
+                const double rx = p.x - q.x;
+                const double ry = p.y - q.y;
+                const double r = std::hypot(rx, ry);
+                const lander::Vec2 expected{
+                    -bin.body(i).mu * rx / (r * r * r),
+                    -bin.body(i).mu * ry / (r * r * r)};
+                const lander::Vec2 actual = bin.gravity_from(i, p, t);
+                check_close(actual.x, expected.x, 1.0e-9,
+                            "gravity_from x is inverse-square");
+                check_close(actual.y, expected.y, 1.0e-9,
+                            "gravity_from y is inverse-square");
+            }
+        }
+    }
+
+    const lander::Vec2 q0 = bin.position(0, 0.0);
+    check_close(bin.gravity_from(0, q0, 0.0).x, 0.0, 1.0e-12,
+                "zero guard x at the exact body centre");
+    check_close(bin.gravity_from(0, q0, 0.0).y, 0.0, 1.0e-12,
+                "zero guard y at the exact body centre");
+}
+
 // M05-R1-V04: relative kinematics subtracts the body's position and velocity.
 void test_relative_kinematics() {
     const lander::Config config{};
@@ -235,19 +285,22 @@ void test_relative_kinematics() {
         lander::BinarySystem::canonical(config.mu, 3ULL,
                                         lander::companion_seed(3ULL));
 
-    // A ship co-moving with the primary (attached to its surface) has zero
-    // local velocity and sits at the surface radius.
+    // A ship co-moving with the primary's rotating surface point (attached
+    // to its pad) has zero local velocity relative to that point and sits at
+    // the surface radius (M05-R3).
     {
         const double t = 5.0;
         const lander::State s = lander::attached_state(bin, 0, 0.0, t);
         const lander::Vec2 bpos = bin.position(0, t);
-        const lander::Vec2 bvel = bin.velocity(0, t);
-        const lander::LocalVelocity lv = lander::local_velocity(s, bpos, bvel);
+        const double local = bin.body(0).terrain.angle_at_arc(0.0);
+        const double surface = bin.body(0).terrain.surface_radius_at_arc(0.0);
+        const lander::Vec2 sp_vel =
+            bin.surface_point(0, local, surface, t).velocity;
+        const lander::LocalVelocity lv = lander::local_velocity(s, bpos, sp_vel);
         check_close(lv.radial, 0.0, 1e-9, "co-moving ship has zero local radial");
         check_close(lv.tangential, 0.0, 1e-9,
                     "co-moving ship has zero local tangential");
-        check_close(lander::radial_distance(s, bpos),
-                    bin.body(0).terrain.surface_radius_at_arc(0.0), 1e-9,
+        check_close(lander::radial_distance(s, bpos), surface, 1e-9,
                     "co-moving ship sits at the surface radius");
     }
 
@@ -273,13 +326,202 @@ void test_relative_kinematics() {
     }
 }
 
+// M05-R3-V11: the rotation law and the tidal-lock invariant.
+void test_body_rotation_law() {
+    const lander::Config config{};
+    const auto bin = lander::BinarySystem::canonical(
+        config.mu, 401ULL, lander::companion_seed(401ULL));
+
+    check_close(bin.body_rotation(0.0), 0.0, 1.0e-12,
+                "rotation is zero at t = 0");
+    // The spin is the pure time function theta(t) - theta0.
+    for (double t : {0.0, 1.0, 17.3, 60.0, 100.0, bin.period() * 0.5,
+                     bin.period()}) {
+        check_close(bin.body_rotation(t), bin.theta(t) - 0.0, 1.0e-9,
+                    "body_rotation(t) = theta(t) - theta0");
+    }
+    // The spin rate equals the binary orbital rate; the period is ~216.94 s.
+    const double h = 1.0e-4;
+    const double t = 21.0;
+    const double fd = (bin.body_rotation(t + h) - bin.body_rotation(t - h)) /
+                     (2.0 * h);
+    check_close(fd, bin.omega(), 1.0e-6,
+                "spin rate equals the binary orbital rate");
+    check_close(bin.period(), 216.94, 0.1, "binary period is ~216.94 s");
+    // One full binary period returns the rotation phase to zero.
+    check_close(std::atan2(std::sin(bin.body_rotation(bin.period())),
+                           std::cos(bin.body_rotation(bin.period()))),
+                0.0, 1.0e-9, "one period returns the rotation phase");
+
+    // Tidal-lock invariant: for every body the companion sits at a fixed
+    // body-local direction for all time (the same face points at it).
+    for (int i = 0; i < 2; ++i) {
+        const int other = 1 - i;
+        const lander::Vec2 d0 =
+            bin.position(other, 0.0) - bin.position(i, 0.0);
+        const double ref = std::atan2(d0.y, d0.x);
+        for (double tt : {5.0, 33.0, 90.0, 180.0, bin.period() * 0.75,
+                          bin.period()}) {
+            const lander::Vec2 d = bin.position(other, tt) - bin.position(i, tt);
+            const double world = std::atan2(d.y, d.x);
+            check_close(
+                std::atan2(std::sin(world - bin.body_rotation(tt) - ref),
+                           std::cos(world - bin.body_rotation(tt) - ref)),
+                0.0, 1.0e-9,
+                "the companion keeps a fixed local direction (tidal lock)");
+        }
+    }
+}
+
+// M05-R3-V12: the local<->world angle transform and its inverse.
+void test_local_world_angle_transform() {
+    const lander::Config config{};
+    const auto bin = lander::BinarySystem::canonical(
+        config.mu, 402ULL, lander::companion_seed(402ULL));
+
+    for (int i = 0; i < 2; ++i) {
+        const lander::Body& body = bin.body(i);
+        const double c = body.terrain.circumference();
+        for (double t : {0.0, 3.7, 40.0, bin.period() * 0.625}) {
+            const double rot = bin.body_rotation(t);
+            for (double frac : {0.0, 0.125, 0.37, 0.5, 0.83, 0.999}) {
+                const double arc = frac * c;
+                const double local = body.terrain.angle_at_arc(arc);
+                const double world = local + rot;
+                // The inverse recovers the local angle from a world angle.
+                const double back = body.terrain.angle_at_arc(
+                    body.terrain.arc_at_angle(world - rot));
+                check_close(std::atan2(std::sin(back - local),
+                                       std::cos(back - local)),
+                            0.0, 1.0e-6,
+                            "the inverse recovers the local angle");
+                // A world-angle terrain lookup matches the local lookup.
+                check_close(
+                    body.terrain.surface_radius_at_arc(
+                        body.terrain.arc_at_angle(world - rot)),
+                    body.terrain.surface_radius_at_arc(arc), 1.0e-9,
+                    "world-angle lookup matches the local lookup");
+            }
+        }
+    }
+}
+
+// M05-R3-V13: surface-point position and velocity, including the
+// finite-difference derivative of the position.
+void test_surface_point_velocity() {
+    const lander::Config config{};
+    const auto bin = lander::BinarySystem::canonical(
+        config.mu, 403ULL, lander::companion_seed(403ULL));
+
+    for (int i = 0; i < 2; ++i) {
+        const lander::Body& body = bin.body(i);
+        const double c = body.terrain.circumference();
+        for (double t : {0.0, 2.2, 25.0, bin.period() * 0.8}) {
+            const lander::Vec2 cpos = bin.position(i, t);
+            const lander::Vec2 cvel = bin.velocity(i, t);
+            for (double frac : {0.0, 0.25, 0.6, 1.0}) {
+                const double arc = frac * c;
+                const double local = body.terrain.angle_at_arc(arc);
+                const double radius =
+                    body.terrain.surface_radius_at_arc(arc);
+                const auto sp = bin.surface_point(i, local, radius, t);
+                const double world = local + bin.body_rotation(t);
+                check_close(sp.position.x, cpos.x + std::cos(world) * radius,
+                            1.0e-9, "surface point position x");
+                check_close(sp.position.y, cpos.y + std::sin(world) * radius,
+                            1.0e-9, "surface point position y");
+                const double ox = std::cos(world) * radius;
+                const double oy = std::sin(world) * radius;
+                check_close(sp.velocity.x, cvel.x - bin.omega() * oy, 1.0e-9,
+                            "surface point velocity x is centre plus spin");
+                check_close(sp.velocity.y, cvel.y + bin.omega() * ox, 1.0e-9,
+                            "surface point velocity y is centre plus spin");
+                const double h = 1.0e-4;
+                const auto a = bin.surface_point(i, local, radius, t - h);
+                const auto b = bin.surface_point(i, local, radius, t + h);
+                const double fdx = (b.position.x - a.position.x) / (2.0 * h);
+                const double fdy = (b.position.y - a.position.y) / (2.0 * h);
+                check_close(std::hypot(fdx - sp.velocity.x,
+                                       fdy - sp.velocity.y),
+                            0.0, 1.0e-4,
+                            "surface point velocity matches the position "
+                            "derivative");
+            }
+        }
+        // A zero offset (the body centre) carries exactly the centre velocity.
+        const lander::Vec2 cvel9 = bin.velocity(i, 9.0);
+        const auto spc = bin.surface_point(i, 0.0, 0.0, 9.0);
+        check(spc.velocity == cvel9,
+              "a zero offset gives exactly the centre velocity");
+    }
+}
+
+// M05-R3-V19: the ephemeris, gravity, and period are unchanged by the
+// rotation (closed-form values match the pre-rotation model).
+void test_ephemeris_gravity_unchanged() {
+    const lander::Config config{};
+    const auto bin = lander::BinarySystem::canonical(
+        config.mu, 404ULL, lander::companion_seed(404ULL));
+
+    check_close(bin.period(), 216.94, 0.1, "binary period is ~216.94 s");
+
+    // Positions and velocities match the prescribed closed form
+    // (fixed circular radii, theta(t) = theta0 + omega t) at every sample.
+    for (int i = 0; i < 2; ++i) {
+        const lander::Body& b = bin.body(i);
+        for (double t : {0.0, 4.0, 77.0, bin.period() * 0.5, bin.period()}) {
+            const double th = bin.theta(t);
+            const lander::Vec2 p = bin.position(i, t);
+            check_close(p.x, b.side * b.barycentric_radius * std::cos(th),
+                        1.0e-9, "position x matches the closed form");
+            check_close(p.y, b.side * b.barycentric_radius * std::sin(th),
+                        1.0e-9, "position y matches the closed form");
+            const lander::Vec2 v = bin.velocity(i, t);
+            check_close(v.x, -b.side * b.barycentric_radius * bin.omega() *
+                                 std::sin(th),
+                        1.0e-9, "velocity x matches the closed form");
+            check_close(v.y, b.side * b.barycentric_radius * bin.omega() *
+                                 std::cos(th),
+                        1.0e-9, "velocity y matches the closed form");
+        }
+    }
+
+    // The gravitational field at fixed world points is the pure inverse-
+    // square sum from the closed-form centre positions: the rotation adds
+    // no force to free flight.
+    const lander::Vec2 probe{120.0, -60.0};
+    for (double t : {0.0, 12.0, 95.0, bin.period() * 0.6}) {
+        const lander::Vec2 g = bin.gravity(probe, t);
+        lander::Vec2 sum{};
+        for (int i = 0; i < 2; ++i) {
+            const lander::Body& b = bin.body(i);
+            const double th = bin.theta(t);
+            const double rx =
+                probe.x - b.side * b.barycentric_radius * std::cos(th);
+            const double ry =
+                probe.y - b.side * b.barycentric_radius * std::sin(th);
+            const double r3 = std::pow(std::hypot(rx, ry), 3.0);
+            sum = sum + lander::Vec2{-b.mu * rx / r3, -b.mu * ry / r3};
+        }
+        check_close(g.x, sum.x, 1.0e-9,
+                    "gravity x is the pure inverse-square sum");
+        check_close(g.y, sum.y, 1.0e-9,
+                    "gravity y is the pure inverse-square sum");
+    }
+}
+
 }  // namespace
 
 int main() {
     test_canonical_laws();
     test_ephemeris();
     test_gravity_superposition();
+    test_gravity_from_matches_total();
     test_relative_kinematics();
+    test_body_rotation_law();
+    test_local_world_angle_transform();
+    test_surface_point_velocity();
+    test_ephemeris_gravity_unchanged();
 
     if (failures == 0) {
         std::puts("All lander_binary_tests passed");

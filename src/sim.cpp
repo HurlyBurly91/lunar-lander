@@ -23,7 +23,8 @@ double clamp01(double v) {
 bool operator==(const Input& lhs, const Input& rhs) {
     return lhs.rotate_left == rhs.rotate_left &&
            lhs.rotate_right == rhs.rotate_right &&
-           lhs.main_throttle == rhs.main_throttle;
+           lhs.main_throttle == rhs.main_throttle &&
+           lhs.reaction_wheels == rhs.reaction_wheels;
 }
 
 bool operator==(const Config& lhs, const Config& rhs) {
@@ -33,9 +34,11 @@ bool operator==(const Config& lhs, const Config& rhs) {
            lhs.rotate_accel == rhs.rotate_accel &&
            lhs.fuel == rhs.fuel &&
            lhs.fuel_burn == rhs.fuel_burn &&
-           lhs.safe_vertical_speed == rhs.safe_vertical_speed &&
-           lhs.safe_horizontal_speed == rhs.safe_horizontal_speed &&
-           lhs.safe_angle_rad == rhs.safe_angle_rad;
+    lhs.safe_vertical_speed == rhs.safe_vertical_speed &&
+    lhs.safe_horizontal_speed == rhs.safe_horizontal_speed &&
+    lhs.safe_angle_rad == rhs.safe_angle_rad &&
+    lhs.reaction_wheel_accel == rhs.reaction_wheel_accel &&
+    lhs.reaction_wheel_taper == rhs.reaction_wheel_taper;
 }
 
 double radial_distance(const State& state, const Vec2& bpos) {
@@ -76,15 +79,16 @@ LocalVelocity local_velocity(const State& state, const Vec2& bpos,
 }
 
 double surface_radius_at(const Terrain& terrain, const State& state,
-                         const Vec2& bpos) {
+                          const Vec2& bpos, double body_rotation) {
     const double theta = std::atan2(state.y - bpos.y, state.x - bpos.x);
-    return terrain.surface_radius_at_arc(terrain.arc_at_angle(theta));
+    return terrain.surface_radius_at_arc(
+        terrain.arc_at_angle(theta - body_rotation));
 }
 
 double altitude_at(const Terrain& terrain, const State& state,
-                    const Vec2& bpos) {
+                    const Vec2& bpos, double body_rotation) {
     return radial_distance(state, bpos) -
-           surface_radius_at(terrain, state, bpos);
+           surface_radius_at(terrain, state, bpos, body_rotation);
 }
 
 double local_angular_velocity(const State& state, const Vec2& bpos,
@@ -108,6 +112,59 @@ double target_range_rate(const Vec2& ship_pos, const Vec2& ship_vel,
     return ((ship_vel.x - target_vel.x) * dx +
             (ship_vel.y - target_vel.y) * dy) /
            r;
+}
+
+double orbital_rate(const State& state, const Vec2& bpos,
+                     const Vec2& bvel) {
+    return local_angular_velocity(state, bpos, bvel);
+}
+
+const char* range_rate_label(double range_rate, double tolerance) {
+    if (range_rate <= -tolerance) {
+        return "CLOSE";
+    }
+    if (range_rate >= tolerance) {
+        return "OPEN";
+    }
+    return "HOLD";
+}
+
+NavCues navigation_cues(const State& state, const BinarySystem& system,
+                          double t, int destination_body) {
+    NavCues out{};
+    const Vec2 ship_pos{state.x, state.y};
+    const Vec2 ship_vel{state.vx, state.vy};
+    const Body& destination = system.body(destination_body);
+    const double pad_arc = destination.terrain.pads().front().center_arc;
+    // The base pad is a point fixed on the rotating surface (M05-R3 tidal
+    // locking): both its position and its velocity track the body's spin,
+    // so the destination is a genuinely moving target.
+    const BinarySystem::SurfacePoint dest_pad = system.surface_point(
+        destination_body, destination.terrain.angle_at_arc(pad_arc),
+        destination.terrain.surface_radius_at_arc(pad_arc), t);
+    out.target_position = dest_pad.position;
+    out.target_direction = out.target_position - ship_pos;
+    out.target_distance =
+        std::hypot(out.target_direction.x, out.target_direction.y);
+    if (out.target_distance > 1.0e-9) {
+        out.target_direction =
+            out.target_direction * (1.0 / out.target_distance);
+    } else {
+        out.target_direction = {};
+    }
+
+    out.relative_velocity = ship_vel - dest_pad.velocity;
+    out.relative_speed =
+        std::hypot(out.relative_velocity.x, out.relative_velocity.y);
+
+    out.gravity_primary = system.gravity_from(0, ship_pos, t);
+    out.gravity_companion = system.gravity_from(1, ship_pos, t);
+    out.net_gravity = out.gravity_primary + out.gravity_companion;
+    out.g_primary = std::hypot(out.gravity_primary.x, out.gravity_primary.y);
+    out.g_companion =
+        std::hypot(out.gravity_companion.x, out.gravity_companion.y);
+    out.g_net = std::hypot(out.net_gravity.x, out.net_gravity.y);
+    return out;
 }
 
 namespace {
@@ -135,16 +192,19 @@ int reference_body_for(double mu0, double mu1, double distance0,
 State attached_state(const BinarySystem& system, int body_index,
                      double landed_arc, double t) {
     const Body& body = system.body(body_index);
-    const Vec2 pos = system.position(body_index, t);
-    const Vec2 vel = system.velocity(body_index, t);
-    const double theta = body.terrain.angle_at_arc(landed_arc);
-    const double r = body.terrain.surface_radius_at_arc(landed_arc);
+    // The ship sits on a point fixed to the rotating surface: the surface
+    // point's full position and velocity (translation plus spin).
+    const BinarySystem::SurfacePoint sp = system.surface_point(
+        body_index, body.terrain.angle_at_arc(landed_arc),
+        body.terrain.surface_radius_at_arc(landed_arc), t);
+    const double world_angle =
+        body.terrain.angle_at_arc(landed_arc) + system.body_rotation(t);
     State out{};
-    out.x = pos.x + std::cos(theta) * r;
-    out.y = pos.y + std::sin(theta) * r;
-    out.vx = vel.x;
-    out.vy = vel.y;
-    out.angle = normalize_angle(theta - 0.5 * kPi);
+    out.x = sp.position.x;
+    out.y = sp.position.y;
+    out.vx = sp.velocity.x;
+    out.vy = sp.velocity.y;
+    out.angle = normalize_angle(world_angle - 0.5 * kPi);
     out.fuel = 0.0;
     out.landed = true;
     out.landed_body = body_index;
@@ -231,7 +291,7 @@ void Simulation::set_state(const State& state) {
     previous_ = next;
 }
 
-void Simulation::circularize() {
+void Simulation::circularize(bool counter_clockwise) {
     if (state_.landed || state_.crashed) {
         return;
     }
@@ -245,12 +305,10 @@ void Simulation::circularize() {
     const double right_x = std::sin(theta);
     const double right_y = -std::cos(theta);
     const Vec2 bvel = binary_.velocity(reference_body_, sim_time_);
-    const LocalVelocity lv = local_velocity(state_, bpos, bvel);
     const double speed = std::sqrt(body.mu / r);
-    const double direction =
-        std::abs(lv.tangential) > 1.0e-6
-            ? (lv.tangential < 0.0 ? -1.0 : 1.0)
-            : 1.0;
+    // The local "right" vector points clockwise around the body; reversing
+    // it gives the counter-clockwise circular direction.
+    const double direction = counter_clockwise ? -1.0 : 1.0;
     // Body-relative circular velocity plus the body's own ephemeris
     // velocity: a one-time state change, with no continuing stabilization.
     state_.vx = bvel.x + right_x * speed * direction;
@@ -326,6 +384,16 @@ void Simulation::integrate_flight(const Input& input, double t0) {
         (input.rotate_left ? -config_.rotate_accel : 0.0) * dt +
         (input.rotate_right ? config_.rotate_accel : 0.0) * dt;
 
+    if (input.reaction_wheels) {
+        // Finite angular damping opposite the current spin. It tapers to
+        // zero as `omega` approaches zero and never teleports, translates,
+        // or consumes fuel.
+        const double taper = std::clamp(
+            std::abs(state_.omega) / config_.reaction_wheel_taper, 0.0, 1.0);
+        const double damping_accel = config_.reaction_wheel_accel * taper;
+        state_.omega -= std::copysign(damping_accel * dt, state_.omega);
+    }
+
     state_.vx += a.x * dt;
     state_.vy += a.y * dt;
     state_.x += state_.vx * dt;
@@ -343,16 +411,20 @@ void Simulation::integrate_flight(const Input& input, double t0) {
 void Simulation::attach_to_body() {
     const int i = state_.landed_body;
     const Body& body = binary_.body(i);
-    const Vec2 pos = binary_.position(i, sim_time_);
-    const Vec2 vel = binary_.velocity(i, sim_time_);
-    const double theta = body.terrain.angle_at_arc(state_.landed_arc);
-    const double r = body.terrain.surface_radius_at_arc(state_.landed_arc);
-    state_.x = pos.x + std::cos(theta) * r;
-    state_.y = pos.y + std::sin(theta) * r;
-    state_.vx = vel.x;
-    state_.vy = vel.y;
+    // The ship rides the rotating surface: full surface-point velocity
+    // (translation plus spin) and nose along the local radial.
+    const BinarySystem::SurfacePoint sp = binary_.surface_point(
+        i, body.terrain.angle_at_arc(state_.landed_arc),
+        body.terrain.surface_radius_at_arc(state_.landed_arc), sim_time_);
+    const double world_angle =
+        body.terrain.angle_at_arc(state_.landed_arc) +
+        binary_.body_rotation(sim_time_);
+    state_.x = sp.position.x;
+    state_.y = sp.position.y;
+    state_.vx = sp.velocity.x;
+    state_.vy = sp.velocity.y;
     state_.omega = 0.0;
-    state_.angle = normalize_angle(theta - 0.5 * kPi);
+    state_.angle = normalize_angle(world_angle - 0.5 * kPi);
 }
 
 bool Simulation::try_takeoff(const Input& input, double t0) {
@@ -364,9 +436,12 @@ bool Simulation::try_takeoff(const Input& input, double t0) {
     const int i = state_.landed_body;
     const Body& body = binary_.body(i);
     const Vec2 ship{state_.x, state_.y};
-    const double theta = body.terrain.angle_at_arc(state_.landed_arc);
-    const double up_x = std::cos(theta);
-    const double up_y = std::sin(theta);
+    // The local vertical follows the rotating surface point (M05-R3).
+    const double world_angle =
+        body.terrain.angle_at_arc(state_.landed_arc) +
+        binary_.body_rotation(t0);
+    const double up_x = std::cos(world_angle);
+    const double up_y = std::sin(world_angle);
 
     // Effective downward acceleration in the body's (non-inertial) frame:
     // the total gravitational field at the ship minus the body's own
@@ -383,10 +458,16 @@ bool Simulation::try_takeoff(const Input& input, double t0) {
 
     state_.landed = false;
     // Release at this step's start: position stays on the current pad, and
-    // the ship inherits the body's current global translational velocity.
-    const Vec2 bvel = binary_.velocity(i, t0);
-    state_.vx = bvel.x;
-    state_.vy = bvel.y;
+    // the ship inherits the full velocity of the surface point it left
+    // (translational plus the spin of that point).
+    const double r =
+        body.terrain.surface_radius_at_arc(state_.landed_arc);
+    const BinarySystem::SurfacePoint sp =
+        binary_.surface_point(i,
+                              body.terrain.angle_at_arc(state_.landed_arc),
+                              r, t0);
+    state_.vx = sp.velocity.x;
+    state_.vy = sp.velocity.y;
     state_.omega = 0.0;
     return true;
 }
@@ -412,15 +493,27 @@ void Simulation::resolve_ground_contact() {
         }
 
         const double theta = std::atan2(ry, rx);
-        const double arc = body.terrain.arc_at_angle(theta);
+        // The terrain lives in body-local coordinates: subtract the body's
+        // tidal-lock spin to get the arc under the ship.
+        const double arc = body.terrain.arc_at_angle(theta -
+                                                      binary_.body_rotation(
+                                                          sim_time_));
         const double surface = body.terrain.surface_radius_at_arc(arc);
         if (rho > surface) {
             continue;
         }
 
-        // In contact with body i: evaluate everything body-relative.
+        // In contact with body i: evaluate everything body-relative. The
+        // surface point the ship touched is rotating (M05-R3), so the
+        // relative velocity is against that point's full inertial velocity:
+        // the body's translational velocity plus the spin velocity of the
+        // contact offset.
         const Vec2 bvel = binary_.velocity(i, sim_time_);
-        const LocalVelocity lv = local_velocity(state_, bpos, bvel);
+        const double ox = std::cos(theta) * surface;
+        const double oy = std::sin(theta) * surface;
+        const Vec2 sp_vel{bvel.x - binary_.omega() * oy,
+                          bvel.y + binary_.omega() * ox};
+        const LocalVelocity lv = local_velocity(state_, bpos, sp_vel);
         const double up_angle = theta - 0.5 * kPi;
         const Pad* pad = body.terrain.pad_at_arc(arc);
         bool safe = false;
@@ -460,12 +553,14 @@ void Simulation::resolve_ground_contact() {
             contract_.destination_body = 1 - i;
             contract_.reward =
                 100 * binary_.body(contract_.destination_body)
-                          .terrain.pads().front().multiplier;
+                           .terrain.pads().front().multiplier;
         }
+        // Landed: the ship is placed on the rotating surface point and
+        // inherits its full velocity (translation plus spin).
         state_.x = bpos.x + std::cos(theta) * surface;
         state_.y = bpos.y + std::sin(theta) * surface;
-        state_.vx = bvel.x;
-        state_.vy = bvel.y;
+        state_.vx = sp_vel.x;
+        state_.vy = sp_vel.y;
         state_.omega = 0.0;
         state_.angle = normalize_angle(up_angle);
         return;

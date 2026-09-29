@@ -19,10 +19,10 @@ struct Vec2 {
 };
 
 // One moon of the binary system. `terrain` is the body's surface in
-// body-local coordinates (the bodies do not spin, so body-local angles are
-// world angles), `mu` is the gravitational parameter, and
-// `side * barycentric_radius` places the body on its side of the fixed
-// barycentre (-1 = primary, +1 = companion).
+// body-local coordinates; a body-local angle becomes a world angle by
+// adding the body's tidal-lock spin (BinarySystem::body_rotation). `mu` is
+// the gravitational parameter, and `side * barycentric_radius` places the
+// body on its side of the fixed barycentre (-1 = primary, +1 = companion).
 struct Body {
     double reference_radius{kReferenceRadius};
     double mu{0.0};
@@ -40,9 +40,12 @@ struct Body {
 //     omega     = sqrt(mu_system / D^3)
 //     a_i       = D * mu_other / mu_system
 //
-// so the barycentre stays at the origin for all time. The bodies translate
-// but do not spin (no axial rotation in M05), so a point fixed on a surface
-// carries the body's translational velocity.
+// so the barycentre stays at the origin for all time. M05-R3 tidal
+// locking: both bodies also spin prograde with the orbit
+// (body_rotation(t) = theta(t) - theta0), so the same face of each body
+// always points at its companion. A point fixed on a surface then carries
+// the body's translational velocity plus the spin velocity of its offset
+// (see surface_point).
 class BinarySystem {
 public:
     BinarySystem() = default;
@@ -91,6 +94,36 @@ public:
 
     double theta(double t) const noexcept { return theta0_ + omega_ * t; }
 
+    // M05-R3 tidal locking: both bodies spin prograde with the orbit, so a
+    // body-fixed surface point keeps the same face toward its companion for
+    // all time. The spin is the pure time function theta(t) - theta0.
+    double body_rotation(double t) const noexcept {
+        return theta(t) - theta0_;
+    }
+
+    struct SurfacePoint {
+        Vec2 position{};
+        Vec2 velocity{};
+    };
+
+    // Position and inertial velocity of a point fixed on body `index` at
+    // body-local angle `local_angle` and radius `radius`, at ephemeris time
+    // `t`: the body centre plus the spin-rotated offset, and the body's
+    // translational velocity plus the spin velocity of that offset
+    // (omega x offset).
+    SurfacePoint surface_point(int index, double local_angle, double radius,
+                               double t) const {
+        const Vec2 pos = position(index, t);
+        const Vec2 vel = velocity(index, t);
+        const double world_angle = local_angle + body_rotation(t);
+        const double ox = std::cos(world_angle) * radius;
+        const double oy = std::sin(world_angle) * radius;
+        return {
+            {pos.x + ox, pos.y + oy},
+            {vel.x - omega_ * oy, vel.y + omega_ * ox},
+        };
+    }
+
     const Body& body(int index) const { return bodies_[index]; }
     const std::array<Body, 2>& bodies() const { return bodies_; }
 
@@ -124,19 +157,23 @@ public:
     Vec2 gravity(const Vec2& p, double t) const {
         Vec2 acc{};
         for (int i = 0; i < 2; ++i) {
-            const Body& b = bodies_[i];
-            const Vec2 pos = position(i, t);
-            const double rx = p.x - pos.x;
-            const double ry = p.y - pos.y;
-            const double r = std::hypot(rx, ry);
-            if (r < 1.0e-9) {
-                continue;
-            }
-            const double inv_r3 = 1.0 / (r * r * r);
-            acc.x -= b.mu * rx * inv_r3;
-            acc.y -= b.mu * ry * inv_r3;
+            acc = acc + gravity_from(i, p, t);
         }
         return acc;
+    }
+
+    // The inverse-square gravitational field produced by one body at p.
+    Vec2 gravity_from(int index, const Vec2& p, double t) const {
+        const Body& b = bodies_[index];
+        const Vec2 pos = position(index, t);
+        const double rx = p.x - pos.x;
+        const double ry = p.y - pos.y;
+        const double r = std::hypot(rx, ry);
+        if (r < 1.0e-9) {
+            return {};
+        }
+        const double inv_r3 = 1.0 / (r * r * r);
+        return {-b.mu * rx * inv_r3, -b.mu * ry * inv_r3};
     }
 
 private:

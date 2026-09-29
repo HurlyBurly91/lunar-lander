@@ -11,15 +11,18 @@
 //   (c) renders both moons, the lander, landing pads, and a HUD.
 //
 // World space: a fixed inertial frame with the binary barycentre at the
-// origin. The two moons orbit it on the analytic ephemeris; they do not
-// spin, so body-local angles are world angles. Angle 0 = thrust toward +y,
-// positive angle = counter-clockwise. The local camera rotates with the
-// selected reference body's surface frame; the system view stays inertial.
+// origin. The two moons orbit it on the analytic ephemeris and are tidally
+// locked (M05-R3): each body's terrain spins prograde with the orbit, so a
+// body-local angle becomes a world angle by adding the body's rotation.
+// Angle 0 = thrust toward +y, positive angle = counter-clockwise. The local
+// camera rotates with the selected reference body's surface frame; the
+// system view stays inertial.
 
 #include <SDL3/SDL.h>
 
 #include "lander/binary.hpp"
 #include "lander/camera.hpp"
+#include "lander/guarded_actions.hpp"
 #include "lander/sim.hpp"
 #include "lander/starfield.hpp"
 
@@ -368,19 +371,23 @@ void draw_space(SDL_Renderer* renderer,
 // Renders one moon: the actual collision surface as a closed arc around the
 // body (a local-view window centred on the ship, or the full circle in the
 // system view), plus its landing pads. `bpos` is the body's centre in world
-// coordinates; the terrain lives in body-local coordinates and the body does
-// not spin, so body-local angles are world angles. `highlight_base` draws
-// the destination base pad (the pad at arc 0) in amber so the current
-// contract target is easy to spot.
+// coordinates; the terrain lives in body-local coordinates and every
+// terrain angle is rotated by the body's tidal-lock spin (`body_rotation`)
+// into world space (M05-R3), so the drawn surface matches exactly what the
+// simulation collides with. `highlight_base` draws the destination base pad
+// (the pad at arc 0) in amber so the current contract target is easy to
+// spot.
 void draw_body(SDL_Renderer* renderer, const lander::Body& body,
-               const lander::Vec2& bpos, const lander::Camera& cam,
-               const lander::State& ship, bool full_body,
-               bool highlight_base) {
+                const lander::Vec2& bpos, const lander::Camera& cam,
+                const lander::State& ship, bool full_body,
+                bool highlight_base, double body_rotation) {
     const lander::Terrain& terrain = body.terrain;
     const double scale = cam.scale();
     const double C = terrain.circumference();
     const double theta_ship = std::atan2(ship.y - bpos.y, ship.x - bpos.x);
-    const double s_target = terrain.arc_at_angle(theta_ship);
+    // The local-view window is centred on the terrain arc that currently
+    // faces the ship: the ship's world direction minus the body's spin.
+    const double s_target = terrain.arc_at_angle(theta_ship - body_rotation);
 
     double half_angle = 0.0;
     double u_start = 0.0;
@@ -408,7 +415,7 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
     std::vector<Vec2> outer;
     std::vector<Vec2> inner;
     auto push_point = [&](double u) {
-        const double theta = terrain.angle_at_arc(u);
+        const double theta = terrain.angle_at_arc(u) + body_rotation;
         const double r = terrain.surface_radius_at_arc(u);
         outer.push_back(to_screen(bpos.x + std::cos(theta) * r,
                                   bpos.y + std::sin(theta) * r, cam));
@@ -463,7 +470,7 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
             full_body ? 0.0 : std::ceil(u_start / 10.0) * 10.0;
         const double tick_end = full_body ? C - 1.0e-9 : u_end;
         for (double u = tick_start; u <= tick_end + 1.0e-9; u += 10.0) {
-            const double theta = terrain.angle_at_arc(u);
+            const double theta = terrain.angle_at_arc(u) + body_rotation;
             const double r = terrain.surface_radius_at_arc(u);
             const Vec2 a = to_screen(bpos.x + std::cos(theta) * r,
                                      bpos.y + std::sin(theta) * r, cam);
@@ -501,8 +508,8 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
             const double u1 =
                 pad.center_arc - pad.half_width +
                 (2.0 * pad.half_width * (i + 1) / segments);
-            const double t0 = terrain.angle_at_arc(u0);
-            const double t1 = terrain.angle_at_arc(u1);
+            const double t0 = terrain.angle_at_arc(u0) + body_rotation;
+            const double t1 = terrain.angle_at_arc(u1) + body_rotation;
             const Vec2 a = to_screen(bpos.x + std::cos(t0) * pad.radius,
                                      bpos.y + std::sin(t0) * pad.radius, cam);
             const Vec2 b = to_screen(bpos.x + std::cos(t1) * pad.radius,
@@ -518,7 +525,8 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
                             make_color(205, 255, 220), 220);
         }
 
-        const double tc = terrain.angle_at_arc(pad.center_arc);
+        const double tc =
+            terrain.angle_at_arc(pad.center_arc) + body_rotation;
         const double guide_len =
             (is_base && highlight_base) ? 30.0 : 14.0;
         const Vec2 guide_top =
@@ -548,7 +556,7 @@ void draw_lander(SDL_Renderer* renderer, const lander::State& s,
                  const lander::Camera& cam) {
     const double scale = cam.scale();
 
-    if (scale * 2.5 < 2.0) {
+    if (!lander::lander_uses_full_model(scale)) {
         // Minimum-size ship marker (system view).
         const Vec2 p = to_screen(s.x, s.y, cam);
         const Color marker =
@@ -675,9 +683,83 @@ void draw_debris(SDL_Renderer* renderer, const lander::State& s,
 
 // --------------------------------------------------------------------- HUD
 
+// M05-R3 compact navigation/gravity overlay: true target, relative-velocity,
+// and per-body/net gravity vectors drawn near the ship in screen space.
+// Vectors are transformed by the camera's rigid rotation only; their
+// on-screen lengths use the documented `cue_arrow_length` scaling (fixed for
+// the target direction, linear and clamped for everything else).
+void draw_navigation_overlay(SDL_Renderer* renderer,
+                              const lander::Simulation& sim,
+                              const lander::State& render_state,
+                              const lander::Camera& cam) {
+    const lander::NavCues cues = lander::navigation_cues(
+        sim.state(), sim.binary(), sim.sim_time(),
+        sim.contract().destination_body);
+
+    const Vec2 center = to_screen(render_state.x, render_state.y, cam);
+    const double c = std::cos(cam.angle());
+    const double s = std::sin(cam.angle());
+
+    auto screen_dir = [&](const lander::Vec2& v) -> Vec2 {
+        const double len = std::hypot(v.x, v.y);
+        if (len < 1.0e-9) {
+            return Vec2{};
+        }
+        const double ux = v.x / len;
+        const double uy = v.y / len;
+        const double lx = ux * c + uy * s;
+        const double ly = -ux * s + uy * c;
+        return {lx, -ly};
+    };
+
+    auto draw_cue = [&](const lander::Vec2& world, double px_per_unit,
+                         double max_px, Color color, const char* label) {
+        const double magnitude = std::hypot(world.x, world.y);
+        if (magnitude < 1.0e-9) {
+            return;
+        }
+        const double len = lander::cue_arrow_length(magnitude, px_per_unit,
+                                                    max_px);
+        if (len < 1.0) {
+            return;
+        }
+        const Vec2 dir = screen_dir(world);
+        const Vec2 tip{center.x + dir.x * len, center.y + dir.y * len};
+        draw_thick_line(renderer, center, tip, 1.5, color, 210);
+        const double dx = tip.x - center.x;
+        const double dy = tip.y - center.y;
+        const double dl = std::hypot(dx, dy);
+        if (dl > 1.0e-9) {
+            const Vec2 ux{dx / dl, dy / dl};
+            const Vec2 perp{-ux.y, ux.x};
+            const Vec2 base{tip.x - ux.x * 7.0, tip.y - ux.y * 7.0};
+            fill_poly(renderer,
+                      {tip,
+                       {base.x + perp.x * 3.5, base.y + perp.y * 3.5},
+                       {base.x - perp.x * 3.5, base.y - perp.y * 3.5}},
+                      color, 210);
+            draw_text(renderer, label,
+                      static_cast<int>(tip.x) + 4,
+                      static_cast<int>(tip.y) - 4, 1, color);
+        }
+    };
+
+    draw_cue(cues.target_direction, lander::kTargetCueLengthPx,
+             lander::kTargetCueLengthPx, make_color(255, 196, 64), "TGT");
+    draw_cue(cues.relative_velocity, lander::kVelocityCueScale,
+             lander::kCueMaxLengthPx, make_color(120, 220, 255), "VREL");
+    draw_cue(cues.gravity_primary, lander::kGravityCueScale,
+             lander::kCueMaxLengthPx, make_color(120, 240, 160), "G0");
+    draw_cue(cues.gravity_companion, lander::kGravityCueScale,
+             lander::kCueMaxLengthPx, make_color(230, 130, 255), "G1");
+    draw_cue(cues.net_gravity, lander::kGravityCueScale,
+             lander::kCueMaxLengthPx, make_color(255, 230, 120), "GNET");
+}
+
 void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
-              std::uint64_t seed, double throttle,
-              const lander::Camera& cam) {
+               std::uint64_t seed, double throttle,
+               const lander::Camera& cam,
+               const std::string& tap_progress) {
     const lander::State& s = sim.state();
     const lander::BinarySystem& bin = sim.binary();
     const lander::Config& config = sim.config();
@@ -697,40 +779,65 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
     char seed_line[48];
     std::snprintf(seed_line, sizeof seed_line, "SEED %llu",
                   static_cast<unsigned long long>(seed));
-    draw_text(renderer, seed_line, 18, 46, 2, dim);
+    draw_text(renderer, seed_line, 18, 44, 2, dim);
 
-    // Altitude and velocity are shown in the reference body's local surface
-    // frame: altitude is radial height above that body's terrain, radial
-    // velocity is negative while descending, and tangential velocity is
-    // positive clockwise. The reference body is presentation-only; both
-    // bodies' gravity is always active.
+    // Explicit reference-frame readouts (M05-R3): REF/JOB identify the
+    // frames; ALT, V RAD, V TAN, ATT, SPIN, and ORB are relative to the
+    // current REF; DIST, V REL, and RANGE are relative to the contract
+    // destination.
     const int ref = sim.reference_body();
     const lander::Vec2 ref_pos = bin.position(ref, sim.sim_time());
     const lander::Vec2 ref_vel = bin.velocity(ref, sim.sim_time());
-    const double alt_m =
-        std::max(0.0, lander::altitude_at(bin.body(ref).terrain, s, ref_pos));
+    const double rot = bin.body_rotation(sim.sim_time());
+    const double alt_m = std::max(
+        0.0,
+        lander::altitude_at(bin.body(ref).terrain, s, ref_pos, rot));
     const lander::LocalVelocity lv =
         lander::local_velocity(s, ref_pos, ref_vel);
     const int throttle_pct =
         static_cast<int>(std::lround(std::clamp(throttle, 0.0, 1.0) * 100.0));
-    const std::string alt = "ALT   " + fmt1(alt_m) + " M";
-    const std::string vel = "VEL T " + fmt1(lv.tangential) +
-                            " R " + fmt1(lv.radial) + " M/S";
-    const std::string ang =
-        "ANG   " +
-        fmt1(lander::local_attitude_angle(s, ref_pos) * 180.0 / lander::kPi) +
-        " DEG";
-    const std::string thr = "THR   " + std::to_string(throttle_pct) + "%";
+    const int dest = sim.contract().destination_body;
+    // The base pad is a point fixed on the destination body's rotating
+    // surface (M05-R3): its position and velocity both track the spin, so
+    // DIST/VREL/RANGE follow the moving pad, not a static marker.
+    const lander::BinarySystem::SurfacePoint dest_base = bin.surface_point(
+        dest, bin.body(dest).terrain.angle_at_arc(0.0),
+        bin.body(dest).terrain.surface_radius_at_arc(0.0), sim.sim_time());
+    const double base_x = dest_base.position.x;
+    const double base_y = dest_base.position.y;
+    const double dist_m = std::hypot(s.x - base_x, s.y - base_y);
+    const double v_rel =
+        std::hypot(s.vx - dest_base.velocity.x,
+                   s.vy - dest_base.velocity.y);
+    const double range_rate = lander::target_range_rate(
+        {s.x, s.y}, {s.vx, s.vy}, {base_x, base_y}, dest_base.velocity);
+    const char* range_label = lander::range_rate_label(range_rate);
+    const double orb_deg =
+        lander::orbital_rate(s, ref_pos, ref_vel) * (180.0 / lander::kPi);
 
-    draw_text(renderer, alt, 18, 74, 2, white);
-    draw_text(renderer, vel, 18, 94, 2, white);
-    draw_text(renderer, ang, 18, 114, 2, white);
-    draw_text(renderer, thr, 18, 134, 2, white);
+    draw_text(renderer, std::string("REF  ") + body_name(ref), 18, 64, 2,
+              white);
+    draw_text(renderer, std::string("JOB  ") + body_name(dest) + " BASE",
+              18, 82, 2, amber);
+    draw_text(renderer, "ALT   " + fmt1(alt_m) + " M", 18, 100, 2, white);
+    draw_text(renderer, "VRAD  " + fmt1(lv.radial) + " M/S", 18, 118, 2,
+              white);
+    draw_text(renderer, "VTAN  " + fmt1(lv.tangential) + " M/S", 18, 136, 2,
+              white);
+    draw_text(renderer,
+              "ATT   " +
+                  fmt1(lander::local_attitude_angle(s, ref_pos) *
+                       180.0 / lander::kPi) +
+                  " DEG",
+              18, 154, 2, white);
+    draw_text(renderer, "SPIN  " + fmt1(lander::spin_deg_per_s(s)) + " D/S",
+              18, 172, 2, white);
+    draw_text(renderer, "ORB   " + fmt1(orb_deg) + " D/S", 18, 190, 2, white);
+    draw_text(renderer, "THR   " + std::to_string(throttle_pct) + "%", 18,
+              208, 2, white);
 
-    // Commanded-throttle bar beside the THR readout. It shows the persistent
-    // player throttle setting, not inferred thrust, flame size, or motion.
     constexpr int kThrBarX = 146;
-    constexpr int kThrBarY = 138;
+    constexpr int kThrBarY = 212;
     constexpr int kThrBarWidth = 154;
     constexpr int kThrBarHeight = 8;
     fill_rect(renderer, kThrBarX, kThrBarY, kThrBarWidth, kThrBarHeight,
@@ -744,73 +851,35 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
     }
 
     char fuel_buffer[48];
-    std::snprintf(fuel_buffer, sizeof fuel_buffer, "FUEL  %.1f / %.0f",
+    std::snprintf(fuel_buffer, sizeof fuel_buffer, "FUEL  %.1f/%.0f",
                   s.fuel, config.fuel);
-    draw_text(renderer, fuel_buffer, 18, 154, 2, white);
-
-    // Fuel bar.
-    fill_rect(renderer, 18, 178, 180, 12, make_color(40, 44, 60));
+    draw_text(renderer, fuel_buffer, 18, 228, 2, white);
+    fill_rect(renderer, 18, 248, 180, 12, make_color(40, 44, 60));
     const double frac = config.fuel > 0.0
                             ? std::clamp(s.fuel / config.fuel, 0.0, 1.0)
                             : 0.0;
     const int bar_w = static_cast<int>(180 * frac);
     if (bar_w > 0) {
-        fill_rect(renderer, 18, 178, bar_w, 12,
+        fill_rect(renderer, 18, 248, bar_w, 12,
                   frac > 0.25 ? make_color(90, 200, 130) : red);
     }
 
-    // Two-body flight information.
-    const int dest = sim.contract().destination_body;
-    const lander::Vec2 dest_pos = bin.position(dest, sim.sim_time());
-    const lander::Vec2 dest_vel = bin.velocity(dest, sim.sim_time());
-    const double base_r =
-        bin.body(dest).terrain.surface_radius_at_arc(0.0);
-    const double base_x =
-        dest_pos.x + std::cos(lander::kSpawnAngle) * base_r;
-    const double base_y =
-        dest_pos.y + std::sin(lander::kSpawnAngle) * base_r;
-    const double dist_m =
-        std::hypot(s.x - base_x, s.y - base_y);
-    // DV is the closure speed with respect to the contract destination (the
-    // quantity useful for planning an intercept). OMG is the ship's local
-    // angular rate about the *reference* body (M05-R1-22), computed through
-    // the same helper the tests use.
-    const lander::LocalVelocity lv_dest =
-        lander::local_velocity(s, dest_pos, dest_vel);
-    const double dv = std::hypot(lv_dest.radial, lv_dest.tangential);
-    const double omg = lander::local_angular_velocity(s, ref_pos, ref_vel);
-
-    draw_text(renderer, std::string("REF   ") + body_name(ref), 18, 202, 2,
-              white);
-    draw_text(renderer,
-              std::string("JOB   ") + body_name(dest) + " BASE", 18, 222, 2,
-              amber);
-    draw_text(renderer, "DIST  " + fmt1(dist_m) + " M", 18, 242, 2, white);
-    draw_text(renderer, "DV " + fmt1(dv) + " M/S  OMG " +
-                            fmt1(omg * 180.0 / lander::kPi) + " D/S",
-              18, 262, 2, white);
-
-    const double range_rate = lander::target_range_rate(
-        {s.x, s.y}, {s.vx, s.vy}, {base_x, base_y}, dest_vel);
-    std::string rate_label;
-    Color rate_color = white;
-    if (range_rate <= -0.05) {
-        rate_label = "CLOSING";
-        rate_color = green;
-    } else if (range_rate >= 0.05) {
-        rate_label = "OPENING";
-        rate_color = amber;
-    } else {
-        rate_label = "HOLDING";
+    draw_text(renderer, "DIST  " + fmt1(dist_m) + " M", 18, 270, 2, white);
+    draw_text(renderer, "VREL  " + fmt1(v_rel) + " M/S", 18, 288, 2, white);
+    Color range_color = white;
+    if (std::strcmp(range_label, "CLOSE") == 0) {
+        range_color = green;
+    } else if (std::strcmp(range_label, "OPEN") == 0) {
+        range_color = amber;
     }
-    char rate_buffer[64];
-    std::snprintf(rate_buffer, sizeof rate_buffer, "RATE  %+.1f M/S  %s",
-                  range_rate, rate_label.c_str());
-    draw_text(renderer, rate_buffer, 18, 282, 2, rate_color);
+    char rate_buffer[48];
+    std::snprintf(rate_buffer, sizeof rate_buffer, "RANGE %+.1f %s",
+                  range_rate, range_label);
+    draw_text(renderer, rate_buffer, 18, 306, 2, range_color);
 
     char score_line[32];
     std::snprintf(score_line, sizeof score_line, "SCORE %d", s.score);
-    draw_text(renderer, score_line, 18, 302, 2, white);
+    draw_text(renderer, score_line, 18, 324, 2, white);
 
     std::string status = "IN FLIGHT";
     Color status_color = white;
@@ -821,15 +890,25 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
         status = "CRASHED";
         status_color = red;
     }
-    draw_text(renderer, status, 18, 328, 2, status_color);
+    draw_text(renderer, status, 18, 342, 2, status_color);
 
-    // Control help along the bottom.
+    // M05-R3-07: while a N / O / Shift+O triple-tap sequence is partially
+    // armed, its progress is shown under the HUD panel until it fires or
+    // expires.
+    if (!tap_progress.empty()) {
+        draw_text(renderer, tap_progress, 18, 372, 2, amber);
+    }
+
+    // Control help along the bottom. The dangerous controls are triple-tap
+    // guarded: they only fire on the third tap within 700 ms.
     draw_text(renderer, "UP/W INC  DN/S DEC  X CUT", 18,
               kWindowHeight - 56, 1, dim);
-    draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  O CIRC", 18,
+    draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  G NAV", 18,
               kWindowHeight - 40, 1, dim);
-    draw_text(renderer, "F FUEL  P PAUSE  R/N  WHEEL ZOOM", 18,
+    draw_text(renderer, "E WHEELS  O X3 CIRC  SH+O X3 CCW", 18,
               kWindowHeight - 24, 1, dim);
+    draw_text(renderer, "F FUEL  P PAUSE  N X3 SEED  WHEEL ZOOM", 18,
+              kWindowHeight - 8, 1, dim);
 
     // Camera indicator, top-right.
     std::string cam_line;
@@ -865,9 +944,9 @@ void draw_landed_banner(SDL_Renderer* renderer, const lander::State& s) {
                          body_name(s.landed_body < 0 ? 0 : s.landed_body),
                      kWindowHeight / 2 - 130, 2, green);
     draw_center_text(renderer, "HOLD UP TO TAKE OFF",
-                     kWindowHeight / 2 - 104, 2, dim);
-    draw_center_text(renderer, "R RETRY   N NEW SEED",
-                     kWindowHeight / 2 - 80, 1, amber);
+                      kWindowHeight / 2 - 104, 2, dim);
+    draw_center_text(renderer, "R RETRY   N X3 NEW SEED",
+                      kWindowHeight / 2 - 80, 1, amber);
 }
 
 // A short banner confirming that the current contract completed and showing
@@ -891,7 +970,9 @@ void draw_contract_banner(SDL_Renderer* renderer,
 }
 
 // The terminal states get the M04 treatment: a dimmed screen and a restart
-// prompt.
+// prompt. The crash report is a compact, content-sized modal (M05-R3-08):
+// centred in the screen, independent of terrain, reference body, camera
+// mode, and SYSTEM zoom.
 void draw_overlay(SDL_Renderer* renderer, const lander::State& s,
                   bool paused) {
     if (!paused && !s.landed && !s.crashed) {
@@ -920,11 +1001,26 @@ void draw_overlay(SDL_Renderer* renderer, const lander::State& s,
     fill_rect(renderer, 0, 0, kWindowWidth, kWindowHeight,
               make_color(4, 5, 10), 120);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
-    draw_center_text(renderer, "CRASHED", kWindowHeight / 2 - 90, 6, red);
-    draw_center_text(renderer, "SCORE " + std::to_string(s.score),
-                     kWindowHeight / 2, 3, white);
-    draw_center_text(renderer, "R RETRY   N NEW SEED",
-                     kWindowHeight / 2 + 50, 2, dim);
+
+    const std::string score_line = "SCORE " + std::to_string(s.score);
+    const std::string hint = "R RETRY   N X3 NEW SEED";
+    const lander::ScreenRect box = lander::crash_modal_rect(
+        7, 6, static_cast<int>(score_line.size()), 3,
+        static_cast<int>(hint.size()), 2, kWindowWidth, kWindowHeight);
+    fill_rect(renderer, box.x, box.y, box.w, box.h,
+              make_color(18, 20, 34), 235);
+    // The vertical layout mirrors crash_modal_rect: 24 px top padding, the
+    // scale-6 title, a 16 px gap, the scale-3 score, a 16 px gap, then the
+    // scale-2 hint.
+    auto center_in_box = [&](const std::string& text, int scale) {
+        return box.x + (box.w - text_width(text, scale)) / 2;
+    };
+    draw_text(renderer, "CRASHED", center_in_box("CRASHED", 6), box.y + 24,
+              6, red);
+    draw_text(renderer, score_line, center_in_box(score_line, 3),
+              box.y + 24 + 7 * 6 + 16, 3, white);
+    draw_text(renderer, hint, center_in_box(hint, 2),
+              box.y + 24 + 7 * 6 + 16 + 7 * 3 + 16, 2, dim);
 }
 
 // ------------------------------------------------------------------- misc
@@ -995,9 +1091,13 @@ void print_usage() {
         "  --help           show this message\n"
         "Controls: Up/W increase throttle, Down/S decrease throttle, X\n"
         "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual),\n"
-        "V system view, mouse wheel zoom, O circularize around the reference\n"
-        "body, F refill fuel (also on the ground), R retry same seed, N new\n"
-        "seed, P pause, Esc/Q quit.\n");
+        "V system view, mouse wheel zoom, O x3 clockwise circularize around\n"
+        "the reference body, Shift+O x3 counter-clockwise circularize, E\n"
+        "reaction-wheel angular damping, G navigation/gravity overlay, F\n"
+        "refill fuel (also on the ground), R retry same seed, N x3 new seed,\n"
+        "P pause, Esc/Q quit. O/Shift+O/N are triple-tap guarded: the action\n"
+        "fires on the third tap within 700 ms, with progress shown on the\n"
+        "HUD.\n");
 }
 
 }  // namespace
@@ -1080,6 +1180,7 @@ int main(int argc, char** argv) {
 
     bool paused = false;
     bool running = true;
+    bool nav_overlay = true;
     double throttle = 0.0;
     int pending_wheel = 0;
     bool pending_cam_toggle = false;
@@ -1094,11 +1195,16 @@ int main(int argc, char** argv) {
     // refresh rate.
     double flame_clock = 0.0;
 
+    // M05-R3-07: triple-tap guard for the dangerous controls (new seed,
+    // circularize CW/CCW).
+    lander::TripleTapGuard tap_guard;
+
     auto start_mission = [&]() {
         sim.reset(seed);
         throttle = 0.0;
         paused = false;
         flame_clock = 0.0;
+        tap_guard.reset();
         last_completed_seen = sim.last_completed();
         contract_banner_time = 0.0;
         if (orbit_demo) {
@@ -1148,10 +1254,18 @@ int main(int argc, char** argv) {
                         start_mission();
                         break;
                     case SDL_SCANCODE_N: {
-                        seed = random_seed();
-                        stars = lander::make_stars(seed, kWindowWidth,
-                                                   kWindowHeight);
-                        start_mission();
+                        // Triple-tap guarded: one or two taps only arm the
+                        // sequence; the third tap within 700 ms rolls a new
+                        // seed and restarts.
+                        const lander::GuardedAction action =
+                            tap_guard.press(lander::GuardedKey::kNewSeed,
+                                            SDL_GetTicks());
+                        if (action == lander::GuardedAction::kNewSeed) {
+                            seed = random_seed();
+                            stars = lander::make_stars(seed, kWindowWidth,
+                                                       kWindowHeight);
+                            start_mission();
+                        }
                         break;
                     }
                     case SDL_SCANCODE_X:
@@ -1171,11 +1285,24 @@ int main(int argc, char** argv) {
                     case SDL_SCANCODE_P:
                         paused = !paused;
                         break;
-                    case SDL_SCANCODE_O:
-                        if (!sim.state().landed && !sim.state().crashed) {
-                            sim.circularize();
+                    case SDL_SCANCODE_G:
+                        nav_overlay = !nav_overlay;
+                        break;
+                    case SDL_SCANCODE_O: {
+                        // Triple-tap guarded (M05-R3-07).
+                        const bool ccw =
+                            (event.key.mod & SDL_KMOD_SHIFT) != 0;
+                        const lander::GuardedAction action =
+                            tap_guard.press(
+                                ccw ? lander::GuardedKey::kCircularizeCCW
+                                    : lander::GuardedKey::kCircularizeCW,
+                                SDL_GetTicks());
+                        if (action != lander::GuardedAction::kNone &&
+                            !sim.state().landed && !sim.state().crashed) {
+                            sim.circularize(ccw);
                         }
                         break;
+                    }
                     case SDL_SCANCODE_F:
                         // Refill is allowed in flight and on the ground;
                         // only a crash blocks it.
@@ -1241,6 +1368,7 @@ int main(int argc, char** argv) {
         // the preserved physics.
         input.rotate_right = key(SDL_SCANCODE_LEFT) || key(SDL_SCANCODE_A);
         input.rotate_left = key(SDL_SCANCODE_RIGHT) || key(SDL_SCANCODE_D);
+        input.reaction_wheels = key(SDL_SCANCODE_E);
 
         if (!paused) {
             sim.advance(dt, input);
@@ -1272,6 +1400,10 @@ int main(int argc, char** argv) {
         }
 
         const lander::BinarySystem& bin = sim.binary();
+        // Both bodies share the same prograde spin rate (tidal locking), so
+        // one rotation value at the presentation time drives everything
+        // derived from the rotating surfaces this frame.
+        const double body_rot = bin.body_rotation(t_present);
         const int ref = sim.reference_body();
         const lander::Vec2 ref_pos = bin.position(ref, t_present);
 
@@ -1281,20 +1413,24 @@ int main(int argc, char** argv) {
         // mode toggle and wheel stay responsive; while paused the rendered
         // state is the frozen authoritative state, so the camera simply
         // holds.
-        const double altitude =
-            std::max(0.0,
-                     lander::altitude_at(bin.body(ref).terrain,
-                                         render_state, ref_pos));
+        const double altitude = std::max(
+            0.0,
+            lander::altitude_at(bin.body(ref).terrain, render_state, ref_pos,
+                                body_rot));
         const double target_angle =
             lander::local_up_angle(render_state, ref_pos);
         const int nav_dest = sim.contract().destination_body;
-        const lander::Vec2 nav_dest_pos = bin.position(nav_dest, t_present);
-        const double nav_dest_r =
-            bin.body(nav_dest).terrain.surface_radius_at_arc(0.0);
-        const double nav_dest_x =
-            nav_dest_pos.x + std::cos(lander::kSpawnAngle) * nav_dest_r;
-        const double nav_dest_y =
-            nav_dest_pos.y + std::sin(lander::kSpawnAngle) * nav_dest_r;
+        // The contract destination is the base pad: a point fixed on the
+        // destination body's rotating surface (M05-R3 tidal locking), so the
+        // camera's system-destination and the offscreen indicator track the
+        // moving pad.
+        const lander::BinarySystem::SurfacePoint nav_dest_pad =
+            bin.surface_point(
+                nav_dest, bin.body(nav_dest).terrain.angle_at_arc(0.0),
+                bin.body(nav_dest).terrain.surface_radius_at_arc(0.0),
+                t_present);
+        const double nav_dest_x = nav_dest_pad.position.x;
+        const double nav_dest_y = nav_dest_pad.position.y;
         if (cam.system_view()) {
             cam.set_system_destination(nav_dest_x, nav_dest_y);
         } else {
@@ -1326,21 +1462,25 @@ int main(int argc, char** argv) {
         const int dest = sim.contract().destination_body;
         const lander::Vec2 other_pos = bin.position(1 - ref, t_present);
         draw_body(renderer, bin.body(1 - ref), other_pos, cam, render_state,
-                  true, 1 - ref == dest);
+                  true, 1 - ref == dest, body_rot);
         draw_body(renderer, bin.body(ref), ref_pos, cam, render_state,
-                  sys_view, ref == dest);
+                  sys_view, ref == dest, body_rot);
         draw_lander(renderer, render_state, thrust_level, flame_clock, cam);
         if (s.crashed) {
             // Time is frozen after a crash, so the crash body's centre at
             // sim_time() is exactly where the wreck was placed.
             draw_debris(renderer, s, cam, seed,
-                        bin.body(s.crash_body < 0 ? 0 : s.crash_body),
-                        bin.position(s.crash_body < 0 ? 0 : s.crash_body,
-                                     sim.sim_time()));
+                         bin.body(s.crash_body < 0 ? 0 : s.crash_body),
+                         bin.position(s.crash_body < 0 ? 0 : s.crash_body,
+                                      sim.sim_time()));
         }
-        draw_hud(renderer, sim, seed, throttle, cam);
+        if (nav_overlay && !s.crashed && !paused) {
+            draw_navigation_overlay(renderer, sim, render_state, cam);
+        }
+        draw_hud(renderer, sim, seed, throttle, cam,
+                 tap_guard.progress_label(SDL_GetTicks()));
         draw_contract_banner(renderer, last_completed_seen,
-                             contract_banner_time);
+                              contract_banner_time);
         draw_landed_banner(renderer, s);
         if (cam.system_view()) {
             const lander::OffscreenIndicator indicator =

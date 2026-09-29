@@ -3,10 +3,12 @@
 // presentation-only helpers (interpolation, flame animation).
 #include "lander/sim.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -54,9 +56,10 @@ lander::State state_at(double x, double y, double vx, double vy, double angle,
 }
 
 // A flying ship placed relative to body i at ephemeris time 0: `altitude`
-// metres above the local surface at body-local `arc`, with optional
-// body-relative radial / tangential velocity and an attitude offset from the
-// local vertical.
+// metres above the local surface at body-local `arc`, with radial /
+// tangential velocity given relative to the (tidally locked, spinning)
+// surface point at that location, and an attitude offset from the local
+// vertical.
 lander::State state_relative(const lander::BinarySystem& bin, int i, double arc,
                              double altitude, double radial_v, double tang_v,
                              double angle_offset) {
@@ -69,11 +72,18 @@ lander::State state_relative(const lander::BinarySystem& bin, int i, double arc,
     const double up_y = std::sin(theta);
     const double right_x = std::sin(theta);
     const double right_y = -std::cos(theta);
+    // M05-R3 tidal locking: a point fixed at radius r carries the spin
+    // velocity omega x offset, so a ship at rest with respect to the pad
+    // must carry it too.
+    const double ox = r * up_x;
+    const double oy = r * up_y;
+    const double spin_x = -bin.omega() * oy;
+    const double spin_y = bin.omega() * ox;
     lander::State s{};
     s.x = pos.x + r * up_x;
     s.y = pos.y + r * up_y;
-    s.vx = vel.x + radial_v * up_x + tang_v * right_x;
-    s.vy = vel.y + radial_v * up_y + tang_v * right_y;
+    s.vx = vel.x + spin_x + radial_v * up_x + tang_v * right_x;
+    s.vy = vel.y + spin_y + radial_v * up_y + tang_v * right_y;
     s.angle = theta - 0.5 * lander::kPi + angle_offset;
     s.fuel = 1000.0;
     s.landed = false;
@@ -387,9 +397,13 @@ void test_landing_rules() {
                         "rests on the pad surface");
             check(sim.terrain(body).pad_at_arc(r.landed_arc) != nullptr,
                   "landed on a pad");
-            const lander::Vec2 bvel =
-                sim.binary().velocity(body, sim.sim_time());
-            const lander::LocalVelocity lv = lander::local_velocity(r, bpos, bvel);
+            // At rest relative to the pad means at rest relative to the
+            // rotating surface point the ship landed on (M05-R3).
+            const lander::Vec2 sp_vel = sim.binary().surface_point(
+                body, sim.terrain(body).angle_at_arc(r.landed_arc), surface,
+                sim.sim_time()).velocity;
+            const lander::LocalVelocity lv =
+                lander::local_velocity(r, bpos, sp_vel);
             check(std::abs(lv.radial) <= cfg.safe_vertical_speed + 1e-6,
                   "radial speed is within the safe band at rest");
             check(std::abs(lv.tangential) <= cfg.safe_horizontal_speed + 1e-6,
@@ -1057,7 +1071,510 @@ void test_target_range_rate() {
         0.3, 1.0e-12, "outward mixed motion projects positively");
 }
 
+// M05-R3-04: the reaction-wheel control applies finite angular damping
+// opposite the current spin. It tapers to zero, never zeroes the state
+// directly, and never changes translation, fuel, or the un-damped control
+// trajectory.
+void test_reaction_wheel_damping() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 101;
+
+    auto run = [&](bool active, double omega0) {
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s = state_at(0.0, 1000.0, 5.0, -2.0, 0.3, omega0);
+        sim.set_state(s);
+        lander::Input in{};
+        in.reaction_wheels = active;
+        sim.advance(dt, in);
+        return sim.state();
+    };
+
+    for (double omega0 : {0.5, 0.1, -0.4, 0.0}) {
+        const lander::State with = run(true, omega0);
+        const lander::State without = run(false, omega0);
+
+        check_close(with.x, without.x, 1.0e-12,
+                    "reaction wheels do not change the x trajectory");
+        check_close(with.y, without.y, 1.0e-12,
+                    "reaction wheels do not change the y trajectory");
+        check_close(with.vx, without.vx, 1.0e-12,
+                    "reaction wheels do not change the x velocity");
+        check_close(with.vy, without.vy, 1.0e-12,
+                    "reaction wheels do not change the y velocity");
+        check_close(with.fuel, without.fuel, 1.0e-12,
+                    "reaction wheels do not burn fuel");
+        check_close(without.omega, omega0, 1.0e-12,
+                    "without reaction wheels the spin is unchanged");
+
+        const double taper =
+            std::clamp(std::abs(omega0) / cfg.reaction_wheel_taper, 0.0, 1.0);
+        const double expected =
+            omega0 - std::copysign(cfg.reaction_wheel_accel * taper * dt,
+                                   omega0);
+        check_close(with.omega, expected, 1.0e-12,
+                    "reaction-wheel damping follows the tapered formula");
+        if (omega0 > 0.0) {
+            check(with.omega < without.omega,
+                  "positive spin is damped toward zero");
+        } else if (omega0 < 0.0) {
+            check(with.omega > without.omega,
+                  "negative spin is damped toward zero");
+        }
+    }
+}
+
+// M05-R3-V05 / V17: navigation_cues gives the contract-destination pad
+// direction, velocity relative to the moving pad (the pad is a point fixed
+// on the rotating surface), and the true per-body / net gravity.
+void test_navigation_cues() {
+    lander::Config cfg{};
+    const auto bin =
+        lander::BinarySystem::canonical(cfg.mu, 301ULL,
+                                        lander::companion_seed(301ULL));
+    const double t = 3.7;
+    const lander::Body& destination = bin.body(1);
+    const lander::Pad& pad = destination.terrain.pads().front();
+    // The destination pad is fixed on the rotating surface: its world
+    // position and velocity come from the rotating-surface point.
+    const lander::BinarySystem::SurfacePoint dest_pad = bin.surface_point(
+        1, destination.terrain.angle_at_arc(pad.center_arc),
+        destination.terrain.surface_radius_at_arc(pad.center_arc), t);
+    const double theta =
+        destination.terrain.angle_at_arc(pad.center_arc) +
+        bin.body_rotation(t);
+    const lander::Vec2 up{std::cos(theta), std::sin(theta)};
+    const lander::Vec2 right{std::sin(theta), -std::cos(theta)};
+    const lander::Vec2 target = dest_pad.position;
+
+    lander::State s{};
+    s.x = target.x + 100.0 * up.x;
+    s.y = target.y + 100.0 * up.y;
+    s.vx = dest_pad.velocity.x + 2.0 * up.x + 3.0 * right.x;
+    s.vy = dest_pad.velocity.y + 2.0 * up.y + 3.0 * right.y;
+    s.fuel = 1000.0;
+
+    const lander::NavCues cues =
+        lander::navigation_cues(s, bin, t, 1);
+
+    check_close(cues.target_position.x, target.x, 1.0e-9,
+                "nav target is the destination base pad x");
+    check_close(cues.target_position.y, target.y, 1.0e-9,
+                "nav target is the destination base pad y");
+    check_close(cues.target_distance, 100.0, 1.0e-9, "nav target distance");
+    check_close(cues.target_direction.x, -up.x, 1.0e-9,
+                "nav target direction points from the ship toward the pad x");
+    check_close(cues.target_direction.y, -up.y, 1.0e-9,
+                "nav target direction points from the ship toward the pad y");
+    check_close(cues.relative_velocity.x, 2.0 * up.x + 3.0 * right.x, 1.0e-9,
+                "relative velocity is ship velocity minus pad velocity x");
+    check_close(cues.relative_velocity.y, 2.0 * up.y + 3.0 * right.y, 1.0e-9,
+                "relative velocity is ship velocity minus pad velocity y");
+    check_close(cues.relative_speed, std::hypot(2.0, 3.0), 1.0e-9,
+                "relative speed magnitude");
+
+    const lander::Vec2 pos{s.x, s.y};
+    check_close(cues.gravity_primary.x,
+                bin.gravity_from(0, pos, t).x, 1.0e-12,
+                "nav primary gravity is the primary inverse-square field x");
+    check_close(cues.gravity_primary.y,
+                bin.gravity_from(0, pos, t).y, 1.0e-12,
+                "nav primary gravity is the primary inverse-square field y");
+    check_close(cues.gravity_companion.x,
+                bin.gravity_from(1, pos, t).x, 1.0e-12,
+                "nav companion gravity is the companion inverse-square x");
+    check_close(cues.gravity_companion.y,
+                bin.gravity_from(1, pos, t).y, 1.0e-12,
+                "nav companion gravity is the companion inverse-square y");
+    const lander::Vec2 total = bin.gravity(pos, t);
+    check_close(cues.net_gravity.x, total.x, 1.0e-12,
+                "nav net gravity equals the total field x");
+    check_close(cues.net_gravity.y, total.y, 1.0e-12,
+                "nav net gravity equals the total field y");
+    check_close(cues.g_primary,
+                std::hypot(cues.gravity_primary.x, cues.gravity_primary.y),
+                1.0e-12, "primary gravity magnitude");
+    check_close(cues.g_companion,
+                std::hypot(cues.gravity_companion.x,
+                           cues.gravity_companion.y),
+                1.0e-12, "companion gravity magnitude");
+    check_close(cues.g_net, std::hypot(cues.net_gravity.x, cues.net_gravity.y),
+                1.0e-12, "net gravity magnitude");
+
+    lander::State at_target{};
+    at_target.x = target.x;
+    at_target.y = target.y;
+    at_target.vx = dest_pad.velocity.x;
+    at_target.vy = dest_pad.velocity.y;
+    at_target.fuel = 1.0;
+    const lander::NavCues zero = lander::navigation_cues(at_target, bin, t, 1);
+    check_close(zero.target_distance, 0.0, 1.0e-12,
+                "zero range gives zero target distance");
+    check_close(zero.target_direction.x, 0.0, 1.0e-12,
+                "zero range gives a zero target direction x");
+    check_close(zero.target_direction.y, 0.0, 1.0e-12,
+                "zero range gives a zero target direction y");
+    check_close(zero.relative_speed, 0.0, 1.0e-12,
+                "co-moving with the pad gives zero relative speed");
+}
+
+// M05-R3-V03: the explicit HUD helpers produce the readout values and the
+// CLOSE / OPEN / HOLD labels.
+void test_hud_helper_readouts() {
+    lander::State s{};
+    s.omega = 1.0;
+    check_close(lander::spin_deg_per_s(s), 180.0 / lander::kPi, 1.0e-12,
+                "SPIN converts rad/s to deg/s");
+    s.omega = -2.0;
+    check_close(lander::spin_deg_per_s(s), -360.0 / lander::kPi, 1.0e-12,
+                "SPIN preserves the spin direction");
+
+    lander::State orb{};
+    orb.x = 10.0;
+    orb.y = 0.0;
+    orb.vx = 0.0;
+    orb.vy = 4.0;
+    check_close(lander::orbital_rate(orb, {0.0, 0.0}, {0.0, 0.0}), -0.4,
+                1.0e-12, "ORB is body-relative tangential velocity / radius");
+    check_close(
+        lander::orbital_rate(orb, {0.0, 0.0}, {0.0, 0.0}),
+        lander::local_angular_velocity(orb, {0.0, 0.0}, {0.0, 0.0}), 1.0e-12,
+        "ORB matches the local angular-rate definition");
+
+    check(std::strcmp(lander::range_rate_label(-0.1), "CLOSE") == 0,
+          "a negative range rate labels CLOSE");
+    check(std::strcmp(lander::range_rate_label(0.1), "OPEN") == 0,
+          "a positive range rate labels OPEN");
+    check(std::strcmp(lander::range_rate_label(0.0), "HOLD") == 0,
+          "zero range rate labels HOLD");
+    check(std::strcmp(lander::range_rate_label(-0.05), "CLOSE") == 0,
+          "the negative tolerance boundary labels CLOSE");
+    check(std::strcmp(lander::range_rate_label(0.05), "OPEN") == 0,
+          "the positive tolerance boundary labels OPEN");
+    check(std::strcmp(lander::range_rate_label(0.049), "HOLD") == 0,
+          "inside the tolerance labels HOLD");
+}
+
+// M05-R3-V06: O and Shift+O call the same one-time circularize with explicit
+// clockwise / counter-clockwise tangential directions.
+void test_circularize_directions() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 81;
+
+    lander::Simulation sim;
+    sim.reset(seed);
+    const double r0 = sim.terrain(0).max_surface_radius() + 20.0;
+    const double alt = r0 - sim.terrain(0).surface_radius_at_arc(0.0);
+    sim.set_state(state_relative(sim.binary(), 0, 0.0, alt, 0.0, 0.0, 0.0));
+
+    const lander::Vec2 bpos = sim.binary().position(0, 0.0);
+    const lander::Vec2 bvel = sim.binary().velocity(0, 0.0);
+    const double r = lander::radial_distance(sim.state(), bpos);
+    const double theta =
+        std::atan2(sim.state().y - bpos.y, sim.state().x - bpos.x);
+    const double speed = std::sqrt(sim.binary().body(0).mu / r);
+    const lander::Vec2 right{std::sin(theta), -std::cos(theta)};
+
+    sim.circularize(false);
+    check_close(sim.state().vx, bvel.x + right.x * speed, 1.0e-6,
+                "explicit clockwise circularize uses the local right vector");
+    check_close(sim.state().vy, bvel.y + right.y * speed, 1.0e-6,
+                "explicit clockwise circularize uses the local right vector y");
+    check_close(sim.state().x, bpos.x + std::cos(theta) * r, 1.0e-6,
+                "clockwise circularize does not move the ship x");
+    check_close(sim.state().y, bpos.y + std::sin(theta) * r, 1.0e-6,
+                "clockwise circularize does not move the ship y");
+    check_close(sim.state().fuel, 1000.0, 1.0e-9,
+                "clockwise circularize does not burn fuel");
+
+    sim.set_state(state_relative(sim.binary(), 0, 0.0, alt, 0.0, 0.0, 0.0));
+    sim.circularize(true);
+    check_close(sim.state().vx, bvel.x - right.x * speed, 1.0e-6,
+                "explicit counter-clockwise circularize reverses tangential x");
+    check_close(sim.state().vy, bvel.y - right.y * speed, 1.0e-6,
+                "explicit counter-clockwise circularize reverses tangential y");
+    check_close(sim.state().angle, 0.0, 1.0e-9,
+                "counter-clockwise circularize does not change attitude");
+
+    lander::Simulation landed;
+    landed.reset(seed);
+    const lander::State before = landed.state();
+    landed.circularize(false);
+    landed.circularize(true);
+    check(landed.state() == before,
+          "both explicit circularize directions are no-ops while landed");
+}
+
 }  // namespace
+
+// M05-R3-V14: a landed ship stays attached to a rotating surface point.
+void test_landed_attachment_rotating() {
+    lander::Config cfg{};
+    const auto bin = lander::BinarySystem::canonical(
+        cfg.mu, 411ULL, lander::companion_seed(411ULL));
+
+    for (int i = 0; i < 2; ++i) {
+        const lander::Body& body = bin.body(i);
+        const double c = body.terrain.circumference();
+        for (double arc : {0.0, 0.25 * c, 0.6 * c, 0.95 * c}) {
+            const double local = body.terrain.angle_at_arc(arc);
+            const double radius =
+                body.terrain.surface_radius_at_arc(arc);
+            for (double t : {0.0, 3.0, 24.0, bin.period() * 0.5,
+                             bin.period()}) {
+                const lander::State s =
+                    lander::attached_state(bin, i, arc, t);
+                const lander::Vec2 cpos = bin.position(i, t);
+                const double world = local + bin.body_rotation(t);
+                check_close(s.x, cpos.x + std::cos(world) * radius, 1.0e-9,
+                            "attached position rides the rotating surface x");
+                check_close(s.y, cpos.y + std::sin(world) * radius, 1.0e-9,
+                            "attached position rides the rotating surface y");
+                const lander::Vec2 sp_vel =
+                    bin.surface_point(i, local, radius, t).velocity;
+                check_close(s.vx, sp_vel.x, 1.0e-9,
+                            "attached velocity is the surface-point velocity x");
+                check_close(s.vy, sp_vel.y, 1.0e-9,
+                            "attached velocity is the surface-point velocity y");
+                check_close(lander::radial_distance(s, cpos), radius, 1.0e-9,
+                            "attached ship stays at the surface radius");
+                check_close(s.landed_arc, arc, 1.0e-12,
+                            "the landed arc is unchanged");
+                // The nose points along the local radial (body-local up).
+                const double diff = std::atan2(
+                    std::sin(s.angle - (world - 0.5 * lander::kPi)),
+                    std::cos(s.angle - (world - 0.5 * lander::kPi)));
+                check_close(diff, 0.0, 1.0e-9,
+                            "the nose points along the local radial");
+            }
+        }
+    }
+}
+
+// M05-R3-V15: a takeoff releases the ship with the full surface-point
+// velocity (centre plus spin), not just the centre velocity.
+void test_takeoff_inherits_surface_velocity() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 412;
+    const double dt = cfg.fixed_dt;
+
+    lander::Simulation sim;
+    sim.reset(seed);
+    const lander::State on_ground = sim.state();
+    const int body = on_ground.landed_body;
+    const lander::Body& b = sim.binary().body(body);
+    const double local = b.terrain.angle_at_arc(on_ground.landed_arc);
+    const double radius =
+        b.terrain.surface_radius_at_arc(on_ground.landed_arc);
+    const lander::Vec2 sp_vel =
+        sim.binary().surface_point(body, local, radius, 0.0).velocity;
+    const lander::Vec2 cvel = sim.binary().velocity(body, 0.0);
+    check(std::hypot(sp_vel.x - cvel.x, sp_vel.y - cvel.y) > 1.0,
+          "the surface-point velocity is not the centre velocity alone");
+
+    // A manually released ship (same on-pad position, surface-point
+    // velocity) and the thrusting lander must produce identical states:
+    // the takeoff inherits the release velocity exactly.
+    lander::Simulation manual;
+    manual.reset(seed);
+    lander::State m = manual.state();
+    // Mirror the release exactly: try_takeoff clears `landed` but keeps
+    // `landed_body` / `landed_arc` as they were on the pad.
+    m.landed = false;
+    m.crashed = false;
+    m.vx = sp_vel.x;
+    m.vy = sp_vel.y;
+    m.omega = 0.0;
+    manual.set_state(m);
+
+    lander::Input input{};
+    input.main_throttle = 1.0;
+    for (int i = 0; i < 40; ++i) {
+        sim.advance(dt, input);
+        manual.advance(dt, input);
+    }
+    check(!sim.state().crashed, "the takeoff flight does not crash");
+    check(!sim.state().landed, "full thrust keeps the ship off the pad");
+    check(sim.state() == manual.state(),
+          "takeoff trajectory matches a manual release at the "
+          "surface-point velocity");
+    check(sim.state().x != on_ground.x || sim.state().y != on_ground.y,
+          "the ship has actually left the pad");
+}
+
+// M05-R3-V16: landing and crash are evaluated against the rotating surface
+// point, not the body centre.
+void test_landing_vs_rotating_surface() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 413;
+
+    // (a) A ship that matches the surface point within the safe bands lands.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const int body = 1;  // the companion
+        const lander::Body& b = sim.binary().body(body);
+        const double pad_arc = b.terrain.pads().front().center_arc;
+        sim.set_state(
+            state_relative(sim.binary(), body, pad_arc, 0.5, -0.5, 0.0, 0.0));
+        check(run_to_contact(sim) >= 0, "a surface-matched ship reaches the pad");
+        const lander::State& r = sim.state();
+        check(r.landed && !r.crashed, "a surface-matched ship lands safely");
+        check(r.landed_body == body, "the ship lands on the intended body");
+        check(b.terrain.pad_at_arc(r.landed_arc) != nullptr,
+              "the contact arc is on the pad");
+        // The post-landing state carries the surface-point velocity.
+        const double local = b.terrain.angle_at_arc(r.landed_arc);
+        const double radius = b.terrain.surface_radius_at_arc(r.landed_arc);
+        const lander::Vec2 sp_vel = sim.binary().surface_point(
+            body, local, radius, sim.sim_time()).velocity;
+        check_close(r.vx, sp_vel.x, 1.0e-9,
+                    "post-landing velocity is the surface-point velocity x");
+        check_close(r.vy, sp_vel.y, 1.0e-9,
+                    "post-landing velocity is the surface-point velocity y");
+    }
+
+    // (b) A ship that matches the body centre but not the spin: its
+    // surface-relative tangential speed is the full spin speed (~9.6 m/s
+    // on the primary), far outside the safe band, so it crashes even
+    // though its radial descent is gentle.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const int body = 0;  // the primary
+        const lander::Body& b = sim.binary().body(body);
+        const double pad_arc = b.terrain.pads().front().center_arc;
+        const lander::Vec2 pos = sim.binary().position(body, 0.0);
+        const lander::Vec2 vel = sim.binary().velocity(body, 0.0);
+        const double theta = b.terrain.angle_at_arc(pad_arc);
+        const double rad = b.terrain.surface_radius_at_arc(pad_arc) + 0.5;
+        const double up_x = std::cos(theta);
+        const double up_y = std::sin(theta);
+        lander::State s = state_at(pos.x + rad * up_x, pos.y + rad * up_y,
+                                   vel.x - 0.5 * up_x, vel.y - 0.5 * up_y,
+                                   theta - 0.5 * lander::kPi, 0.0);
+        sim.set_state(s);
+        check(run_to_contact(sim) >= 0, "a centre-matched ship reaches the pad");
+        const lander::State& r = sim.state();
+        check(r.crashed && !r.landed,
+              "a centre-matched ship crashes on the spinning pad");
+        check(r.crash_body == body, "the crash is on the intended body");
+    }
+}
+
+// M05-R3-V17: the contract destination is the moving pad: its target
+// position and velocity track the rotating surface point over time.
+void test_destination_pad_moving_target() {
+    lander::Config cfg{};
+    const auto bin = lander::BinarySystem::canonical(
+        cfg.mu, 414ULL, lander::companion_seed(414ULL));
+
+    const int dest = 1;
+    const lander::Body& body = bin.body(dest);
+    const double pad_arc = body.terrain.pads().front().center_arc;
+    const double local = body.terrain.angle_at_arc(pad_arc);
+    const double radius = body.terrain.surface_radius_at_arc(pad_arc);
+
+    lander::State s{};
+    s.x = 0.0;
+    s.y = 0.0;
+    s.fuel = 1.0;
+
+    const double t1 = 2.5;
+    const double t2 = 40.0;
+    const lander::NavCues c1 = lander::navigation_cues(s, bin, t1, dest);
+    const lander::NavCues c2 = lander::navigation_cues(s, bin, t2, dest);
+
+    // The target position and velocity equal the analytic rotating-surface
+    // point of the pad at each time.
+    const auto p1 = bin.surface_point(dest, local, radius, t1);
+    const auto p2 = bin.surface_point(dest, local, radius, t2);
+    check_close(c1.target_position.x, p1.position.x, 1.0e-9,
+                "the target is the pad position at t1 x");
+    check_close(c1.target_position.y, p1.position.y, 1.0e-9,
+                "the target is the pad position at t1 y");
+    check_close(c1.target_direction.x,
+                (p1.position.x - s.x) / c1.target_distance, 1.0e-9,
+                "the target direction points at the moving pad x");
+    check_close(c2.target_position.x, p2.position.x, 1.0e-9,
+                "the target is the pad position at t2 x");
+    check_close(c2.target_position.y, p2.position.y, 1.0e-9,
+                "the target is the pad position at t2 y");
+
+    // Equivalently: body centre plus the spin-rotated local offset.
+    const double world = local + bin.body_rotation(t1);
+    check_close(c1.target_position.x,
+                bin.position(dest, t1).x + std::cos(world) * radius, 1.0e-9,
+                "the target is the centre plus rotated offset x");
+    check_close(c1.target_position.y,
+                bin.position(dest, t1).y + std::sin(world) * radius, 1.0e-9,
+                "the target is the centre plus rotated offset y");
+
+    // The pad is a genuinely moving target: its world position changes
+    // between the two sample times, and the relative velocity uses the
+    // pad's spin velocity.
+    check(std::hypot(p2.position.x - p1.position.x,
+                     p2.position.y - p1.position.y) > 1.0,
+          "the pad's world position changes with time");
+    const lander::Vec2 rel =
+        lander::Vec2{0.0, 0.0} - p1.velocity;  // a stationary ship at the origin
+    check_close(c1.relative_velocity.x, rel.x, 1.0e-9,
+                "the relative velocity subtracts the pad's velocity x");
+    check_close(c1.relative_velocity.y, rel.y, 1.0e-9,
+                "the relative velocity subtracts the pad's velocity y");
+}
+
+// M05-R3-V18: determinism with rotating bodies: identical seeds and input
+// sequences produce identical trajectories and terminal states (including
+// landings on rotating surfaces and takeoffs), and a reset restores the
+// same state and rotation phase.
+void test_rotating_determinism() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 415;
+    const double dt = cfg.fixed_dt;
+
+    auto run_once = [&]() {
+        lander::Simulation sim;
+        sim.reset(seed);
+        // Fly in and land on the companion's rotating pad.
+        const int body = 1;
+        const lander::Body& b = sim.binary().body(body);
+        const double pad_arc = b.terrain.pads().front().center_arc;
+        sim.set_state(state_relative(sim.binary(), body, pad_arc, 0.3, -1.0,
+                                     0.2, 0.05));
+        for (int i = 0; i < 200 && !sim.state().landed &&
+                            !sim.state().crashed;
+             ++i) {
+            sim.advance(dt, {});
+        }
+        check(sim.state().landed,
+              "the determinism probe lands on the rotating companion");
+        // Take off again with full thrust.
+        lander::Input up{};
+        up.main_throttle = 1.0;
+        for (int i = 0; i < 100; ++i) {
+            sim.advance(dt, up);
+        }
+        return sim;
+    };
+
+    lander::Simulation a = run_once();
+    lander::Simulation b = run_once();
+    check(a.state() == b.state(),
+          "two same-seed runs produce identical states");
+    check(a.binary().body_rotation(a.sim_time()) ==
+              b.binary().body_rotation(b.sim_time()),
+          "both runs share the same rotation phase");
+    check(a.sim_time() == b.sim_time(), "both runs share the same time");
+
+    a.reset(seed);
+    b.reset(seed);
+    check(a.state() == b.state(),
+          "a reset restores the same state and rotation phase");
+    check(a.binary().body_rotation(a.sim_time()) == 0.0,
+          "the reset rotation phase is zero");
+}
 
 int main() {
     test_reference_values();
@@ -1073,9 +1590,18 @@ int main() {
     test_terminal_state_is_frozen();
     test_set_state_normalizes();
     test_circularize_state();
+    test_circularize_directions();
     test_orbit_is_usable();
     test_reference_body_influence();
     test_target_range_rate();
+    test_reaction_wheel_damping();
+    test_navigation_cues();
+    test_hud_helper_readouts();
+    test_landed_attachment_rotating();
+    test_takeoff_inherits_surface_velocity();
+    test_landing_vs_rotating_surface();
+    test_destination_pad_moving_target();
+    test_rotating_determinism();
     test_refuel_only_changes_fuel();
     test_flame_animation_continuous();
     test_interpolated_state();
