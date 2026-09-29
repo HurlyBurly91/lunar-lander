@@ -2,12 +2,14 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace lander {
 
 enum class CameraMode {
     kAuto,
     kManual,
+    kSystem,
 };
 
 struct CameraParams {
@@ -24,20 +26,63 @@ struct CameraParams {
     double lander_top_fraction = 0.30;
     double window_width = 1280.0;
     double window_height = 720.0;
+    // SYSTEM view (M05): an inertial, unrotated view of the whole binary.
+    // The default 0.04 gives 0.56 px/m at base_scale 14, enough to see the
+    // 600 m separation inside a 1280 px viewport.
+    double system_zoom = 0.04;
+    double system_zoom_min = 0.01;
+    double system_zoom_max = 0.10;
 };
+
+// Sentinel meaning "derive the camera angle from the target position" (the
+// M04 behavior). NaN is a convenient default argument.
+inline constexpr double kNoTargetAngle =
+    std::numeric_limits<double>::quiet_NaN();
 
 class Camera {
 public:
     Camera() = default;
     explicit Camera(const CameraParams& params) : params_(params) {}
 
-    void snap(double x, double y) {
+    // Presentation-only system view: inertial (unrotated) framing of the
+    // whole binary with the ship at the viewport centre. Entering it saves
+    // the current local mode/zoom/want-landing state so it is restored
+    // exactly when the system view is left.
+    void set_system(bool enable) {
+        if (enable) {
+            if (mode_ == CameraMode::kSystem) {
+                return;
+            }
+            saved_mode_ = mode_;
+            saved_zoom_ = zoom_;
+            saved_wants_landing_ = wants_landing_;
+            mode_ = CameraMode::kSystem;
+            zoom_ = params_.system_zoom;
+            angle_ = 0.0;
+        } else {
+            if (mode_ != CameraMode::kSystem) {
+                return;
+            }
+            mode_ = saved_mode_;
+            zoom_ = saved_zoom_;
+            wants_landing_ = saved_wants_landing_;
+        }
+    }
+    bool system_view() const { return mode_ == CameraMode::kSystem; }
+
+    void snap(double x, double y, double target_angle = kNoTargetAngle) {
+        target_x_ = x;
+        target_y_ = y;
+        if (mode_ == CameraMode::kSystem) {
+            angle_ = 0.0;
+            focus_x_ = target_x_;
+            focus_y_ = target_y_;
+            return;
+        }
         mode_ = CameraMode::kAuto;
         wants_landing_ = true;
         zoom_ = 1.0;
-        target_x_ = x;
-        target_y_ = y;
-        update_angle(x, y);
+        set_angle(target_angle, x, y);
 
         const double offset = framing_offset();
         const double c = std::cos(angle_);
@@ -58,10 +103,31 @@ public:
     const CameraParams& params() const { return params_; }
 
     void update(double dt, double target_x, double target_y, double altitude,
-                int wheel_delta, bool toggle_mode) {
+                int wheel_delta, bool toggle_mode,
+                double target_angle = kNoTargetAngle) {
+        target_x_ = target_x;
+        target_y_ = target_y;
+
+        if (mode_ == CameraMode::kSystem) {
+            // Inertial framing: fixed angle, ship at the exact viewport
+            // centre (no local anchor offset), wheel clamped to the system
+            // zoom range. Local mode/zoom/want-landing state is untouched.
+            if (wheel_delta > 0) {
+                zoom_ *= 1.0 + params_.wheel_step;
+            } else if (wheel_delta < 0) {
+                zoom_ *= 1.0 - params_.wheel_step;
+            }
+            zoom_ = clamp(zoom_, params_.system_zoom_min,
+                          params_.system_zoom_max);
+            angle_ = 0.0;
+            focus_x_ = target_x_;
+            focus_y_ = target_y_;
+            return;
+        }
+
         if (toggle_mode) {
             mode_ = (mode_ == CameraMode::kAuto) ? CameraMode::kManual
-                                                : CameraMode::kAuto;
+                                                 : CameraMode::kAuto;
         }
 
         if (mode_ == CameraMode::kManual) {
@@ -88,9 +154,7 @@ public:
             }
         }
 
-        target_x_ = target_x;
-        target_y_ = target_y;
-        update_angle(target_x, target_y);
+        set_angle(target_angle, target_x, target_y);
 
         // The player-follow anchor is exact: the target is placed at the
         // configured screen position without follow lag. The local-frame
@@ -106,7 +170,11 @@ public:
     }
 
 private:
-    void update_angle(double x, double y) {
+    void set_angle(double target_angle, double x, double y) {
+        if (!std::isnan(target_angle)) {
+            angle_ = target_angle;
+            return;
+        }
         const double rho = std::hypot(x, y);
         if (rho > 1.0e-9) {
             angle_ = std::atan2(y, x) - 0.5 * 3.14159265358979323846;
@@ -124,6 +192,9 @@ private:
 
     CameraParams params_{};
     CameraMode mode_ = CameraMode::kAuto;
+    CameraMode saved_mode_ = CameraMode::kAuto;
+    double saved_zoom_ = 1.0;
+    bool saved_wants_landing_ = true;
     bool wants_landing_ = true;
     double zoom_ = 1.0;
     double target_x_ = 0.0;

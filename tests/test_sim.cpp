@@ -1,6 +1,11 @@
+// M05 simulation tests: the two-body binary system, body-relative navigation,
+// landing / crash / takeoff rules, the contract loop, circularize, and the
+// presentation-only helpers (interpolation, flame animation).
 #include "lander/sim.hpp"
 
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 
 namespace {
@@ -14,9 +19,7 @@ void check(bool condition, const char* message) {
     }
 }
 
-bool close(double a, double b, double eps) {
-    return std::abs(a - b) <= eps;
-}
+bool close(double a, double b, double eps) { return std::abs(a - b) <= eps; }
 
 void check_close(double a, double b, double eps, const char* message) {
     if (!close(a, b, eps)) {
@@ -26,928 +29,930 @@ void check_close(double a, double b, double eps, const char* message) {
     }
 }
 
-double normalize_angle(double angle) {
-    angle = std::fmod(angle, 2.0 * lander::kPi);
-    if (angle < 0.0) {
-        angle += 2.0 * lander::kPi;
+double norm_angle(double a) {
+    a = std::fmod(a, 2.0 * lander::kPi);
+    if (a < 0.0) {
+        a += 2.0 * lander::kPi;
     }
-    return angle;
+    return a;
 }
 
-double normalized_difference(double a, double b) {
-    double d = a - b;
-    d = std::fmod(d + lander::kPi, 2.0 * lander::kPi);
-    if (d < 0.0) {
-        d += 2.0 * lander::kPi;
-    }
-    return d - lander::kPi;
-}
-
-lander::State state_at_arc(const lander::Terrain& terrain, double arc,
-                           double altitude, double radial_velocity,
-                           double tangential_velocity,
-                           double local_angle_offset) {
-    const double theta = lander::Terrain::angle_at_arc(arc);
-    const double r = terrain.surface_radius_at_arc(arc) + altitude;
-    const double up_x = std::cos(theta);
-    const double up_y = std::sin(theta);
-    const double right_x = std::sin(theta);
-    const double right_y = -std::cos(theta);
-
+// A flying (unlanded, uncrashed) ship at a chosen world point.
+lander::State state_at(double x, double y, double vx, double vy, double angle,
+                       double omega) {
     lander::State s{};
-    s.x = r * up_x;
-    s.y = r * up_y;
-    s.vx = radial_velocity * up_x + tangential_velocity * right_x;
-    s.vy = radial_velocity * up_y + tangential_velocity * right_y;
-    s.angle = (theta - 0.5 * lander::kPi) + local_angle_offset;
-    s.fuel = 100.0;
+    s.x = x;
+    s.y = y;
+    s.vx = vx;
+    s.vy = vy;
+    s.angle = angle;
+    s.omega = omega;
+    s.fuel = 1000.0;
+    s.landed = false;
+    s.crashed = false;
     return s;
 }
 
-double find_non_pad_arc(const lander::Terrain& terrain) {
-    const double C = lander::Terrain::circumference();
-    for (double arc = 0.0; arc < C; arc += 1.0) {
-        if (terrain.pad_at_arc(arc) == nullptr) {
-            return arc;
-        }
-    }
-    return 0.0;
-}
-
-bool run_to_terminal(lander::Simulation& sim, int max_steps = 24 * 120) {
-    for (int i = 0; i < max_steps; ++i) {
-        sim.advance(sim.config().fixed_dt, {});
-        if (sim.state().landed || sim.state().crashed) {
-            return true;
-        }
-    }
-    return sim.state().landed || sim.state().crashed;
-}
-
-void test_reference_values() {
-    lander::Config config{};
-    const double R = lander::Terrain::reference_radius();
-    const double v = std::sqrt(config.mu / R);
-    const double T = 2.0 * lander::kPi * std::sqrt((R * R * R) / config.mu);
-    check_close(v, 23.205, 0.01, "reference circular speed");
-    check_close(T, 90.0, 0.01, "reference circular period");
-}
-
-void test_terrain_determinism_and_wrap() {
-    for (std::uint64_t seed : {1ULL, 2ULL, 3ULL, 1234ULL}) {
-        lander::Terrain a(seed);
-        lander::Terrain b(seed);
-        lander::Terrain c(seed + 1);
-
-        check(!a.pads().empty(), "terrain must have pads");
-        check(a.pads() == b.pads(), "same seed must produce same pads");
-        check(a.pads() != c.pads(), "different seeds should differ");
-        check(a.pad_at_arc(0.0) != nullptr, "spawn arc must be a pad");
-
-        const double C = lander::Terrain::circumference();
-        double min_r = 1e30;
-        double max_r = -1e30;
-        for (int i = 0; i < 2048; ++i) {
-            const double arc = i * C / 2048.0;
-            const double ra = a.surface_radius_at_arc(arc);
-            const double rb = b.surface_radius_at_arc(arc);
-            if (ra != rb) {
-                check(false, "same seed must produce same surface radius");
-                break;
-            }
-            min_r = std::min(min_r, ra);
-            max_r = std::max(max_r, ra);
-        }
-        check(max_r - min_r > 5.0, "terrain should be visibly uneven");
-
-        check_close(a.base_radius_at_arc(0.0),
-                    a.base_radius_at_arc(C), 1e-12,
-                    "base radius must be periodic");
-        check_close(a.base_radius_at_arc(-1e-6),
-                    a.base_radius_at_arc(C - 1e-6), 1e-4,
-                    "base radius must wrap smoothly");
-        check_close(a.surface_radius_at_arc(0.001),
-                    a.surface_radius_at_arc(C - 0.001), 1e-9,
-                    "surface radius must wrap smoothly at spawn pad");
-
-        for (const lander::Pad& pad : a.pads()) {
-            check(pad.half_width >= 3.0, "pad should be at least 6 m wide");
-            for (double off = -pad.half_width; off <= pad.half_width + 1e-9;
-                 off += 0.25) {
-                const double r =
-                    a.surface_radius_at_arc(pad.center_arc + off);
-                check_close(r, pad.radius, 1e-12, "pad surface should be flat");
-            }
-        }
-
-        lander::Simulation sim;
-        sim.reset(seed);
-        const double alt = lander::altitude_at(sim.terrain(), sim.state());
-        check(alt > 0.0 && alt < 50.0, "spawn should start above terrain");
-        check_close(alt, 20.0, 1e-9, "spawn should start 20 m above terrain");
-    }
-}
-
-void test_radial_gravity() {
-    lander::Simulation sim;
-    sim.reset(7);
-    const lander::Config& config = sim.config();
-    const double r = sim.terrain().max_surface_radius() + 100.0;
-
-    auto accel_magnitude = [&](double radius, double theta) {
-        lander::State s{};
-        s.x = std::cos(theta) * radius;
-        s.y = std::sin(theta) * radius;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        sim.advance(config.fixed_dt, {});
-        return std::hypot(sim.state().vx, sim.state().vy) / config.fixed_dt;
-    };
-
-    const double g1 = accel_magnitude(r, 0.0);
-    const double g2 = accel_magnitude(2.0 * r, 0.0);
-    check_close(g1 / (4.0 * g2), 1.0, 1e-9, "gravity should scale 1/r^2");
-
-    for (double theta : {0.0, 0.3, 1.1, 2.0, 3.0, 4.2, 5.5}) {
-        lander::State s{};
-        s.x = std::cos(theta) * r;
-        s.y = std::sin(theta) * r;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        sim.advance(config.fixed_dt, {});
-        const double dvx = sim.state().vx / config.fixed_dt;
-        const double dvy = sim.state().vy / config.fixed_dt;
-        const double rx = std::cos(theta);
-        const double ry = std::sin(theta);
-        const double dot = (-dvx * rx - dvy * ry) /
-                           std::hypot(dvx, dvy);
-        check(dot > 0.999, "gravity should point toward moon centre");
-    }
-}
-
-void test_one_step_physics() {
-    lander::Simulation sim;
-    sim.reset(11);
-    const lander::Config& config = sim.config();
-    const double r = sim.terrain().max_surface_radius() + 100.0;
-    const double g = config.mu / (r * r);
-
-    {
-        lander::State s{};
-        s.x = r;
-        s.y = 0.0;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        sim.advance(config.fixed_dt, {});
-        check_close(sim.state().vx, -g * config.fixed_dt, 1e-9,
-                    "no thrust: radial gravity on +x");
-        check_close(sim.state().vy, 0.0, 1e-9, "no thrust: no tangential drift");
-        check_close(sim.state().fuel, 100.0, 1e-9,
-                    "no thrust: no fuel burn");
-    }
-
-    {
-        lander::State s{};
-        s.x = 0.0;
-        s.y = r;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        lander::Input input{};
-        input.main_throttle = 1.0;
-        sim.advance(config.fixed_dt, input);
-        check_close(sim.state().vy,
-                    (config.main_accel - g) * config.fixed_dt, 1e-9,
-                    "full throttle: thrust minus gravity");
-        check_close(sim.state().fuel,
-                    100.0 - config.fuel_burn * config.fixed_dt, 1e-9,
-                    "full throttle: fuel burn");
-    }
-
-    {
-        lander::State s{};
-        s.x = 0.0;
-        s.y = r;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        lander::Input input{};
-        input.main_throttle = 0.5;
-        sim.advance(config.fixed_dt, input);
-        check_close(sim.state().vy,
-                    (0.5 * config.main_accel - g) * config.fixed_dt, 1e-9,
-                    "half throttle: thrust minus gravity");
-    }
-
-    {
-        lander::State s{};
-        s.x = 0.0;
-        s.y = r;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        lander::Input input{};
-        input.main_throttle = 2.0;
-        sim.advance(config.fixed_dt, input);
-        const double expected =
-            (config.main_accel - g) * config.fixed_dt;
-        check_close(sim.state().vy, expected, 1e-9,
-                    "throttle above 1 must clamp to full");
-    }
-
-    {
-        lander::State s{};
-        s.x = 0.0;
-        s.y = r;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        lander::Input input{};
-        input.main_throttle = -1.0;
-        sim.advance(config.fixed_dt, input);
-        check_close(sim.state().vy, -g * config.fixed_dt, 1e-9,
-                    "negative throttle must clamp to zero");
-    }
-
-    {
-        lander::State s{};
-        s.x = r;
-        s.y = 0.0;
-        s.fuel = 50.0;
-        sim.set_state(s);
-        lander::Input input{};
-        input.rotate_left = true;
-        sim.advance(config.fixed_dt, input);
-        check_close(sim.state().omega, -config.rotate_accel * config.fixed_dt,
-                    1e-9, "rotate left changes angular velocity");
-        check_close(normalize_angle(sim.state().angle),
-                    2.0 * lander::kPi -
-                        config.rotate_accel * config.fixed_dt *
-                            config.fixed_dt,
-                    1e-9, "rotate left changes angle");
-        check_close(sim.state().fuel, 50.0, 1e-9,
-                    "rotation alone should not burn fuel");
-    }
-}
-
-void test_fixed_step_determinism() {
-    lander::Simulation seed_sim;
-    seed_sim.reset(987);
-    const double r = seed_sim.terrain().max_surface_radius() + 30.0;
-    const double v = std::sqrt(seed_sim.config().mu / r);
-
-    auto run = [&](double step, double elapsed, double throttle) {
-        lander::Simulation sim;
-        sim.reset(987);
-        lander::State s{};
-        s.x = 0.0;
-        s.y = r;
-        s.vx = v;
-        s.fuel = 100.0;
-        sim.set_state(s);
-        lander::Input input{};
-        input.main_throttle = throttle;
-        sim.advance(elapsed, input);
-        return sim.state();
-    };
-
-    const auto a = run(1.0 / 60.0, 1.0, 0.3);
-    const auto b = run(1.0 / 30.0, 1.0, 0.3);
-    check(a == b, "fixed timestep must be independent of caller step size");
-}
-
-void test_local_frame_helpers() {
-    lander::Terrain terrain(42);
-    const double C = lander::Terrain::circumference();
-
-    for (double arc : {0.0, 0.25 * C, 0.5 * C, 0.75 * C}) {
-        const double theta = lander::Terrain::angle_at_arc(arc);
-        const lander::State s = state_at_arc(terrain, arc, 10.0, 3.0, 4.0, 0.0);
-
-        check_close(lander::radial_distance(s),
-                    terrain.surface_radius_at_arc(arc) + 10.0, 1e-9,
-                    "radial distance helper");
-        check_close(lander::altitude_at(terrain, s), 10.0, 1e-9,
-                    "altitude helper");
-        check_close(normalized_difference(lander::local_up_angle(s),
-                                          theta - 0.5 * lander::kPi),
-                    0.0, 1e-9,
-                    "local up angle helper");
-
-        const auto lv = lander::local_velocity(s);
-        check_close(lv.radial, 3.0, 1e-9, "radial velocity helper");
-        check_close(lv.tangential, 4.0, 1e-9, "tangential velocity helper");
-
-        const lander::State aligned =
-            state_at_arc(terrain, arc, 0.0, 0.0, 0.0, 0.0);
-        check_close(lander::local_attitude_angle(aligned), 0.0, 1e-9,
-                    "aligned local attitude is zero");
-
-        const lander::State tilted =
-            state_at_arc(terrain, arc, 0.0, 0.0, 0.0, 0.2);
-        check_close(lander::local_attitude_angle(tilted), 0.2, 1e-9,
-                    "tilted local attitude is preserved");
-    }
-}
-
-void test_landing_rules() {
-    for (std::uint64_t seed : {1ULL, 2ULL, 3ULL}) {
-        lander::Simulation probe;
-        probe.reset(seed);
-        const lander::Terrain& terrain = probe.terrain();
-
-        for (const lander::Pad& pad : terrain.pads()) {
-            lander::Simulation sim;
-            sim.reset(seed);
-            const lander::State s =
-                state_at_arc(terrain, pad.center_arc, 0.3, -1.0, 0.2, 0.05);
-            sim.set_state(s);
-            check(run_to_terminal(sim), "safe landing must terminate");
-            check(sim.state().landed, "safe landing should land");
-            check(!sim.state().crashed, "safe landing should not crash");
-            check_close(sim.state().score, 100 * pad.multiplier, 1e-9,
-                        "landing score follows pad multiplier");
-            check_close(lander::radial_distance(sim.state()), pad.radius,
-                        1e-6, "landed lander should rest on pad radius");
-            check_close(sim.state().vx, 0.0, 1e-12, "landed velocity freezes");
-            check_close(sim.state().vy, 0.0, 1e-12, "landed velocity freezes");
-            check_close(sim.state().omega, 0.0, 1e-12,
-                        "landed angular velocity freezes");
-            check_close(lander::local_attitude_angle(sim.state()), 0.0, 1e-9,
-                        "landed attitude aligns with local up");
-        }
-
-        {
-            lander::Simulation sim;
-            sim.reset(seed);
-            const lander::Pad& pad = terrain.pads().front();
-            lander::State s =
-                state_at_arc(terrain, pad.center_arc, 0.3, -1.0, 0.2, 0.05);
-            s.angle += 2.0 * lander::kPi;
-            sim.set_state(s);
-            check(run_to_terminal(sim), "mod-2pi attitude should land");
-            check(sim.state().landed, "mod-2pi attitude should land");
-        }
-    }
-}
-
-void test_crash_rules() {
-    for (std::uint64_t seed : {1ULL, 2ULL}) {
-        lander::Simulation probe;
-        probe.reset(seed);
-        const lander::Terrain& terrain = probe.terrain();
-
-        lander::Simulation non_pad;
-        non_pad.reset(seed);
-        const double arc = find_non_pad_arc(terrain);
-        non_pad.set_state(
-            state_at_arc(terrain, arc, 0.3, -1.0, 0.2, 0.05));
-        check(run_to_terminal(non_pad), "non-pad contact should terminate");
-        check(non_pad.state().crashed, "non-pad contact should crash");
-
-        lander::Simulation radial;
-        radial.reset(seed);
-        const lander::Pad& pad = terrain.pads().front();
-        radial.set_state(
-            state_at_arc(terrain, pad.center_arc, 0.3, -10.0, 0.2, 0.05));
-        check(run_to_terminal(radial), "fast radial contact should terminate");
-        check(radial.state().crashed, "fast radial contact should crash");
-
-        lander::Simulation tangential;
-        tangential.reset(seed);
-        tangential.set_state(
-            state_at_arc(terrain, pad.center_arc, 0.3, -1.0, 2.0, 0.05));
-        check(run_to_terminal(tangential),
-              "fast tangential contact should terminate");
-        check(tangential.state().crashed,
-              "fast tangential contact should crash");
-
-        lander::Simulation attitude;
-        attitude.reset(seed);
-        attitude.set_state(
-            state_at_arc(terrain, pad.center_arc, 0.3, -1.0, 0.2, 0.2));
-        check(run_to_terminal(attitude),
-              "misaligned attitude should terminate");
-        check(attitude.state().crashed,
-              "misaligned attitude should crash");
-
-        if (terrain.pads().size() >= 2) {
-            lander::Simulation global_up;
-            global_up.reset(seed);
-            lander::State s = state_at_arc(
-                terrain, terrain.pads()[1].center_arc, 0.3, -1.0, 0.2, 0.0);
-            s.angle = 0.0;
-            global_up.set_state(s);
-            check(run_to_terminal(global_up),
-                  "global-up attitude should terminate");
-            check(global_up.state().crashed,
-                  "global-up attitude away from local up should crash");
-        }
-
-        lander::Simulation below;
-        below.reset(seed);
-        below.set_state(
-            state_at_arc(terrain, arc, -0.1, 0.0, 0.0, 0.0));
-        below.advance(below.config().fixed_dt, {});
-        check(below.state().crashed, "starting below terrain should crash");
-    }
-}
-
-void test_terminal_state_is_frozen() {
-    lander::Simulation sim;
-    sim.reset(5);
-    const lander::Terrain& terrain = sim.terrain();
-    const lander::Pad& pad = terrain.pads().front();
-
-    sim.set_state(state_at_arc(terrain, pad.center_arc, 0.3, -1.0, 0.2, 0.05));
-    check(run_to_terminal(sim), "terminal setup");
-    const lander::State landed = sim.state();
-    lander::Input input{};
-    input.main_throttle = 1.0;
-    input.rotate_left = true;
-    sim.advance(1.0, input);
-    check(sim.state() == landed, "landed state must not advance");
-
-    const double arc = find_non_pad_arc(terrain);
-    sim.set_state(state_at_arc(terrain, arc, 0.3, -10.0, 0.0, 0.0));
-    check(run_to_terminal(sim), "crash setup");
-    const lander::State crashed = sim.state();
-    sim.advance(1.0, input);
-    check(sim.state() == crashed, "crashed state must not advance");
-}
-
-void test_set_state_normalizes() {
-    lander::Simulation sim;
-    lander::State s{};
-    s.angle = 2.0 * lander::kPi + 0.2;
-    sim.set_state(s);
-    check_close(sim.state().angle, 0.2, 1e-12, "positive angle wraps");
-
-    s.angle = -0.1;
-    sim.set_state(s);
-    check_close(sim.state().angle, 2.0 * lander::kPi - 0.1, 1e-12,
-                "negative angle wraps");
-}
-
-void test_orbit_stays_bounded() {
-    for (bool clockwise : {true, false}) {
-        lander::Simulation sim;
-        sim.reset(1234);
-        const lander::Config& config = sim.config();
-        const double r0 = sim.terrain().max_surface_radius() + 20.0;
-        const double v = std::sqrt(config.mu / r0);
-
-        lander::State s{};
-        s.x = 0.0;
-        s.y = r0;
-        s.vx = clockwise ? v : -v;
-        s.vy = 0.0;
-        s.fuel = 100.0;
-        sim.set_state(s);
-
-        const double T =
-            2.0 * lander::kPi * std::sqrt((r0 * r0 * r0) / config.mu);
-        const int steps =
-            static_cast<int>(std::ceil(3.0 * T / config.fixed_dt));
-        double min_r = 1e30;
-        double max_r = -1e30;
-        double previous_theta = lander::kPi / 2;
-        double total_theta = 0.0;
-
-        for (int i = 0; i < steps; ++i) {
-            sim.advance(config.fixed_dt, {});
-            const lander::State& st = sim.state();
-            if (st.landed || st.crashed) {
-                break;
-            }
-            const double r = lander::radial_distance(st);
-            min_r = std::min(min_r, r);
-            max_r = std::max(max_r, r);
-            const double theta = std::atan2(st.y, st.x);
-            double d = theta - previous_theta;
-            if (d > lander::kPi) {
-                d -= 2.0 * lander::kPi;
-            } else if (d < -lander::kPi) {
-                d += 2.0 * lander::kPi;
-            }
-            total_theta += d;
-            previous_theta = theta;
-        }
-
-        check(!sim.state().landed && !sim.state().crashed,
-              "terrain-clearing orbit should not land or crash");
-        check(min_r > r0 * 0.98 && max_r < r0 * 1.02,
-              "circular orbit radius should stay bounded");
-        const double expected =
-            (clockwise ? -3.0 * 2.0 * lander::kPi
-                       : 3.0 * 2.0 * lander::kPi);
-        check_close(total_theta, expected, 0.05 * std::abs(expected),
-                    "orbit should complete about three revolutions");
-    }
-}
-
-void test_refuel_only_changes_fuel() {
-    lander::Simulation sim;
-    sim.reset(7);
-    const lander::Config& config = sim.config();
-
-    lander::State s{};
-    s.x = 123.0;
-    s.y = -456.0;
-    s.vx = 2.5;
-    s.vy = -3.5;
-    s.angle = -0.7;
-    s.omega = 0.4;
-    s.fuel = 12.25;
-    s.ticks = 17;
-    sim.set_state(s);
-    const lander::State before = sim.state();
-
-    sim.refuel();
-    lander::State expected = before;
-    expected.fuel = config.fuel;
-    check(sim.state() == expected, "refuel should only change fuel");
-
-    lander::State terminal = sim.state();
-    terminal.landed = true;
-    sim.set_state(terminal);
-    const double terminal_fuel = sim.state().fuel;
-    sim.refuel();
-    check_close(sim.state().fuel, terminal_fuel, 1e-12,
-                "refuel must not modify a terminal state");
-}
-
-void test_circularize_state() {
-    lander::Simulation sim;
-    sim.reset(7);
-    const lander::Config& config = sim.config();
-    const lander::Terrain& terrain = sim.terrain();
-    const double r = terrain.max_surface_radius() + 73.0;
-    const double theta = 1.0;
+// A flying ship placed relative to body i at ephemeris time 0: `altitude`
+// metres above the local surface at body-local `arc`, with optional
+// body-relative radial / tangential velocity and an attitude offset from the
+// local vertical.
+lander::State state_relative(const lander::BinarySystem& bin, int i, double arc,
+                             double altitude, double radial_v, double tang_v,
+                             double angle_offset) {
+    const lander::Body& body = bin.body(i);
+    const lander::Vec2 pos = bin.position(i, 0.0);
+    const lander::Vec2 vel = bin.velocity(i, 0.0);
+    const double theta = body.terrain.angle_at_arc(arc);
+    const double r = body.terrain.surface_radius_at_arc(arc) + altitude;
     const double up_x = std::cos(theta);
     const double up_y = std::sin(theta);
     const double right_x = std::sin(theta);
     const double right_y = -std::cos(theta);
-
     lander::State s{};
-    s.x = up_x * r;
-    s.y = up_y * r;
-    s.vx = 2.0 * up_x - 5.0 * right_x;
-    s.vy = 2.0 * up_y - 5.0 * right_y;
-    s.angle = theta - 0.5 * lander::kPi + 0.2;
-    s.omega = 0.3;
-    s.fuel = 123.0;
-    s.ticks = 42;
-    sim.set_state(s);
-    const lander::State before = sim.state();
-
-    sim.circularize();
-    const lander::State after = sim.state();
-    const double actual_r = lander::radial_distance(after);
-    const double expected_speed = std::sqrt(config.mu / actual_r);
-    const lander::LocalVelocity lv = lander::local_velocity(after);
-
-    check_close(lv.radial, 0.0, 1e-9,
-                "circularize should remove radial velocity");
-    check_close(lv.tangential, -expected_speed, 1e-9,
-                "circularize should preserve negative tangential direction");
-    check_close(std::hypot(after.vx, after.vy), expected_speed, 1e-9,
-                "circularize should set the local circular speed");
-    check(after.x == before.x && after.y == before.y,
-          "circularize should not move the lander");
-    check(after.angle == before.angle && after.omega == before.omega &&
-          after.fuel == before.fuel && after.ticks == before.ticks &&
-          !after.landed && !after.crashed,
-          "circularize should only change velocity");
-
-    lander::State radial_only{};
-    radial_only.x = up_x * r;
-    radial_only.y = up_y * r;
-    radial_only.vx = 3.0 * up_x;
-    radial_only.vy = 3.0 * up_y;
-    radial_only.fuel = 100.0;
-    sim.set_state(radial_only);
-    sim.circularize();
-    const lander::LocalVelocity lv2 =
-        lander::local_velocity(sim.state());
-    const double actual_r2 = lander::radial_distance(sim.state());
-    check_close(lv2.tangential,
-                std::sqrt(config.mu / actual_r2), 1e-9,
-                "circularize should default to positive local tangential");
+    s.x = pos.x + r * up_x;
+    s.y = pos.y + r * up_y;
+    s.vx = vel.x + radial_v * up_x + tang_v * right_x;
+    s.vy = vel.y + radial_v * up_y + tang_v * right_y;
+    s.angle = theta - 0.5 * lander::kPi + angle_offset;
+    s.fuel = 1000.0;
+    s.landed = false;
+    s.crashed = false;
+    return s;
 }
 
-void test_circularize_orbit() {
-    lander::Config config{};
-    for (bool clockwise : {true, false}) {
-        lander::Simulation sim;
-        sim.reset(1234);
-        const lander::Terrain& terrain = sim.terrain();
-        const double r0 = terrain.max_surface_radius() + 73.0;
-        const double theta0 = 1.0;
-        const double up_x = std::cos(theta0);
-        const double up_y = std::sin(theta0);
-        const double right_x = std::sin(theta0);
-        const double right_y = -std::cos(theta0);
-        const double local_t = clockwise ? 7.0 : -7.0;
-        const double global_sign = clockwise ? -1.0 : +1.0;
-
-        lander::State s{};
-        s.x = up_x * r0;
-        s.y = up_y * r0;
-        s.vx = 1.0 * up_x + local_t * right_x;
-        s.vy = 1.0 * up_y + local_t * right_y;
-        s.fuel = 1000.0;
-        sim.set_state(s);
-        sim.circularize();
-
-        const double actual_r0 = lander::radial_distance(sim.state());
-        const double v_analytic = std::sqrt(config.mu / actual_r0);
-        const double T_analytic =
-            2.0 * lander::kPi *
-            std::sqrt((actual_r0 * actual_r0 * actual_r0) / config.mu);
-        const lander::LocalVelocity lv = lander::local_velocity(sim.state());
-        check_close(lv.radial, 0.0, 1e-9,
-                    "orbit test: circularized radial velocity is zero");
-        check_close(std::abs(lv.tangential), v_analytic, 1e-9,
-                    "orbit test: circularized tangential speed is analytic");
-
-        {
-            lander::Simulation force_sim;
-            force_sim.reset(1234);
-            force_sim.set_state(s);
-            force_sim.circularize();
-            const lander::State before = force_sim.state();
-            const double rb = lander::radial_distance(before);
-            const double inv_r3 = 1.0 / (rb * rb * rb);
-            const double ax = -config.mu * before.x * inv_r3;
-            const double ay = -config.mu * before.y * inv_r3;
-            force_sim.advance(config.fixed_dt, {});
-            const lander::State after = force_sim.state();
-            check_close(after.vx, before.vx + ax * config.fixed_dt, 1e-9,
-                        "orbit test: one unpowered step applies gravity only");
-            check_close(after.vy, before.vy + ay * config.fixed_dt, 1e-9,
-                        "orbit test: one unpowered step applies gravity only");
-            check_close(after.x,
-                        before.x + after.vx * config.fixed_dt, 1e-9,
-                        "orbit test: one unpowered step position update");
-            check_close(after.y,
-                        before.y + after.vy * config.fixed_dt, 1e-9,
-                        "orbit test: one unpowered step position update");
+// Advance with no input until the ship lands or crashes (or the bound is hit).
+int run_to_contact(lander::Simulation& sim) {
+    const double dt = sim.config().fixed_dt;
+    for (int i = 0; i < 24 * 120; ++i) {
+        if (sim.state().landed || sim.state().crashed) {
+            return i;
         }
+        sim.advance(dt, {});
+    }
+    return -1;
+}
 
-        double t = 0.0;
-        double previous_theta = std::atan2(sim.state().y, sim.state().x);
-        double total_theta = 0.0;
-        double measured_T = -1.0;
-        double min_r = 1e30;
-        double max_r = -1e30;
-        const int max_steps =
-            static_cast<int>(std::ceil(5.0 * T_analytic / config.fixed_dt));
+// M05-R1-V01: the intrinsic gravity / orbit parameters of both bodies follow
+// the canonical 1/9 scaling law.
+void test_reference_values() {
+    const lander::Config cfg{};
+    const double mu0 = cfg.mu;
+    const double R0 = lander::kReferenceRadius;
+    const double s = 1.0 / 9.0;
+    const double R1 = R0 * s;
+    const double mu1 = mu0 * s * s;
 
-        for (int i = 0; i < max_steps; ++i) {
-            sim.advance(config.fixed_dt, {});
-            t += config.fixed_dt;
-            if (sim.state().landed || sim.state().crashed) {
-                break;
-            }
-            const lander::State& st = sim.state();
-            const double r = lander::radial_distance(st);
-            min_r = std::min(min_r, r);
-            max_r = std::max(max_r, r);
-            const double theta = std::atan2(st.y, st.x);
-            double d = theta - previous_theta;
-            if (d > lander::kPi) {
-                d -= 2.0 * lander::kPi;
-            } else if (d < -lander::kPi) {
-                d += 2.0 * lander::kPi;
-            }
-            total_theta += d;
-            if (measured_T < 0.0 && total_theta * global_sign >= 2.0 * lander::kPi) {
-                measured_T = t;
-            }
-            previous_theta = theta;
-            if (total_theta * global_sign >= 4.0 * lander::kPi) {
-                break;
-            }
+    check_close(mu0 / (R0 * R0), 1.62, 0.005, "primary surface gravity ~ 1.62");
+    check_close(mu1 / (R1 * R1), 1.62, 0.005, "companion surface gravity ~ 1.62");
+    check_close(mu1 / (R1 * R1), mu0 / (R0 * R0), 1e-9,
+                "companion gravity equals the primary's (1/9 scaling)");
+    check_close(std::sqrt(mu0 / R0), 23.2048, 0.001, "primary circular speed");
+    check_close(2 * lander::kPi * std::sqrt((R0 * R0 * R0) / mu0), 90.0, 0.01,
+                "primary circular period ~ 90 s");
+    check_close(std::sqrt(mu1 / R1), std::sqrt(mu0 / R0) / 3.0, 1e-6,
+                "companion circular speed ~ 1/3 primary");
+    check_close(2 * lander::kPi * std::sqrt((R1 * R1 * R1) / mu1),
+                2 * lander::kPi * std::sqrt((R0 * R0 * R0) / mu0) / 3.0, 1e-6,
+                "companion circular period ~ 1/3 primary");
+}
+
+// M05-R1-V05 / P03: terrain stays deterministic per seed, wraps, and the
+// companion is a 1/9 copy of the primary's generator.
+void test_terrain() {
+    lander::Terrain a1(7), a2(7), b(8);
+    check(a1.reference_radius() == b.reference_radius(), "same reference radius");
+    check(a1.circumference() == b.circumference(), "primary circumference equal");
+    check(
+        a1.surface_radius_at_arc(123.0) == a2.surface_radius_at_arc(123.0),
+        "deterministic surface radius for a seed");
+    check(a1.surface_radius_at_arc(123.0) != b.surface_radius_at_arc(123.0),
+          "different seed differs");
+
+    const double C = a1.circumference();
+    check_close(a1.surface_radius_at_arc(100.0),
+                a1.surface_radius_at_arc(100.0 - C), 1e-12,
+                "surface radius is periodic in arc");
+    check_close(a1.arc_at_angle(a1.angle_at_arc(500.0)), 500.0, 1e-9,
+                "angle -> arc -> angle round trip");
+
+    check(a1.pads().size() == 3, "three pads");
+    check_close(a1.pads().front().center_arc, 0.0, 1e-12, "front pad at arc 0");
+    for (const auto& pad : a1.pads()) {
+        check(a1.pad_at_arc(pad.center_arc) == &pad,
+              "pad_at_arc returns the pad at its own centre");
+    }
+    check(a1.pad_at_arc(0.5 * C) == nullptr, "mid-arc is not a pad");
+
+    double mn = 1e300, mx = -1e300;
+    for (int i = 0; i < 2048; ++i) {
+        const double r = a1.surface_radius_at_arc(i * C / 2048.0);
+        mn = std::min(mn, r);
+        mx = std::max(mx, r);
+    }
+    check(mx - mn > 5.0, "primary relief is substantial (> 5 m)");
+    check_close(a1.max_surface_radius(), mx, 1.0,
+                "max_surface_radius ~ sampled maximum");
+
+    const double r1 = lander::kReferenceRadius / 9.0;
+    lander::Terrain comp(999, r1, 1.0 / 9.0);
+    check_close(comp.circumference(), C / 9.0, 1e-9,
+                "companion circumference is 1/9");
+    double cmn = 1e300, cmx = -1e300;
+    for (int i = 0; i < 2048; ++i) {
+        const double r =
+            comp.surface_radius_at_arc(i * comp.circumference() / 2048.0);
+        cmn = std::min(cmn, r);
+        cmx = std::max(cmx, r);
+    }
+    check(cmx - cmn < (mx - mn) / 2.0, "companion relief much smaller");
+    check(cmx - cmn > 0.5, "companion relief still visible (> 0.5 m)");
+}
+
+// M05-R1-V05 / V06 / V09 (init): reset produces a landed ship at the primary
+// base with a fresh contract toward the companion, and is deterministic.
+void test_reset_state() {
+    lander::Simulation simA, simB;
+    simA.reset(42);
+    simB.reset(42);
+    const lander::State& s = simA.state();
+    const lander::BinarySystem& bin = simA.binary();
+    check(s.landed, "reset lands the ship");
+    check(!s.crashed, "reset is not crashed");
+    check(s.landed_body == 0, "reset lands on the primary");
+    check_close(s.landed_arc, 0.0, 1e-12, "reset lands at the base pad (arc 0)");
+    check_close(s.fuel, simA.config().fuel, 1e-12, "reset fills the tank");
+    check(simA.reference_body() == 0, "reset reference body is the primary");
+    check_close(simA.sim_time(), 0.0, 1e-12, "reset sim_time is 0");
+    check_close(simA.presentation_time(), -simA.config().fixed_dt, 1e-9,
+                "presentation_time at reset");
+    check(simA.contracts_completed() == 0, "no contracts completed yet");
+
+    const lander::State ref = lander::attached_state(bin, 0, 0.0, 0.0);
+    check_close(s.x, ref.x, 1e-9, "reset x matches the attached state");
+    check_close(s.y, ref.y, 1e-9, "reset y matches the attached state");
+    check_close(s.vx, ref.vx, 1e-9, "reset vx matches the attached state");
+    check_close(s.vy, ref.vy, 1e-9, "reset vy matches the attached state");
+    check_close(norm_angle(s.angle), norm_angle(ref.angle), 1e-9,
+                "reset angle matches the attached state");
+
+    check(simA.contract().origin_body == 0, "contract origin is the primary");
+    check(simA.contract().destination_body == 1,
+          "contract destination is the companion");
+    const int front_mult =
+        simA.binary().body(1).terrain.pads().front().multiplier;
+    check(simA.contract().reward == 100 * front_mult,
+          "contract reward = 100 * destination front-pad multiplier");
+
+    check(simA.state() == simB.state(), "identical seeds -> identical state");
+    check_close(simA.sim_time(), simB.sim_time(), 1e-12, "identical sim_time");
+}
+
+// M05-R1-V04: the body-relative navigation helpers (distance, altitude, local
+// up / attitude / velocity / angular rate) are correct on both bodies.
+void test_local_frame() {
+    lander::Config cfg{};
+    auto bin = lander::BinarySystem::canonical(cfg.mu, 5,
+                                               lander::companion_seed(5));
+    const std::array<double, 4> fracs = {0.0, 0.2, 0.5, 0.8};
+    for (int i = 0; i < 2; ++i) {
+        const lander::Body& body = bin.body(i);
+        const double C = body.terrain.circumference();
+        for (double fr : fracs) {
+            const double arc = fr * C;
+            const double theta = body.terrain.angle_at_arc(arc);
+            const double r = body.terrain.surface_radius_at_arc(arc) + 10.0;
+            const lander::Vec2 pos = bin.position(i, 0.0);
+            const lander::Vec2 vel = bin.velocity(i, 0.0);
+            const double up_x = std::cos(theta);
+            const double up_y = std::sin(theta);
+            const double right_x = std::sin(theta);
+            const double right_y = -std::cos(theta);
+
+            lander::State s{};
+            s.x = pos.x + r * up_x;
+            s.y = pos.y + r * up_y;
+            s.vx = vel.x + 3.0 * up_x + 4.0 * right_x;
+            s.vy = vel.y + 3.0 * up_y + 4.0 * right_y;
+            s.angle = norm_angle(theta - 0.5 * lander::kPi);
+            s.fuel = 100.0;
+
+            check_close(lander::radial_distance(s, pos), r, 1e-9,
+                        "radial_distance");
+            check_close(lander::altitude_at(body.terrain, s, pos), 10.0, 1e-6,
+                        "altitude_at");
+            const double exp_up =
+                std::atan2(std::sin(theta), std::cos(theta)) -
+                0.5 * lander::kPi;
+            check_close(lander::local_up_angle(s, pos), exp_up, 1e-9,
+                        "local_up_angle");
+            const lander::LocalVelocity lv = lander::local_velocity(s, pos, vel);
+            check_close(lv.radial, 3.0, 1e-9, "local radial velocity");
+            check_close(lv.tangential, 4.0, 1e-9, "local tangential velocity");
+            check_close(lander::local_angular_velocity(s, pos, vel), 4.0 / r,
+                        1e-9, "local_angular_velocity = tangential / r");
+            check_close(lander::local_attitude_angle(s, pos), 0.0, 1e-9,
+                        "aligned attitude -> 0");
+
+            lander::State st = s;
+            st.angle = norm_angle(theta - 0.5 * lander::kPi + 0.2);
+            check_close(lander::local_attitude_angle(st, pos), 0.2, 1e-9,
+                        "tilted attitude -> 0.2");
         }
-
-        check(!sim.state().landed && !sim.state().crashed,
-              "orbit test: terrain-clearing circular orbit should not crash");
-        check(measured_T > 0.0, "orbit test: should complete one orbit");
-        check_close(measured_T, T_analytic, 0.01 * T_analytic,
-                    "orbit test: simulated period matches analytic period");
-        check(min_r > actual_r0 * 0.995 && max_r < actual_r0 * 1.005,
-              "orbit test: circular orbit radius stays bounded");
-        std::printf(
-            "circularize-orbit dir=%s r0=%.9f v_analytic=%.9f "
-            "T_analytic=%.9f T_measured=%.9f min_r=%.9f max_r=%.9f\n",
-            clockwise ? "cw" : "ccw", actual_r0, v_analytic, T_analytic,
-            measured_T, min_r, max_r);
     }
 }
 
-void test_orbit_presentation_is_smooth() {
-    lander::Simulation sim;
-    sim.reset(987);
-    const lander::Config& config = sim.config();
-    const double r0 = sim.terrain().max_surface_radius() + 73.0;
-    const double theta0 = 1.0;
-    const double up_x = std::cos(theta0);
-    const double up_y = std::sin(theta0);
-    const double right_x = std::sin(theta0);
-    const double right_y = -std::cos(theta0);
-
-    lander::State s{};
-    s.x = up_x * r0;
-    s.y = up_y * r0;
-    s.vx = 1.0 * up_x + 7.0 * right_x;
-    s.vy = 1.0 * up_y + 7.0 * right_y;
-    s.fuel = 1000.0;
-    sim.set_state(s);
-    sim.circularize();
-
-    const bool clockwise = true;
-    const double global_sign = clockwise ? -1.0 : +1.0;
-    const double v_analytic = std::sqrt(config.mu / r0);
-    const double T_analytic =
-        2.0 * lander::kPi * std::sqrt((r0 * r0 * r0) / config.mu);
+// M05-R1-V02 / V07: one fixed step integrates the summed two-body field,
+// applies thrust along the nose, rotates, and burns fuel; semi-implicit Euler.
+void test_one_step_physics() {
+    lander::Config cfg{};
+    auto bin = lander::BinarySystem::canonical(cfg.mu, 6,
+                                               lander::companion_seed(6));
+    const double dt = cfg.fixed_dt;
+    const lander::Vec2 p0 = bin.position(0, 0.0);
+    // A point 400 m to the left of the primary, clear of both bodies.
+    const double px = p0.x - 400.0;
+    const double py = p0.y;
 
     {
-        double previous_theta = std::atan2(sim.state().y, sim.state().x);
-        double total_theta = 0.0;
-        double sum_abs = 0.0;
-        double min_abs = 1e30;
-        double max_abs = -1e30;
-        int count = 0;
-        const int max_steps =
-            static_cast<int>(std::ceil(2.0 * T_analytic / config.fixed_dt));
+        lander::Simulation sim;
+        sim.set_state(state_at(px, py, 0.0, 0.0, 0.0, 0.0));
+        sim.advance(dt, {});
+        const lander::Vec2 a = bin.gravity({px, py}, 0.0);
+        const double vx = a.x * dt;
+        const double vy = a.y * dt;
+        const lander::State& r = sim.state();
+        check_close(r.vx, vx, 1e-9, "unpowered one step: vx = gravity*dt");
+        check_close(r.vy, vy, 1e-9, "unpowered one step: vy = gravity*dt");
+        check_close(r.x, px + vx * dt, 1e-9, "unpowered one step: x");
+        check_close(r.y, py + vy * dt, 1e-9, "unpowered one step: y");
+        check_close(r.angle, 0.0, 1e-9, "unpowered one step: attitude");
+        check_close(r.fuel, 1000.0, 1e-12, "unpowered one step: no fuel burn");
+        check(!r.landed && !r.crashed, "unpowered one step: still in flight");
 
-        for (int i = 0; i < max_steps; ++i) {
-            sim.advance(config.fixed_dt, {});
-            if (sim.state().landed || sim.state().crashed) {
-                break;
-            }
-            const double theta =
-                std::atan2(sim.state().y, sim.state().x);
-            const double delta = normalized_difference(theta, previous_theta);
-            check(delta < 0.0 && delta > -0.01,
-                  "physics angular progression should be smooth clockwise");
-            const double abs_delta = -delta;
-            sum_abs += abs_delta;
-            min_abs = std::min(min_abs, abs_delta);
-            max_abs = std::max(max_abs, abs_delta);
-            ++count;
-            total_theta += delta;
-            previous_theta = theta;
-            if (total_theta * global_sign >= 2.0 * lander::kPi) {
-                break;
-            }
-        }
-
-        check(!sim.state().landed && !sim.state().crashed,
-              "physics orbit diagnostic should remain unpowered and flying");
-        check(count > 1000,
-              "physics orbit diagnostic should record many fixed steps");
-        const double mean_abs = sum_abs / static_cast<double>(count);
-        check(max_abs <= 1.10 * mean_abs && min_abs >= 0.90 * mean_abs,
-              "physics angular increments should stay smoothly bounded");
-        std::printf(
-            "orbit-presentation physics steps=%d mean_dtheta=%.12g "
-            "abs_min=%.12g abs_max=%.12g\n",
-            count, mean_abs, min_abs, max_abs);
+        // The total field must differ from a primary-only field (companion
+        // is active, never switched off).
+        const double rx = px - p0.x;
+        const double ry = py - p0.y;
+        const double rr = std::hypot(rx, ry);
+        const double inv = 1.0 / (rr * rr * rr);
+        const lander::Vec2 aprim{-bin.body(0).mu * rx * inv,
+                                 -bin.body(0).mu * ry * inv};
+        check(std::hypot(a.x - aprim.x, a.y - aprim.y) > 1e-3,
+              "two-body field differs from primary-only");
     }
 
-    for (int fps : {60, 90, 120, 144}) {
-        lander::Simulation render_sim;
-        render_sim.reset(987);
-        render_sim.set_state(s);
-        render_sim.circularize();
-
-        const double render_dt = 1.0 / static_cast<double>(fps);
-        double previous_theta =
-            std::atan2(render_sim.state().y, render_sim.state().x);
-        double total_theta = 0.0;
-        double sum_abs = 0.0;
-        double min_abs = 1e30;
-        double max_abs = -1e30;
-        int count = 0;
-        const int max_frames =
-            static_cast<int>(std::ceil(2.0 * T_analytic / render_dt));
-
-        for (int i = 0; i < max_frames; ++i) {
-            render_sim.advance(render_dt, {});
-            if (render_sim.state().landed || render_sim.state().crashed) {
-                break;
-            }
-            const double alpha =
-                render_sim.accumulator() / config.fixed_dt;
-            const lander::State render_state = lander::interpolated_state(
-                render_sim.previous_state(), render_sim.state(), alpha,
-                render_sim.state().landed || render_sim.state().crashed);
-            const double theta =
-                std::atan2(render_state.y, render_state.x);
-            // The first two presentation frames establish the interpolation
-            // pipeline after a reset; steady cadence is measured from then on.
-            if (i < 2) {
-                previous_theta = theta;
-                continue;
-            }
-            const double delta = normalized_difference(theta, previous_theta);
-            check(delta < 0.0 && delta > -0.01,
-                  "interpolated render angular progression should be smooth");
-            const double abs_delta = -delta;
-            sum_abs += abs_delta;
-            min_abs = std::min(min_abs, abs_delta);
-            max_abs = std::max(max_abs, abs_delta);
-            ++count;
-            total_theta += delta;
-            previous_theta = theta;
-            if (total_theta * global_sign >= 2.0 * lander::kPi) {
-                break;
-            }
-        }
-
-        check(!render_sim.state().landed && !render_sim.state().crashed,
-              "render-rate orbit diagnostic should remain flying");
-        check(count > 100,
-              "render-rate orbit diagnostic should record many frames");
-        const double mean_abs = sum_abs / static_cast<double>(count);
-        check(max_abs <= 2.50 * mean_abs && min_abs >= 0.25 * mean_abs,
-              "interpolated render cadence should not repeat or jump");
-        std::printf(
-            "orbit-presentation render fps=%d frames=%d mean_dtheta=%.12g "
-            "abs_min=%.12g abs_max=%.12g\n",
-            fps, count, mean_abs, min_abs, max_abs);
+    {
+        lander::Simulation sim;
+        sim.set_state(state_at(px, py, 0.0, 0.0, 0.0, 0.0));
+        lander::Input in{};
+        in.rotate_right = true;
+        in.main_throttle = 1.0;
+        sim.advance(dt, in);
+        const lander::Vec2 g = bin.gravity({px, py}, 0.0);
+        // Nose at angle 0 -> thrust (0, +main_accel).
+        const double ax = g.x;
+        const double ay = g.y + cfg.main_accel;
+        const double omega1 = cfg.rotate_accel * dt;
+        const double vx = ax * dt;
+        const double vy = ay * dt;
+        const lander::State& r = sim.state();
+        check_close(r.omega, omega1, 1e-12, "rotation sets omega");
+        check_close(r.vx, vx, 1e-9, "thrust+gravity one step: vx");
+        check_close(r.vy, vy, 1e-9, "thrust+gravity one step: vy");
+        check_close(r.x, px + vx * dt, 1e-9, "thrust+gravity one step: x");
+        check_close(r.y, py + vy * dt, 1e-9, "thrust+gravity one step: y");
+        check_close(norm_angle(r.angle), norm_angle(omega1 * dt), 1e-9,
+                    "angle follows the new omega");
+        check_close(r.fuel, 1000.0 - cfg.fuel_burn * dt, 1e-9, "fuel burns");
     }
 }
 
+// M05-R1-V20: the fixed-step integrator is independent of the frame cadence.
+void test_fixed_step_determinism() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 11;
+    auto bin = lander::BinarySystem::canonical(cfg.mu, seed,
+                                               lander::companion_seed(seed));
+    const double dt = cfg.fixed_dt;
+    const lander::Vec2 p0 = bin.position(0, 0.0);
+    const lander::State base =
+        state_at(p0.x - 400.0, p0.y, 0.0, 0.0, 0.3, 0.0);
+
+    lander::Simulation simA, simB;
+    simA.reset(seed);
+    simB.reset(seed);
+    simA.set_state(base);
+    simB.set_state(base);
+    for (int i = 0; i < 120; ++i) {
+        simA.advance(dt, {});
+    }
+    for (int i = 0; i < 60; ++i) {
+        simB.advance(2.0 * dt, {});
+    }
+
+    check(simA.state() == simB.state(),
+          "frame cadence does not change the resulting state");
+    check(simA.state().ticks == 120, "1*dt cadence ran 120 fixed steps");
+    check(simB.state().ticks == 120, "2*dt cadence ran 120 fixed steps");
+    check_close(simA.sim_time(), 1.0, 1e-9, "1*dt cadence reaches 1 s");
+    check_close(simB.sim_time(), 1.0, 1e-9, "2*dt cadence reaches 1 s");
+}
+
+// M05-R1-V05: a safe body-relative drop lands on the pad (and only there) on
+// either body, co-moving with the body.
+void test_landing_rules() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 21;
+    lander::Simulation probe;
+    probe.reset(seed);
+
+    for (int body = 0; body < 2; ++body) {
+        const auto& pads = probe.terrain(body).pads();
+        for (const auto& pad : pads) {
+            lander::Simulation sim;
+            sim.reset(seed);
+            lander::State s = state_relative(sim.binary(), body, pad.center_arc,
+                                             0.3, -1.0, 0.2, 0.05);
+            sim.set_state(s);
+            const int steps = run_to_contact(sim);
+            check(steps >= 0, "reached a terminal ground state");
+            const lander::State& r = sim.state();
+            check(r.landed && !r.crashed, "safe drop lands and does not crash");
+            check(r.landed_body == body, "landed on the intended body");
+            const lander::Vec2 bpos = sim.binary().position(body, sim.sim_time());
+            const double surface =
+                sim.terrain(body).surface_radius_at_arc(r.landed_arc);
+            check_close(lander::radial_distance(r, bpos), surface, 1e-6,
+                        "rests on the pad surface");
+            check(sim.terrain(body).pad_at_arc(r.landed_arc) != nullptr,
+                  "landed on a pad");
+            const lander::Vec2 bvel =
+                sim.binary().velocity(body, sim.sim_time());
+            const lander::LocalVelocity lv = lander::local_velocity(r, bpos, bvel);
+            check(std::abs(lv.radial) <= cfg.safe_vertical_speed + 1e-6,
+                  "radial speed is within the safe band at rest");
+            check(std::abs(lv.tangential) <= cfg.safe_horizontal_speed + 1e-6,
+                  "tangential speed is within the safe band at rest");
+        }
+    }
+}
+
+// M05-R1-V05: unsafe contact (non-pad arc, excessive speed, or misaligned
+// attitude) crashes the ship on the body it touched.
+void test_crash_rules() {
+    const std::uint64_t seed = 22;
+    lander::Simulation probe;
+    probe.reset(seed);
+
+    // (a) Non-pad arc: even gentle speeds crash.
+    {
+        const int body = 0;
+        const double arc = 0.5 * probe.terrain(body).circumference();
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s = state_relative(sim.binary(), body, arc, 0.3, -1.0, 0.2,
+                                         0.05);
+        sim.set_state(s);
+        run_to_contact(sim);
+        const lander::State& r = sim.state();
+        check(r.crashed && !r.landed, "non-pad arc crashes");
+        check(r.crash_body == body, "crash body is the primary");
+    }
+    // (b) Excessive radial speed on a pad.
+    {
+        const int body = 1;
+        const auto& pad = probe.terrain(body).pads().front();
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s =
+            state_relative(sim.binary(), body, pad.center_arc, 0.3, -10.0, 0.0, 0.0);
+        sim.set_state(s);
+        run_to_contact(sim);
+        const lander::State& r = sim.state();
+        check(r.crashed, "excessive radial speed crashes");
+        check(r.crash_body == body, "crash body is the companion");
+    }
+    // (c) Excessive tangential speed on a pad.
+    {
+        const int body = 0;
+        const auto& pad = probe.terrain(body).pads().front();
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s =
+            state_relative(sim.binary(), body, pad.center_arc, 0.3, -1.0, 2.5, 0.0);
+        sim.set_state(s);
+        run_to_contact(sim);
+        check(sim.state().crashed, "excessive tangential speed crashes");
+    }
+    // (d) Misaligned attitude (0.2 rad) on a pad.
+    {
+        const int body = 1;
+        const auto& pad = probe.terrain(body).pads().front();
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s =
+            state_relative(sim.binary(), body, pad.center_arc, 0.3, -1.0, 0.0, 0.2);
+        sim.set_state(s);
+        run_to_contact(sim);
+        check(sim.state().crashed, "misaligned attitude (0.2 rad) crashes");
+    }
+    // (e) Attitude aligned to the world vertical instead of the local vertical.
+    {
+        const int body = 0;
+        const auto& pad = probe.terrain(body).pads()[1];
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s =
+            state_relative(sim.binary(), body, pad.center_arc, 0.3, -1.0, 0.0, 0.0);
+        s.angle = 0.0;
+        sim.set_state(s);
+        run_to_contact(sim);
+        check(sim.state().crashed, "world-vertical attitude crashes");
+    }
+}
+
+// M05-R1-V06: a landed ship rides its moving body (no jitter); a thrust below
+// surface gravity cannot lift it; full throttle takes off, inheriting the body
+// velocity. Verified for both bodies.
+void test_landed_attachment_and_takeoff() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 31;
+
+    // (A) Landed ship tracks its body over time.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        for (int i = 0; i < 120; ++i) {
+            sim.advance(dt, {});
+        }
+        const lander::State& r = sim.state();
+        check(r.landed && !r.crashed, "still landed after 1 s of no input");
+        check(r.landed_body == 0, "still on the primary");
+        const lander::State ref =
+            lander::attached_state(sim.binary(), 0, 0.0, sim.sim_time());
+        check_close(r.x, ref.x, 1e-6, "x tracks the body");
+        check_close(r.y, ref.y, 1e-6, "y tracks the body");
+        check_close(r.vx, ref.vx, 1e-6, "vx tracks the body");
+        check_close(r.vy, ref.vy, 1e-6, "vy tracks the body");
+        const lander::Vec2 start = sim.binary().position(0, 0.0);
+        check(std::hypot(r.x - start.x, r.y - start.y) > 0.05,
+              "the body moved over time");
+    }
+
+    // (B) Small throttle (below surface gravity) stays landed: no jitter, no
+    // fuel use, no attitude change.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::Input in{};
+        in.main_throttle = 0.01;
+        for (int i = 0; i < 60; ++i) {
+            sim.advance(dt, in);
+        }
+        const lander::State& r = sim.state();
+        check(r.landed && !r.crashed, "small throttle stays landed");
+        check_close(r.fuel, cfg.fuel, 1e-9, "small throttle burns no fuel");
+        const lander::State ref =
+            lander::attached_state(sim.binary(), 0, 0.0, sim.sim_time());
+        check_close(r.x, ref.x, 1e-6, "no jitter: x stays on the pad");
+        check_close(r.y, ref.y, 1e-6, "no jitter: y stays on the pad");
+    }
+
+    // (C) Full throttle takes off from the primary.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::Input in{};
+        in.main_throttle = 1.0;
+        sim.advance(dt, in);
+        check(!sim.state().landed, "full throttle takes off on the first step");
+        check(!sim.state().crashed, "takeoff is not a crash");
+        for (int i = 0; i < 119; ++i) {
+            sim.advance(dt, in);
+        }
+        const lander::State& r = sim.state();
+        const lander::Vec2 bpos = sim.binary().position(0, sim.sim_time());
+        check(lander::altitude_at(sim.terrain(0), r, bpos) > 0.0,
+              "the ship has risen above the pad");
+        check(!r.landed && !r.crashed, "in flight after takeoff");
+        check(r.fuel < cfg.fuel, "takeoff burned fuel");
+    }
+
+    // (D) Takeoff from the companion uses the same generic path.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s = lander::attached_state(sim.binary(), 1, 0.0, 0.0);
+        s.fuel = cfg.fuel;
+        sim.set_state(s);
+        lander::Input in{};
+        in.main_throttle = 1.0;
+        sim.advance(dt, in);
+        check(!sim.state().landed, "companion takeoff lifts off");
+        for (int i = 0; i < 119; ++i) {
+            sim.advance(dt, in);
+        }
+        const lander::State& r = sim.state();
+        const lander::Vec2 bpos = sim.binary().position(1, sim.sim_time());
+        check(lander::altitude_at(sim.terrain(1), r, bpos) > 0.0,
+              "companion ship has risen");
+    }
+}
+
+// M05-R1-V09 / V14: a crashed state is terminal; the ship and the clock freeze.
+void test_terminal_state_is_frozen() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 41;
+
+    lander::Simulation sim;
+    sim.reset(seed);
+    const double arc = 0.5 * sim.terrain(0).circumference();
+    lander::State s =
+        state_relative(sim.binary(), 0, arc, 0.3, -30.0, 0.0, 0.0);
+    sim.set_state(s);
+    run_to_contact(sim);
+    check(sim.state().crashed, "ship crashed");
+    const lander::State before = sim.state();
+    const double t_before = sim.sim_time();
+    for (int i = 0; i < 100; ++i) {
+        sim.advance(dt, {});
+    }
+    check(sim.state() == before, "crashed state is frozen");
+    check_close(sim.sim_time(), t_before, 1e-12, "sim time freezes after crash");
+}
+
+// M05-R1-V14: set_state normalises the angle into [0, 2pi) and clamps fuel.
+void test_set_state_normalizes() {
+    lander::Simulation sim;
+    sim.reset(1);
+
+    {
+        lander::State s{};
+        s.x = 100;
+        s.y = 0;
+        s.angle = 10.0;
+        s.fuel = 500;
+        sim.set_state(s);
+        check_close(sim.state().angle, 10.0 - 2.0 * lander::kPi, 1e-9,
+                    "angle wrapped into [0, 2pi)");
+        check_close(sim.state().fuel, 500.0, 1e-12, "positive fuel preserved");
+    }
+    {
+        lander::State s{};
+        s.x = 100;
+        s.y = 0;
+        s.angle = -1.0;
+        sim.set_state(s);
+        check_close(sim.state().angle, -1.0 + 2.0 * lander::kPi, 1e-9,
+                    "negative angle wrapped");
+    }
+    {
+        lander::State s{};
+        s.x = 100;
+        s.y = 0;
+        s.fuel = -50.0;
+        sim.set_state(s);
+        check_close(sim.state().fuel, 0.0, 1e-12, "negative fuel clamped to 0");
+    }
+}
+
+// M05-R1-V07: circularize sets a body-relative circular velocity about the
+// current reference body (no position / attitude / fuel change).
+void test_circularize_state() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 51;
+
+    // Primary: reference body is the primary immediately after reset.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const double r0 = sim.terrain(0).max_surface_radius() + 20.0;
+        const double alt = r0 - sim.terrain(0).surface_radius_at_arc(0.0);
+        sim.set_state(
+            state_relative(sim.binary(), 0, 0.0, alt, 0.0, 0.0, 0.0));
+        sim.circularize();
+        const lander::Vec2 bpos = sim.binary().position(0, 0.0);
+        const lander::Vec2 bvel = sim.binary().velocity(0, 0.0);
+        const double r = lander::radial_distance(sim.state(), bpos);
+        const double theta =
+            std::atan2(sim.state().y - bpos.y, sim.state().x - bpos.x);
+        const double speed = std::sqrt(sim.binary().body(0).mu / r);
+        check_close(r, r0, 1e-6, "circularize does not move the ship");
+        const lander::Vec2 vexp{bvel.x + std::sin(theta) * speed,
+                                bvel.y + (-std::cos(theta)) * speed};
+        check_close(sim.state().vx, vexp.x, 1e-6, "circularize vx (primary)");
+        check_close(sim.state().vy, vexp.y, 1e-6, "circularize vy (primary)");
+        check_close(sim.state().angle, 0.0, 1e-9,
+                    "circularize does not change attitude");
+        check_close(sim.state().fuel, 1000.0, 1e-9,
+                    "circularize does not burn fuel");
+    }
+
+    // Companion: a step near body 1 flips the reference to the companion.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        sim.set_state(
+            state_relative(sim.binary(), 1, 0.0, 8.0, 0.0, 0.0, 0.0));
+        sim.advance(dt, {});
+        check(sim.reference_body() == 1, "reference flips to the companion");
+        sim.circularize();
+        const lander::Vec2 bpos = sim.binary().position(1, sim.sim_time());
+        const lander::Vec2 bvel = sim.binary().velocity(1, sim.sim_time());
+        const double r = lander::radial_distance(sim.state(), bpos);
+        const double theta =
+            std::atan2(sim.state().y - bpos.y, sim.state().x - bpos.x);
+        const double speed = std::sqrt(sim.binary().body(1).mu / r);
+        const lander::Vec2 vexp{bvel.x + std::sin(theta) * speed,
+                                bvel.y + (-std::cos(theta)) * speed};
+        check_close(sim.state().vx, vexp.x, 1e-6, "circularize vx (companion)");
+        check_close(sim.state().vy, vexp.y, 1e-6, "circularize vy (companion)");
+    }
+
+    // Circularise is a no-op while landed or crashed.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const lander::State before = sim.state();
+        sim.circularize();
+        check(sim.state() == before, "circularize is a no-op while landed");
+    }
+}
+
+// M05-R1-V07: after circularizing, the ship remains in a usable orbit about
+// the primary (bounded radius, no crash, no escape).
+void test_orbit_is_usable() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const std::uint64_t seed = 61;
+    lander::Simulation sim;
+    sim.reset(seed);
+
+    const double r0 = sim.terrain(0).max_surface_radius() + 25.0;
+    const double alt = r0 - sim.terrain(0).surface_radius_at_arc(0.0);
+    sim.set_state(state_relative(sim.binary(), 0, 0.0, alt, 0.0, 0.0, 0.0));
+    sim.circularize();
+
+    const double local_period =
+        2.0 * lander::kPi * std::sqrt((r0 * r0 * r0) / cfg.mu);
+    const int steps = (int)std::lround(1.5 * local_period / dt);
+    double rmin = 1e300, rmax = -1e300;
+    for (int i = 0; i < steps && !sim.state().crashed; ++i) {
+        sim.advance(dt, {});
+        const lander::Vec2 p = sim.binary().position(0, sim.sim_time());
+        const double r =
+            std::hypot(sim.state().x - p.x, sim.state().y - p.y);
+        rmin = std::min(rmin, r);
+        rmax = std::max(rmax, r);
+    }
+
+    check(!sim.state().crashed, "orbit does not crash");
+    check(rmin > sim.terrain(0).max_surface_radius(), "orbit stays above terrain");
+    check(rmin > 0.7 * r0, "orbit does not decay toward the surface");
+    check(rmax < 1.5 * r0, "orbit does not escape the primary");
+}
+
+// M05-R1-P02: refuel refills the tank in flight and on the ground, and never
+// after a crash.
+void test_refuel_only_changes_fuel() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 71;
+    const double dt = cfg.fixed_dt;
+
+    // In flight.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s = state_at(0.0, 400.0, 10.0, 0.0, 0.0, 0.0);
+        s.fuel = 200.0;  // a partially drained tank
+        sim.set_state(s);
+        for (int i = 0; i < 120; ++i) {
+            sim.advance(dt, {});
+        }
+        check(!sim.state().landed && !sim.state().crashed, "still in flight");
+        const double fuel_before = sim.state().fuel;
+        sim.refuel();
+        check_close(sim.state().fuel, cfg.fuel, 1e-9, "refuel refills the tank");
+        check(sim.state().fuel > fuel_before, "refuel increases the tank");
+    }
+    // On the ground.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        lander::State s = sim.state();  // the landed state produced by reset
+        s.fuel = 5.0;
+        sim.set_state(s);
+        sim.refuel();
+        check_close(sim.state().fuel, cfg.fuel, 1e-9, "refuel works on the ground");
+        check(sim.state().landed, "still landed after refuel");
+    }
+    // Never after a crash.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const double arc = 0.5 * sim.terrain(0).circumference();
+        lander::State s = state_relative(sim.binary(), 0, arc, 0.3, -30.0, 0.0, 0.0);
+        sim.set_state(s);
+        run_to_contact(sim);
+        check(sim.state().crashed, "crashed for the refuel test");
+        lander::State cs = sim.state();
+        cs.fuel = 1.0;
+        sim.set_state(cs);
+        const double fuel_before = sim.state().fuel;
+        sim.refuel();
+        check_close(sim.state().fuel, fuel_before, 1e-12,
+                    "refuel is blocked after a crash");
+    }
+}
+
+// M05-R1-P01: the flame is driven by the continuous presentation clock, not an
+// integer tick count.
 void test_flame_animation_continuous() {
-    // The flame is presentation-only and is driven by a continuous clock in
-    // seconds, not the integer simulation tick counter. Verify:
-    //  (1) it varies within a single 1/120 s tick window (not tick-quantized),
-    //  (2) it is continuous between 1 ms sub-steps (no staircase jumps),
-    //  (3) it covers a meaningful length range over one second,
-    //  (4) it stays non-negative, and
-    //  (5) its magnitude is scaled by the throttle level.
-    const double fixed_dt = 1.0 / 120.0;
-
-    // (1) Within one tick interval the flame must move, proving it is not
-    // quantized to the integer tick counter.
-    const double t0 = 5 * fixed_dt;
-    double min_sub = 1.0e9, max_sub = -1.0e9;
-    for (int i = 0; i <= 100; ++i) {
-        const double f = i / 100.0;
-        const double len = lander::flame_length(1.0, t0 + f * fixed_dt);
-        min_sub = std::min(min_sub, len);
-        max_sub = std::max(max_sub, len);
+    for (double t = 0.0; t < 2.0; t += 0.03) {
+        check_close(lander::flame_length(0.0, t), 0.0, 1e-12,
+                    "no thrust -> no flame");
     }
-    check(max_sub - min_sub > 1.0e-4,
-          "flame should vary within one tick (not tick-quantized)");
 
-    // (2) Continuity: 1 ms sub-steps across one second must not jump.
-    double max_jump = 0.0;
-    double previous = lander::flame_length(1.0, 0.0);
-    for (int i = 1; i <= 1000; ++i) {
-        const double len = lander::flame_length(1.0, 0.001 * i);
-        max_jump = std::max(max_jump, std::abs(len - previous));
-        previous = len;
+    double mn = 1e300, mx = -1e300;
+    double prev_len = -1.0;
+    bool saw_change = false;
+    for (double t = 0.0; t < 2.0; t += 0.001) {
+        const double len = lander::flame_length(1.0, t);
+        mn = std::min(mn, len);
+        mx = std::max(mx, len);
+        if (prev_len >= 0.0 && std::abs(len - prev_len) > 1e-12) {
+            saw_change = true;
+        }
+        prev_len = len;
     }
-    check(max_jump < 0.2, "flame should be continuous between sub-steps");
+    check(mn >= 0.42 && mx <= 1.88,
+          "full-thrust flame stays in the documented ~[0.43, 1.87] range");
+    check(mx - mn > 0.8, "flame has substantial variation");
+    check(saw_change, "flame length varies continuously with time");
+    check(std::abs(lander::flame_length(1.0, 0.3000) -
+                   lander::flame_length(1.0, 0.3001)) < 1e-2,
+          "flame varies smoothly between close times");
+}
 
-    // (3)/(4) Range and non-negativity over one second.
-    double min_s = 1.0e9, max_s = -1.0e9;
-    for (int i = 0; i <= 1200; ++i) {
-        const double len = lander::flame_length(1.0, (1.0 / 1200.0) * i);
-        min_s = std::min(min_s, len);
-        max_s = std::max(max_s, len);
-        check(len >= 0.0, "flame length should stay non-negative");
+// M05-R1-V21: render interpolation blends positions linearly, attitude by
+// shortest arc, never touches fuel, and snaps at the ends.
+void test_interpolated_state() {
+    lander::State prev{};
+    prev.x = 0;
+    prev.y = 0;
+    prev.angle = 0.0;
+    prev.fuel = 500;
+    prev.vx = 1;
+    prev.vy = 2;
+    lander::State cur{};
+    cur.x = 10;
+    cur.y = 0;
+    cur.angle = 1.0;
+    cur.fuel = 400;
+    cur.vx = 3;
+    cur.vy = 4;
+
+    const lander::State mid = lander::interpolated_state(prev, cur, 0.5, false);
+    check_close(mid.x, 5.0, 1e-12, "x lerps linearly");
+    check_close(mid.y, 0.0, 1e-12, "y lerps linearly");
+    check_close(mid.angle, 0.5, 1e-9, "angle lerps (shortest arc)");
+    check_close(mid.fuel, cur.fuel, 1e-12, "fuel is not interpolated");
+    check_close(mid.vx, cur.vx, 1e-12, "vx is not interpolated");
+
+    check(lander::interpolated_state(prev, cur, 0.0, false) == cur,
+          "alpha 0 -> current");
+    check(lander::interpolated_state(prev, cur, 1.0, false) == cur,
+          "alpha 1 -> current");
+    check(lander::interpolated_state(prev, cur, 0.3, true) == cur,
+          "snap_to_current -> current");
+
+    lander::State ap{};
+    ap.angle = 350.0 * lander::kPi / 180.0;
+    lander::State ac{};
+    ac.angle = 10.0 * lander::kPi / 180.0;
+    const lander::State am = lander::interpolated_state(ap, ac, 0.5, false);
+    check_close(am.angle, 0.0, 1e-6, "angle takes the short way around");
+}
+
+// M05-R1-V09: place the ship just above a chosen body's pad and let it fall
+// until it lands or crashes; used to drive the contract state machine.
+int drop_on(lander::Simulation& sim, int body, int pad_index) {
+    const auto& pads = sim.terrain(body).pads();
+    lander::State s =
+        state_relative(sim.binary(), body, pads[pad_index].center_arc, 0.3, -1.0,
+                       0.2, 0.05);
+    sim.set_state(s);
+    return run_to_contact(sim);
+}
+
+// M05-R1-V09: the delivery contract loop. A safe landing on the destination
+// base pad completes the active contract exactly once (pad bonus plus the
+// contract reward, after which the destination reverses); a safe landing on a
+// non-base pad does not complete it.
+void test_contract_loop() {
+    const std::uint64_t seed = 23;
+
+    // (a) Complete exactly once on the destination (companion) base pad.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        check(sim.contract().origin_body == 0, "initial contract from the primary");
+        check(sim.contract().destination_body == 1, "initial contract to the companion");
+        const auto& cpads = sim.terrain(1).pads();
+        const int cf = cpads.front().multiplier;
+        const int reward0 = sim.contract().reward;
+        check(reward0 == 100 * cf, "initial reward is the companion base value");
+        const int score0 = sim.state().score;  // 0
+
+        const int steps = drop_on(sim, 1, 0);  // the destination base pad
+        check(steps >= 0, "reached contact on the destination base");
+        const lander::State& r = sim.state();
+        check(r.landed && !r.crashed, "safe landing on the destination base");
+        check(r.landed_body == 1, "landed on the companion");
+        check(sim.contracts_completed() == 1, "base landing completes one contract");
+        check(sim.last_completed().has_value(), "a completion record is kept");
+        check(sim.last_completed()->completed, "completion record is marked complete");
+        check(sim.last_completed()->origin_body == 0 &&
+                  sim.last_completed()->destination_body == 1,
+              "completion record is the primary -> companion contract");
+        check(sim.state().score == score0 + 100 * cf + reward0,
+              "score gains the pad bonus and the contract reward");
+        // The next contract reverses to the primary base.
+        check(sim.contract().origin_body == 1, "next contract from the companion");
+        check(sim.contract().destination_body == 0, "next contract to the primary");
+        check(
+            sim.contract().reward ==
+            100 * sim.binary().body(0).terrain.pads().front().multiplier,
+            "next reward is the primary base value");
+        // Still landed: no second completion, the score stays fixed.
+        const int score_after = sim.state().score;
+        const int cc_after = sim.contracts_completed();
+        for (int i = 0; i < 10; ++i) {
+            sim.advance(sim.config().fixed_dt, {});
+        }
+        check(sim.state().score == score_after, "reward paid exactly once");
+        check(sim.contracts_completed() == cc_after, "contract count stable");
     }
-    check(max_s - min_s > 0.3, "flame should visibly vary over one second");
 
-    // (5) Throttle scaling: zero -> none; lower < full at the same instant.
-    check_close(lander::flame_length(0.0, 0.1234), 0.0, 1.0e-9,
-                "zero throttle should produce no flame");
-    check(lander::flame_length(0.25, 0.1234) < lander::flame_length(1.0, 0.1234),
-          "lower throttle should produce a shorter flame");
-    check(lander::flame_length(1.0, 0.1234) > 0.4,
-          "full throttle flame should retain its magnitude");
+    // (b) A safe landing on a non-base pad does not complete the contract.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);
+        const auto& cpads = sim.terrain(1).pads();
+        check(cpads.size() > 1, "the companion has a non-base pad");
+        check(cpads[1].center_arc != 0.0, "the chosen pad is not the base");
+        const int pad_mult = cpads[1].multiplier;
+        drop_on(sim, 1, 1);  // a non-base pad on the destination body
+        const lander::State& r = sim.state();
+        check(r.landed && !r.crashed, "safe landing on a non-base pad");
+        check(r.landed_body == 1, "landed on the destination body");
+        check(sim.contracts_completed() == 0, "non-base landing does not complete");
+        check(!sim.last_completed().has_value(), "no completion record");
+        check(sim.contract().destination_body == 1, "contract unchanged");
+        check(sim.state().score == 100 * pad_mult,
+              "only the pad bonus is scored, no contract reward");
+    }
+
+    // (c) The destination alternates body to body across consecutive landings.
+    {
+        lander::Simulation sim;
+        sim.reset(seed);  // primary -> companion
+        drop_on(sim, 1, 0);  // complete leg 1 on the companion base
+        check(sim.contracts_completed() == 1, "leg 1 completes");
+        check(sim.contract().destination_body == 0,
+              "after leg 1 the contract targets the primary");
+        drop_on(sim, 0, 0);  // complete leg 2 on the primary base
+        check(sim.contracts_completed() == 2, "leg 2 completes");
+        check(sim.contract().destination_body == 1,
+              "the contract alternates back to the companion");
+        check(sim.contract().origin_body == 0, "origin back to the primary");
+    }
 }
 
 }  // namespace
 
 int main() {
     test_reference_values();
-    test_terrain_determinism_and_wrap();
-    test_radial_gravity();
+    test_terrain();
+    test_reset_state();
+    test_contract_loop();
+    test_local_frame();
     test_one_step_physics();
     test_fixed_step_determinism();
-    test_local_frame_helpers();
     test_landing_rules();
     test_crash_rules();
+    test_landed_attachment_and_takeoff();
     test_terminal_state_is_frozen();
     test_set_state_normalizes();
-    test_orbit_stays_bounded();
-    test_refuel_only_changes_fuel();
     test_circularize_state();
-    test_circularize_orbit();
-    test_orbit_presentation_is_smooth();
+    test_orbit_is_usable();
+    test_refuel_only_changes_fuel();
     test_flame_animation_continuous();
+    test_interpolated_state();
 
     if (failures == 0) {
         std::puts("All lander_tests passed");

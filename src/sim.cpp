@@ -38,79 +38,101 @@ bool operator==(const Config& lhs, const Config& rhs) {
            lhs.safe_angle_rad == rhs.safe_angle_rad;
 }
 
-double radial_distance(const State& state) {
-    return std::hypot(state.x, state.y);
+double radial_distance(const State& state, const Vec2& bpos) {
+    return std::hypot(state.x - bpos.x, state.y - bpos.y);
 }
 
-double local_up_angle(const State& state) {
-    double rho = radial_distance(state);
-    if (rho < 1.0e-9) {
+double local_up_angle(const State& state, const Vec2& bpos) {
+    const double rx = state.x - bpos.x;
+    const double ry = state.y - bpos.y;
+    if (std::hypot(rx, ry) < 1.0e-9) {
         return 0.0;
     }
-    return std::atan2(state.y, state.x) - 0.5 * kPi;
+    return std::atan2(ry, rx) - 0.5 * kPi;
 }
 
-double local_attitude_angle(const State& state) {
-    double diff = state.angle - local_up_angle(state);
+double local_attitude_angle(const State& state, const Vec2& bpos) {
+    const double diff = state.angle - local_up_angle(state, bpos);
     return std::atan2(std::sin(diff), std::cos(diff));
 }
 
-LocalVelocity local_velocity(const State& state) {
+LocalVelocity local_velocity(const State& state, const Vec2& bpos,
+                             const Vec2& bvel) {
     LocalVelocity out{};
-    double rho = radial_distance(state);
-    if (rho < 1.0e-9) {
+    const double rx = state.x - bpos.x;
+    const double ry = state.y - bpos.y;
+    if (std::hypot(rx, ry) < 1.0e-9) {
         return out;
     }
-    double theta = std::atan2(state.y, state.x);
-    double up_x = std::cos(theta);
-    double up_y = std::sin(theta);
-    double right_x = std::sin(theta);
-    double right_y = -std::cos(theta);
-    out.radial = state.vx * up_x + state.vy * up_y;
-    out.tangential = state.vx * right_x + state.vy * right_y;
+    const double theta = std::atan2(ry, rx);
+    const double up_x = std::cos(theta);
+    const double up_y = std::sin(theta);
+    const double right_x = std::sin(theta);
+    const double right_y = -std::cos(theta);
+    out.radial = (state.vx - bvel.x) * up_x + (state.vy - bvel.y) * up_y;
+    out.tangential =
+        (state.vx - bvel.x) * right_x + (state.vy - bvel.y) * right_y;
     return out;
 }
 
-double surface_radius_at(const Terrain& terrain, const State& state) {
-    return terrain.surface_radius_at_angle(std::atan2(state.y, state.x));
+double surface_radius_at(const Terrain& terrain, const State& state,
+                         const Vec2& bpos) {
+    const double theta = std::atan2(state.y - bpos.y, state.x - bpos.x);
+    return terrain.surface_radius_at_arc(terrain.arc_at_angle(theta));
 }
 
-double altitude_at(const Terrain& terrain, const State& state) {
-    return radial_distance(state) - surface_radius_at(terrain, state);
+double altitude_at(const Terrain& terrain, const State& state,
+                    const Vec2& bpos) {
+    return radial_distance(state, bpos) -
+           surface_radius_at(terrain, state, bpos);
+}
+
+double local_angular_velocity(const State& state, const Vec2& bpos,
+                               const Vec2& bvel) {
+    const LocalVelocity lv = local_velocity(state, bpos, bvel);
+    const double r = radial_distance(state, bpos);
+    if (r < 1.0e-9) {
+        return 0.0;
+    }
+    return lv.tangential / r;
+}
+
+State attached_state(const BinarySystem& system, int body_index,
+                     double landed_arc, double t) {
+    const Body& body = system.body(body_index);
+    const Vec2 pos = system.position(body_index, t);
+    const Vec2 vel = system.velocity(body_index, t);
+    const double theta = body.terrain.angle_at_arc(landed_arc);
+    const double r = body.terrain.surface_radius_at_arc(landed_arc);
+    State out{};
+    out.x = pos.x + std::cos(theta) * r;
+    out.y = pos.y + std::sin(theta) * r;
+    out.vx = vel.x;
+    out.vy = vel.y;
+    out.angle = normalize_angle(theta - 0.5 * kPi);
+    out.fuel = 0.0;
+    out.landed = true;
+    out.landed_body = body_index;
+    out.landed_arc = landed_arc;
+    return out;
 }
 
 State interpolated_state(const State& previous, const State& current,
                          double alpha, bool snap_to_current) {
-    if (snap_to_current || alpha <= 0.0) {
-        return current;
-    }
-    if (alpha >= 1.0) {
+    if (snap_to_current || alpha <= 0.0 || alpha >= 1.0) {
         return current;
     }
 
     State out = current;
 
-    // Interpolate the moon-centred polar coordinates instead of taking a
-    // straight chord between two inertial positions. Both are presentation
-    // only, but the polar form keeps orbital angle progression monotonic at
-    // render cadences that do not divide the 120 Hz physics cadence evenly.
-    const double previous_radius = radial_distance(previous);
-    const double current_radius = radial_distance(current);
-    if (previous_radius < 1.0e-9 || current_radius < 1.0e-9) {
-        out.x = previous.x + (current.x - previous.x) * alpha;
-        out.y = previous.y + (current.y - previous.y) * alpha;
-    } else {
-        const double previous_theta = std::atan2(previous.y, previous.x);
-        const double current_theta = std::atan2(current.y, current.x);
-        const double theta_delta = std::atan2(
-            std::sin(current_theta - previous_theta),
-            std::cos(current_theta - previous_theta));
-        const double theta = previous_theta + theta_delta * alpha;
-        const double radius =
-            previous_radius + (current_radius - previous_radius) * alpha;
-        out.x = std::cos(theta) * radius;
-        out.y = std::sin(theta) * radius;
-    }
+    // Presentation-only linear blend of the global (inertial) coordinates.
+    // A straight chord between consecutive authoritative positions is used
+    // instead of the M04 moon-centred polar form because the reference frame
+    // now moves: with two bodies the barycentric origin is no longer a good
+    // polar anchor, and per-step arcs are tiny compared with the body
+    // radii, so the chord error is negligible.
+    out.x = previous.x + (current.x - previous.x) * alpha;
+    out.y = previous.y + (current.y - previous.y) * alpha;
 
     const double angle_delta =
         std::atan2(std::sin(current.angle - previous.angle),
@@ -139,19 +161,30 @@ double flame_length(double thrust_level, double t) {
     return thrust_level * full_len;
 }
 
-Simulation::Simulation(const Config& config) : config_(config) {}
+Simulation::Simulation() { reset(0); }
+
+Simulation::Simulation(const Config& config) : config_(config) { reset(0); }
 
 void Simulation::reset(std::uint64_t seed) {
     seed_ = seed;
     accumulator_ = 0.0;
-    state_ = State{};
-    terrain_ = Terrain(seed_);
+    sim_time_ = 0.0;
+    contracts_completed_ = 0;
+    reference_body_ = 0;
+    binary_ = BinarySystem::canonical(config_.mu, seed_,
+                                      companion_seed(seed_));
+    contract_ = Contract{};
+    contract_.origin_body = 0;
+    contract_.destination_body = 1;
+    contract_.reward = 100 * binary_.body(1).terrain.pads().front().multiplier;
+    last_completed_.reset();
 
-    double r = terrain_.surface_radius_at_arc(0.0) + 20.0;
-    state_.x = 0.0;
-    state_.y = r;
-    state_.angle = 0.0;
+    state_ = State{};
+    state_.landed = true;
+    state_.landed_body = 0;
+    state_.landed_arc = 0.0;
     state_.fuel = config_.fuel;
+    attach_to_body();
     previous_ = state_;
 }
 
@@ -167,36 +200,41 @@ void Simulation::circularize() {
     if (state_.landed || state_.crashed) {
         return;
     }
-    const double r = radial_distance(state_);
+    const Body& body = binary_.body(reference_body_);
+    const Vec2 bpos = binary_.position(reference_body_, sim_time_);
+    const double r = radial_distance(state_, bpos);
     if (r < 1.0e-9) {
         return;
     }
-    const double theta = std::atan2(state_.y, state_.x);
+    const double theta = std::atan2(state_.y - bpos.y, state_.x - bpos.x);
     const double right_x = std::sin(theta);
     const double right_y = -std::cos(theta);
-    const LocalVelocity lv = local_velocity(state_);
-    const double speed = std::sqrt(config_.mu / r);
+    const Vec2 bvel = binary_.velocity(reference_body_, sim_time_);
+    const LocalVelocity lv = local_velocity(state_, bpos, bvel);
+    const double speed = std::sqrt(body.mu / r);
     const double direction =
         std::abs(lv.tangential) > 1.0e-6
             ? (lv.tangential < 0.0 ? -1.0 : 1.0)
             : 1.0;
-    state_.vx = right_x * speed * direction;
-    state_.vy = right_y * speed * direction;
+    // Body-relative circular velocity plus the body's own ephemeris
+    // velocity: a one-time state change, with no continuing stabilization.
+    state_.vx = bvel.x + right_x * speed * direction;
+    state_.vy = bvel.y + right_y * speed * direction;
 }
 
 void Simulation::refuel() {
-    if (state_.landed || state_.crashed) {
+    if (state_.crashed) {
         return;
     }
     state_.fuel = config_.fuel;
 }
 
 void Simulation::advance(double elapsed, const Input& input) {
-    if (state_.landed || state_.crashed) {
+    if (state_.crashed) {
         return;
     }
 
-    double dt = config_.fixed_dt;
+    const double dt = config_.fixed_dt;
     if (dt <= 0.0) {
         return;
     }
@@ -205,7 +243,7 @@ void Simulation::advance(double elapsed, const Input& input) {
     while (accumulator_ >= dt) {
         accumulator_ -= dt;
         step_fixed(input);
-        if (state_.landed || state_.crashed) {
+        if (state_.crashed) {
             break;
         }
     }
@@ -214,32 +252,47 @@ void Simulation::advance(double elapsed, const Input& input) {
 void Simulation::step_fixed(const Input& input) {
     previous_ = state_;
     const double dt = config_.fixed_dt;
-    double throttle = clamp01(input.main_throttle);
-    bool main_active = throttle > 0.0;
+    const double t0 = sim_time_;
+    sim_time_ += dt;
+    state_.ticks += 1;
 
-    double ax = 0.0;
-    double ay = 0.0;
-
-    double rho = radial_distance(state_);
-    if (rho > 1.0e-9) {
-        double inv_r3 = 1.0 / (rho * rho * rho);
-        ax = -config_.mu * state_.x * inv_r3;
-        ay = -config_.mu * state_.y * inv_r3;
+    if (state_.landed) {
+        if (try_takeoff(input, t0)) {
+            integrate_flight(input, t0);
+            return;
+        }
+        // Still on the ground: re-attach to the moving body and hold the
+        // ship on its local surface point. System time keeps advancing.
+        attach_to_body();
+        update_reference_body();
+        return;
     }
 
+    integrate_flight(input, t0);
+}
+
+void Simulation::integrate_flight(const Input& input, double t0) {
+    const double dt = config_.fixed_dt;
+    const double throttle = clamp01(input.main_throttle);
+    const bool main_active = throttle > 0.0;
+
+    // Both bodies' fields are always active; the ephemeris is sampled at
+    // the start of this fixed step, matching the state being integrated.
+    Vec2 a = binary_.gravity(Vec2{state_.x, state_.y}, t0);
+
     if (main_active) {
-        double tx = -std::sin(state_.angle);
-        double ty = std::cos(state_.angle);
-        ax += config_.main_accel * throttle * tx;
-        ay += config_.main_accel * throttle * ty;
+        const double tx = -std::sin(state_.angle);
+        const double ty = std::cos(state_.angle);
+        a.x += config_.main_accel * throttle * tx;
+        a.y += config_.main_accel * throttle * ty;
     }
 
     state_.omega +=
         (input.rotate_left ? -config_.rotate_accel : 0.0) * dt +
         (input.rotate_right ? config_.rotate_accel : 0.0) * dt;
 
-    state_.vx += ax * dt;
-    state_.vy += ay * dt;
+    state_.vx += a.x * dt;
+    state_.vy += a.y * dt;
     state_.x += state_.vx * dt;
     state_.y += state_.vy * dt;
     state_.angle = normalize_angle(state_.angle + state_.omega * dt);
@@ -248,8 +301,59 @@ void Simulation::step_fixed(const Input& input) {
         state_.fuel = std::max(0.0, state_.fuel - config_.fuel_burn * dt);
     }
 
-    state_.ticks += 1;
     resolve_ground_contact();
+    update_reference_body();
+}
+
+void Simulation::attach_to_body() {
+    const int i = state_.landed_body;
+    const Body& body = binary_.body(i);
+    const Vec2 pos = binary_.position(i, sim_time_);
+    const Vec2 vel = binary_.velocity(i, sim_time_);
+    const double theta = body.terrain.angle_at_arc(state_.landed_arc);
+    const double r = body.terrain.surface_radius_at_arc(state_.landed_arc);
+    state_.x = pos.x + std::cos(theta) * r;
+    state_.y = pos.y + std::sin(theta) * r;
+    state_.vx = vel.x;
+    state_.vy = vel.y;
+    state_.omega = 0.0;
+    state_.angle = normalize_angle(theta - 0.5 * kPi);
+}
+
+bool Simulation::try_takeoff(const Input& input, double t0) {
+    const double throttle = clamp01(input.main_throttle);
+    if (throttle <= 0.0 || state_.fuel <= 0.0) {
+        return false;
+    }
+
+    const int i = state_.landed_body;
+    const Body& body = binary_.body(i);
+    const Vec2 ship{state_.x, state_.y};
+    const double theta = body.terrain.angle_at_arc(state_.landed_arc);
+    const double up_x = std::cos(theta);
+    const double up_y = std::sin(theta);
+
+    // Effective downward acceleration in the body's (non-inertial) frame:
+    // the total gravitational field at the ship minus the body's own
+    // barycentric acceleration, projected on the local vertical. A
+    // commanded thrust that does not exceed it cannot lift the ship, so the
+    // ground keeps holding: no jitter, no fuel use, no attitude change.
+    const Vec2 g = binary_.gravity(ship, t0);
+    const Vec2 bacc = binary_.acceleration(i, t0);
+    const double g_down =
+        -((g.x - bacc.x) * up_x + (g.y - bacc.y) * up_y);
+    if (config_.main_accel * throttle <= g_down) {
+        return false;
+    }
+
+    state_.landed = false;
+    // Release at this step's start: position stays on the current pad, and
+    // the ship inherits the body's current global translational velocity.
+    const Vec2 bvel = binary_.velocity(i, t0);
+    state_.vx = bvel.x;
+    state_.vy = bvel.y;
+    state_.omega = 0.0;
+    return true;
 }
 
 void Simulation::resolve_ground_contact() {
@@ -257,53 +361,99 @@ void Simulation::resolve_ground_contact() {
         return;
     }
 
-    double rho = radial_distance(state_);
-    if (rho < 1.0e-9) {
-        state_.crashed = true;
-        state_.vx = 0.0;
-        state_.vy = 0.0;
+    for (int i = 0; i < 2; ++i) {
+        const Body& body = binary_.body(i);
+        const Vec2 bpos = binary_.position(i, sim_time_);
+        const double rx = state_.x - bpos.x;
+        const double ry = state_.y - bpos.y;
+        const double rho = std::hypot(rx, ry);
+        if (rho < 1.0e-9) {
+            state_.crashed = true;
+            state_.crash_body = i;
+            state_.vx = 0.0;
+            state_.vy = 0.0;
+            state_.omega = 0.0;
+            return;
+        }
+
+        const double theta = std::atan2(ry, rx);
+        const double arc = body.terrain.arc_at_angle(theta);
+        const double surface = body.terrain.surface_radius_at_arc(arc);
+        if (rho > surface) {
+            continue;
+        }
+
+        // In contact with body i: evaluate everything body-relative.
+        const Vec2 bvel = binary_.velocity(i, sim_time_);
+        const LocalVelocity lv = local_velocity(state_, bpos, bvel);
+        const double up_angle = theta - 0.5 * kPi;
+        const Pad* pad = body.terrain.pad_at_arc(arc);
+        bool safe = false;
+        if (pad) {
+            const bool radial_ok =
+                std::abs(lv.radial) <= config_.safe_vertical_speed;
+            const bool tangential_ok =
+                std::abs(lv.tangential) <= config_.safe_horizontal_speed;
+            const bool angle_ok =
+                std::abs(std::atan2(std::sin(state_.angle - up_angle),
+                                    std::cos(state_.angle - up_angle))) <=
+                config_.safe_angle_rad;
+            safe = radial_ok && tangential_ok && angle_ok;
+        }
+
+        if (!safe) {
+            state_.crashed = true;
+            state_.crash_body = i;
+            state_.x = bpos.x + std::cos(theta) * surface;
+            state_.y = bpos.y + std::sin(theta) * surface;
+            state_.vx = 0.0;
+            state_.vy = 0.0;
+            state_.omega = 0.0;
+            return;
+        }
+
+        state_.landed = true;
+        state_.landed_body = i;
+        state_.landed_arc = arc;
+        state_.score += 100 * pad->multiplier;
+        if (i == contract_.destination_body && pad->center_arc == 0.0) {
+            last_completed_ = contract_;
+            last_completed_->completed = true;
+            state_.score += contract_.reward;
+            contracts_completed_ += 1;
+            contract_.origin_body = i;
+            contract_.destination_body = 1 - i;
+            contract_.reward =
+                100 * binary_.body(contract_.destination_body)
+                          .terrain.pads().front().multiplier;
+        }
+        state_.x = bpos.x + std::cos(theta) * surface;
+        state_.y = bpos.y + std::sin(theta) * surface;
+        state_.vx = bvel.x;
+        state_.vy = bvel.y;
         state_.omega = 0.0;
+        state_.angle = normalize_angle(up_angle);
+        return;
+    }
+}
+
+void Simulation::update_reference_body() {
+    if (state_.landed) {
+        reference_body_ = state_.landed_body;
         return;
     }
 
-    double theta = std::atan2(state_.y, state_.x);
-    double arc = Terrain::arc_at_angle(theta);
-    double surface = terrain_.surface_radius_at_arc(arc);
-    if (rho > surface) {
-        return;
+    double d[2];
+    for (int i = 0; i < 2; ++i) {
+        const Vec2 bpos = binary_.position(i, sim_time_);
+        d[i] = std::hypot(state_.x - bpos.x, state_.y - bpos.y);
     }
-
-    state_.x = std::cos(theta) * surface;
-    state_.y = std::sin(theta) * surface;
-
-    const Pad* pad = terrain_.pad_at_arc(arc);
-    LocalVelocity lv = local_velocity(state_);
-    double up_angle = theta - 0.5 * kPi;
-    bool safe = false;
-    if (pad) {
-        bool radial_ok = std::abs(lv.radial) <= config_.safe_vertical_speed;
-        bool tangential_ok = std::abs(lv.tangential) <= config_.safe_horizontal_speed;
-        bool angle_ok =
-            std::abs(std::atan2(std::sin(state_.angle - up_angle),
-                                std::cos(state_.angle - up_angle))) <=
-            config_.safe_angle_rad;
-        safe = radial_ok && tangential_ok && angle_ok;
+    // Deterministic hysteresis: only switch to the other body once it is
+    // clearly (20% or more) closer, preventing flicker near the crossover.
+    const int other = 1 - reference_body_;
+    if (d[other] < 0.8 * d[reference_body_]) {
+        reference_body_ = other;
     }
-
-    if (!safe) {
-        state_.crashed = true;
-        state_.vx = 0.0;
-        state_.vy = 0.0;
-        state_.omega = 0.0;
-        return;
-    }
-
-    state_.landed = true;
-    state_.score = 100 * pad->multiplier;
-    state_.vx = 0.0;
-    state_.vy = 0.0;
-    state_.omega = 0.0;
-    state_.angle = normalize_angle(up_angle);
 }
 
 }  // namespace lander

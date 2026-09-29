@@ -41,9 +41,9 @@ double smooth_step(double t) {
     return t * t * (3.0 - 2.0 * t);
 }
 
-double periodic_value_noise(double arc, int cells, std::uint64_t salt) {
-    double C = kReferenceCircumference;
-    double x = arc / C * static_cast<double>(cells);
+double periodic_value_noise(double arc, double circumference, int cells,
+                            std::uint64_t salt) {
+    double x = arc / circumference * static_cast<double>(cells);
     double i0 = std::floor(x);
     double t = smooth_step(x - i0);
     int c0 = static_cast<int>(std::fmod(i0, static_cast<double>(cells)));
@@ -59,18 +59,24 @@ double periodic_value_noise(double arc, int cells, std::uint64_t salt) {
 
 }  // namespace
 
-Terrain::Terrain(std::uint64_t seed) : seed_(seed) {
+Terrain::Terrain(std::uint64_t seed, double reference_radius,
+                 double height_scale)
+    : seed_(seed),
+      reference_radius_(reference_radius),
+      height_scale_(height_scale),
+      circumference_(kTwoPi * reference_radius) {
     Rng rng(seed);
+    const double C = circumference_;
     double base[3] = {
         0.0,
-        0.38 * kReferenceCircumference,
-        0.76 * kReferenceCircumference,
+        0.38 * C,
+        0.76 * C,
     };
 
     for (int i = 0; i < 3; ++i) {
         double center = base[i];
         if (i != 0) {
-            center += (rng.uniform() - 0.5) * 0.08 * kReferenceCircumference;
+            center += (rng.uniform() - 0.5) * 0.08 * C;
         }
         center = normalize_arc(center);
 
@@ -91,19 +97,22 @@ Terrain::Terrain(std::uint64_t seed) : seed_(seed) {
 double Terrain::base_height_at_arc(double arc) const {
     arc = normalize_arc(arc);
     std::uint64_t salt = seed_ ^ 0xA5A489058670D2B2ULL;
-    double h = 9.0 * periodic_value_noise(arc, 17, salt ^ 1);
-    h += 4.0 * periodic_value_noise(arc, 75, salt ^ 7);
-    h += 1.6 * periodic_value_noise(arc, 321, salt ^ 13);
+    double h = 9.0 * height_scale_ *
+               periodic_value_noise(arc, circumference_, 17, salt ^ 1);
+    h += 4.0 * height_scale_ *
+         periodic_value_noise(arc, circumference_, 75, salt ^ 7);
+    h += 1.6 * height_scale_ *
+         periodic_value_noise(arc, circumference_, 321, salt ^ 13);
     return h;
 }
 
 double Terrain::base_radius_at_arc(double arc) const {
-    return kReferenceRadius + base_height_at_arc(arc);
+    return reference_radius_ + base_height_at_arc(arc);
 }
 
 const Pad* Terrain::pad_at_arc(double arc) const {
     arc = normalize_arc(arc);
-    const double C = kReferenceCircumference;
+    const double C = circumference_;
     for (const Pad& pad : pads_) {
         double delta = normalize_arc(arc - pad.center_arc);
         double distance = std::min(delta, C - delta);
@@ -130,7 +139,7 @@ double Terrain::max_surface_radius() const {
     double best = -1.0e300;
     const int samples = 2048;
     for (int i = 0; i < samples; ++i) {
-        double arc = i * kReferenceCircumference / samples;
+        double arc = i * circumference_ / samples;
         best = std::max(best, surface_radius_at_arc(arc));
     }
     return best;

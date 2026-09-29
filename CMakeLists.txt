@@ -49,6 +49,15 @@ target_link_libraries(lander_tests PRIVATE lander)
 
 add_test(NAME lander_tests COMMAND lander_tests)
 
+# M05: the deterministic two-body binary-system ephemeris, isolated from the
+# full simulation and SDL, verified analytically.
+add_executable(lander_binary_tests
+    tests/test_binary.cpp
+)
+target_link_libraries(lander_binary_tests PRIVATE lander)
+
+add_test(NAME lander_binary_tests COMMAND lander_binary_tests)
+
 # Presentation-only camera logic (M02), tested headlessly and apart from any
 # rendering or SDL dependency.
 add_executable(lander_camera_tests

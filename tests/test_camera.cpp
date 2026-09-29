@@ -48,7 +48,7 @@ ScreenPos to_screen(double world_x, double world_y,
 
 std::vector<double> sample_terrain(const lander::Terrain& terrain) {
     std::vector<double> out;
-    const double C = lander::Terrain::circumference();
+    const double C = terrain.circumference();
     for (int i = 0; i < 256; ++i) {
         out.push_back(terrain.surface_radius_at_arc(i * C / 256.0));
     }
@@ -296,6 +296,107 @@ void test_camera_does_not_modify_simulation_or_terrain() {
           "camera must not modify terrain");
 }
 
+// M05-R1: the inertial SYSTEM view frames the whole binary with the ship at
+// the exact viewport centre, holds angle 0, and clamps wheel zoom to the
+// (narrow) system range.
+void test_system_mode_basic() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);  // start in AUTO
+
+    cam.set_system(true);
+    check(cam.system_view(), "set_system(true) enters SYSTEM view");
+    check(cam.mode() == lander::CameraMode::kSystem, "mode is SYSTEM");
+    check_close(cam.zoom(), p.system_zoom, 1e-12, "SYSTEM starts at system_zoom");
+    check_close(cam.angle(), 0.0, 1e-12, "SYSTEM view is unrotated (angle 0)");
+
+    // The ship is the target; it sits at the exact viewport centre.
+    const double tx = 123.0, ty = -77.0;
+    cam.update(1.0 / 60.0, tx, ty, 50.0, 0, false);
+    check_close(cam.angle(), 0.0, 1e-12, "angle stays 0 in SYSTEM update");
+    check_close(cam.center_x(), tx, 1e-12, "SYSTEM centres on the ship x");
+    check_close(cam.center_y(), ty, 1e-12, "SYSTEM centres on the ship y");
+    const ScreenPos ship = to_screen(tx, ty, cam);
+    check_close(ship.x, p.window_width / 2.0, 1e-7,
+                "ship sits at exact horizontal centre");
+    check_close(ship.y, p.window_height / 2.0, 1e-7,
+                "ship sits at exact vertical centre");
+
+    // A point 100 m to the right of the ship maps 100 * scale px to the right.
+    const ScreenPos right = to_screen(tx + 100.0, ty, cam);
+    check_close(right.x, p.window_width / 2.0 + 100.0 * cam.scale(), 1e-7,
+                "world x offset maps to the right");
+    check_close(right.y, p.window_height / 2.0, 1e-7,
+                "world x offset does not move vertically");
+}
+
+void test_system_mode_zoom_clamp() {
+    lander::Camera cam;
+    const lander::CameraParams& p = cam.params();
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);
+    cam.set_system(true);
+
+    for (int i = 0; i < 200; ++i) {
+        cam.update(0.0, 0.0, 0.0, 0.0, 1, false);
+    }
+    check_close(cam.zoom(), p.system_zoom_max, 1e-12,
+                "SYSTEM wheel-in clamps at system_zoom_max");
+    check_close(cam.angle(), 0.0, 1e-12, "zoom-in leaves angle 0");
+
+    for (int i = 0; i < 400; ++i) {
+        cam.update(0.0, 0.0, 0.0, 0.0, -1, false);
+    }
+    check_close(cam.zoom(), p.system_zoom_min, 1e-12,
+                "SYSTEM wheel-out clamps at system_zoom_min");
+    check_close(cam.angle(), 0.0, 1e-12, "zoom-out leaves angle 0");
+}
+
+// Entering the SYSTEM view must remember the local mode / zoom / want-landing
+// state and restore it exactly when the system view is left.
+void test_system_mode_saves_restores_local_state() {
+    lander::Camera cam;
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);  // AUTO, zoom 1, wants landing
+    drive_auto(cam, 30.0);  // release to overview: wants_landing false, zoom ~0.4
+    const auto mode_before = cam.mode();
+    const double zoom_before = cam.zoom();
+    const bool landing_before = cam.auto_wants_landing();
+    check(!landing_before, "premise: overview (no landing) before entering");
+
+    cam.set_system(true);
+    // Mess around in SYSTEM view: zoom and centering change, but the saved
+    // local state must be untouched.
+    for (int i = 0; i < 5; ++i) {
+        cam.update(1.0 / 60.0, 50.0, -30.0, 999.0, 1, false);
+    }
+
+    cam.set_system(false);
+    check(!cam.system_view(), "set_system(false) leaves SYSTEM view");
+    check(cam.mode() == mode_before, "local mode restored");
+    check_close(cam.zoom(), zoom_before, 1e-12, "local zoom restored exactly");
+    check(cam.auto_wants_landing() == landing_before,
+          "want-landing restored exactly");
+}
+
+// Re-entering the SYSTEM view must not re-save (so leaving restores the
+// original local state), and snap() in SYSTEM view must keep the inertial
+// system view rather than switching back to AUTO.
+void test_system_mode_no_resave_and_snap_keeps_system() {
+    lander::Camera cam;
+    cam.snap(0.0, lander::kReferenceRadius + 20.0);  // AUTO, zoom 1
+    cam.set_system(true);
+    cam.set_system(true);  // re-entering is a no-op: must not re-save zoom
+    cam.set_system(false);
+    check_close(cam.zoom(), 1.0, 1e-12,
+                "re-entering SYSTEM does not re-save the local zoom");
+
+    cam.set_system(true);
+    cam.snap(45.0, -12.0);
+    check(cam.system_view(), "snap() keeps SYSTEM view");
+    check_close(cam.angle(), 0.0, 1e-12, "snap() in SYSTEM leaves angle 0");
+    check_close(cam.center_x(), 45.0, 1e-12, "snap() in SYSTEM recentres x");
+    check_close(cam.center_y(), -12.0, 1e-12, "snap() in SYSTEM recentres y");
+}
+
 }  // namespace
 
 int main() {
@@ -307,6 +408,10 @@ int main() {
     test_full_revolution_anchor_and_zoom();
     test_zero_dt_angle_change();
     test_camera_does_not_modify_simulation_or_terrain();
+    test_system_mode_basic();
+    test_system_mode_zoom_clamp();
+    test_system_mode_saves_restores_local_state();
+    test_system_mode_no_resave_and_snap_keeps_system();
 
     if (failures == 0) {
         std::puts("All lander_camera_tests passed");

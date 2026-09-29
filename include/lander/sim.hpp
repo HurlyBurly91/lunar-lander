@@ -1,14 +1,18 @@
 #pragma once
 
+#include "lander/binary.hpp"
 #include "lander/terrain.hpp"
 
 #include <cmath>
 #include <cstdint>
+#include <optional>
 
 namespace lander {
 
 struct Config {
     double fixed_dt{1.0 / 120.0};
+    // Gravitational parameter of the primary (M04 reference moon). The
+    // companion is derived from this value by the canonical scaling law.
     double mu{178976.334};
     double main_accel{4.0};
     double rotate_accel{1.2};
@@ -29,9 +33,29 @@ struct State {
     double fuel{};
     bool landed{false};
     bool crashed{false};
+    // While landed: the body the ship is attached to (-1 when not landed)
+    // and the body-local surface arc of the attachment point.
+    int landed_body{-1};
+    double landed_arc{0.0};
+    // The body whose surface the ship hit (-1 when not crashed).
+    int crash_body{-1};
     int score{0};
     int ticks{0};
     bool operator==(const State&) const = default;
+};
+
+// One delivery assignment in the repeating contract loop. The active
+// contract is never completed in place: when the spacecraft safely lands on
+// the destination base pad, the reward is paid and the next contract (from
+// that base to the other body) replaces it. `completed` therefore marks a
+// contract record that has finished; the Simulation additionally keeps the
+// most recently completed record for presentation.
+struct Contract {
+    int origin_body{0};
+    int destination_body{1};
+    int reward{0};
+    bool completed{false};
+    bool operator==(const Contract&) const = default;
 };
 
 struct Input {
@@ -45,9 +69,37 @@ struct LocalVelocity {
     double tangential{};
 };
 
+// Body-relative navigation helpers. All quantities are relative to the
+// given body's centre (bpos) and its ephemeris velocity (bvel). The bodies
+// do not spin in M05, so a body's local frame coincides with the world
+// frame and local angles are world angles.
+double radial_distance(const State& state, const Vec2& bpos);
+double local_up_angle(const State& state, const Vec2& bpos);
+double local_attitude_angle(const State& state, const Vec2& bpos);
+LocalVelocity local_velocity(const State& state, const Vec2& bpos,
+                             const Vec2& bvel);
+double surface_radius_at(const Terrain& terrain, const State& state,
+                          const Vec2& bpos);
+double altitude_at(const Terrain& terrain, const State& state,
+                    const Vec2& bpos);
+// Presentation: the ship's local angular rate (rad/s) about the given body's
+// centre: the body-relative tangential velocity divided by the body-relative
+// radial distance. Zero at the exact body centre. The sign encodes direction.
+// The HUD and its tests both call this.
+double local_angular_velocity(const State& state, const Vec2& bpos,
+                               const Vec2& bvel);
+
+// Presentation only: the state of a ship attached to `body_index` at the
+// body-local surface arc `landed_arc`, at ephemeris time `t`. The position
+// is the body's surface point at that arc, the velocity is the body's
+// ephemeris velocity, and the nose points along the local vertical.
+State attached_state(const BinarySystem& system, int body_index,
+                     double landed_arc, double t);
+
 // Presentation-only interpolation between two authoritative fixed-step
-// states. It never modifies either input and is not used by physics,
-// collision, fuel use, or scoring.
+// states: a linear (Cartesian) blend of global positions and a
+// shortest-arc blend of the attitude angle. It never modifies either input
+// and is not used by physics, collision, fuel use, or scoring.
 State interpolated_state(const State& previous, const State& current,
                          double alpha, bool snap_to_current);
 
@@ -62,42 +114,74 @@ double flame_length(double thrust_level, double t);
 bool operator==(const Input& lhs, const Input& rhs);
 bool operator==(const Config& lhs, const Config& rhs);
 
-double radial_distance(const State& state);
-double local_up_angle(const State& state);
-double local_attitude_angle(const State& state);
-LocalVelocity local_velocity(const State& state);
-double surface_radius_at(const Terrain& terrain, const State& state);
-double altitude_at(const Terrain& terrain, const State& state);
-
 class Simulation {
 public:
-    Simulation() = default;
+    // A default-constructed simulation starts a fresh game (seed 0):
+    // landed at the primary base at the start of the binary ephemeris.
+    Simulation();
     explicit Simulation(const Config& config);
 
+    // Starts a fresh game from `seed`: both terrains and the binary phase
+    // are pure functions of the seed, the ship is landed at the primary
+    // base, and the first contract targets the companion base.
     void reset(std::uint64_t seed);
     void advance(double elapsed, const Input& input);
     const State& state() const noexcept { return state_; }
     const State& previous_state() const noexcept { return previous_; }
     const Config& config() const noexcept { return config_; }
-    const Terrain& terrain() const noexcept { return terrain_; }
+    const BinarySystem& binary() const noexcept { return binary_; }
+    const Terrain& terrain() const noexcept { return binary_.body(0).terrain; }
+    const Terrain& terrain(int index) const noexcept {
+        return binary_.body(index).terrain;
+    }
     std::uint64_t seed() const noexcept { return seed_; }
     double accumulator() const noexcept { return accumulator_; }
+    // Authoritative fixed-step simulation time in seconds. The binary
+    // ephemeris is driven by this clock only; pausing pauses it.
+    double sim_time() const noexcept { return sim_time_; }
+    // The presentation time between the previous and current authoritative
+    // states that render interpolation represents.
+    double presentation_time() const noexcept {
+        return sim_time_ - config_.fixed_dt + accumulator_;
+    }
+    // Presentation reference body (local HUD, camera, circularize). It never
+    // affects which gravitational fields are active.
+    int reference_body() const noexcept { return reference_body_; }
+    const Contract& contract() const noexcept { return contract_; }
+    const std::optional<Contract>& last_completed() const noexcept {
+        return last_completed_;
+    }
+    int contracts_completed() const noexcept { return contracts_completed_; }
 
     void set_state(const State& state);
     void set_config(const Config& config) { config_ = config; }
 
+    // One-time developer control: set the velocity for a circular orbit
+    // around the current reference body (body-relative circular speed plus
+    // the body's own ephemeris velocity). No continuing stabilization.
     void circularize();
+    // Refill the fuel tank; allowed in flight and on the ground, never
+    // after a crash.
     void refuel();
 
 private:
     void step_fixed(const Input& input);
+    void integrate_flight(const Input& input, double t0);
+    void attach_to_body();
+    bool try_takeoff(const Input& input, double t0);
     void resolve_ground_contact();
+    void update_reference_body();
 
     Config config_;
     State state_;
     State previous_{};
-    Terrain terrain_{0};
+    BinarySystem binary_;
+    Contract contract_;
+    std::optional<Contract> last_completed_;
+    int contracts_completed_{0};
+    int reference_body_{0};
     std::uint64_t seed_{0};
+    double sim_time_{0.0};
     double accumulator_{0.0};
 };
 

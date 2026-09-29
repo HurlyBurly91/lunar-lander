@@ -1,411 +1,506 @@
 # Active Task
 
-Milestone: M04
-Request: M04-R1, M04-R2
-State: COMPLETE
+Milestone: M05
+Request: M05-R1
+State: AWAITING HUMAN VERIFICATION
 
 ## Bootstrap note
 
-The durable execution ledger was introduced after substantial M04
-implementation had already occurred.
+M04 (circular moon and orbital physics) is COMPLETE and closed out in
+records/M04-circular-moon-orbital-physics.md (commit 160059c, pushed to
+origin/main). This bounded ledger begins fresh with the M05-R1 request
+group: the binary moon and the first contract loop, per the M05 milestone
+specification (milestones/M05-binary-moon-contract-loop.md).
 
-Do not fabricate historical request IDs for earlier work.
-
-Earlier M04 implementation and verification will be summarized in the final
-M04 record at closeout.
-
-M04-R1 begins with the currently unresolved human-observed presentation issues.
+All automated-verification work for M05-R1 (V01..V14 and the derived
+implementation tasks D01..D06) is complete; see the per-item evidence below
+and the "Verification evidence" summary. The milestone is now awaiting human
+verification: every H-item (H01..H07) remains open and is not closed until the
+user confirms each one. No M05 completion record is written and M05 is not set
+to COMPLETE until that human acceptance happens.
 
 ## User requirements
 
-- [x] M04-R1-01 Keep the player lander at an exact screen-space anchor through
-  camera rotation, translation, and zoom.
-  Source: USER
-  Required invariant:
-      screen_x(lander) = 0.5 * window_width
-      screen_y(lander) = lander_top_fraction * window_height
-  Files: include/lander/camera.hpp, src/gui.cpp
-  Evidence: include/lander/camera.hpp::Camera::update sets focus exactly
-  (target - up*framing_offset, no follow smoothing); the offset's 1/scale factor
-  cancels to_screen's scale factor, so the anchor is exact at every angle and
-  zoom. Final visual confirmation is tracked by M04-R1-H01.
+- [x] M05-R1-01 The primary moon remains the canonical M04 body and the
+  universe's reference units: R0 = 332.384 m, g0 = 1.62 m/s^2,
+  mu0 = 178976.334 m^3/s^2, v0 = 23.2048 m/s, T0 = 90.0 s, satisfying
+  mu0 = g0*R0^2, v0 = sqrt(mu0/R0), T0 = 2*pi*sqrt(R0^3/mu0). Use
+  gravitational parameter `mu` directly; do not introduce a universal G or
+  simulated kilograms.
+  Source: USER (spec, "Canonical universe model")
+  Evidence: tests/test_sim.cpp::test_reference_values; tests/test_binary.cpp::test_canonical_laws
 
-- [x] M04-R1-02 Remove accumulated horizontal/local-tangent camera lag during
-  orbit.
-  Source: USER
-  Notes: generic follow smoothing must not move the player away from its
-  intended anchor.
-  Files: include/lander/camera.hpp
-  Evidence: Camera::update no longer smooths the focus through the rotating
-  local frame (follow_rate is no longer applied to the player anchor), so a
-  full revolution holds the exact anchor (see M04-R1-V01).
+- [x] M05-R1-02 The companion body is derived, not hand-selected, from the
+  canonical scaling law s = R/R0 with preserved intrinsic surface gravity
+  g0. T1 = 30 s -> s = (T1/T0)^2 = 1/9, therefore R1 = R0/9 =
+  36.9315556 m, mu1 = mu0/81 = 2209.58437037 m^3/s^2, g1 = g0, v1 = v0/3 =
+  7.73493 m/s, T1 = T0/3 = 30.0 s. Do not compensate for binary tidal
+  effects by changing the companion's mu.
+  Source: USER (spec, "Derived-body scaling law", "Companion derivation")
+  Evidence: tests/test_sim.cpp::test_reference_values; tests/test_binary.cpp::test_canonical_laws
 
-- [x] M04-R1-03 Add render interpolation between authoritative fixed simulation
-  states.
-  Source: USER
-  Required basis:
-      alpha = simulation_accumulator / fixed_dt
-  Files: include/lander/sim.hpp, src/sim.cpp, src/gui.cpp
-  Evidence: lander::interpolated_state(previous, current, alpha, snap_to_current)
-  and the gui main loop compute alpha = accumulator / fixed_dt.
+- [x] M05-R1-03 No fake distance scale: world metres remain physical
+  simulation metres for spacecraft, both body centres, terrain, and
+  velocities. No visual distance scaling, transfer-distance multiplier,
+  fast-travel coordinates, or hidden velocity scaling between bodies.
+  Source: USER (spec, "No fake distance scale")
+  Evidence: tests/test_binary.cpp::test_relative_kinematics; --orbit-demo smoke transfers the true 600 m separation
 
-- [x] M04-R1-04 Interpolate render x/y and attitude consistently, including
-  shortest-path angle interpolation across angular wrap.
-  Source: USER
-  Files: src/sim.cpp
-  Evidence: interpolated_state lerps x/y and interpolates attitude with
-  shortest-angle (wrap-aware) math.
+- [x] M05-R1-04 Fixed circular binary separation D = 600.0 m
+  (centre-to-centre); reference surface-to-surface gap D - R0 - R1 =
+  230.684444 m. Do not reduce D to compensate for slow transfers.
+  Source: USER (spec, "Binary-system geometry")
+  Evidence: tests/test_binary.cpp::test_ephemeris (separation stays 600 m)
 
-- [x] M04-R1-05 Drive both camera presentation and lander rendering from the
-  same interpolated presentation state.
-  Source: USER
-  Files: src/gui.cpp
-  Evidence: the main loop builds one render_state and feeds it to cam.update,
-  draw_terrain, and draw_lander, while physics/collision/HUD keep the
-  authoritative fixed-step state.
+- [x] M05-R1-05 Both moons orbit their common barycentre on an analytic
+  prescribed circular ephemeris (no numerical moon-moon integration):
+  mu_system = mu0 + mu1, omega = sqrt(mu_system/D^3), T_binary = 216.94244 s,
+  a_primary = D/82 = 7.317073 m, a_companion = 81*D/82 = 592.682927 m,
+  primary barycentric speed 0.21192 m/s, companion barycentric speed
+  17.16555 m/s; theta = theta0 + omega*t with a documented deterministic
+  convention for positions and velocities. Driven by authoritative fixed-step
+  simulation time: pause pauses the ephemeris, and reset with the same seed
+  restores the same binary phase.
+  Source: USER (spec, "Binary orbital mechanics")
+  Evidence: tests/test_binary.cpp::test_ephemeris; ::test_relative_kinematics
 
-- [x] M04-R1-06 Replace whole-millisecond GUI frame timing with SDL3
-  high-resolution monotonic timing.
-  Source: USER
-  Preferred API: SDL_GetTicksNS or appropriate SDL3 equivalent.
-  Files: src/gui.cpp
-  Evidence: frame delta, the FPS frame budget, and random_seed now use
-  SDL_GetTicksNS.
+- [x] M05-R1-06 No body axial rotation in M05: each moon translates around
+  the barycentre but does not spin about its own centre, so a point fixed on
+  a body's surface has exactly the body's translational velocity.
+  Source: USER (spec, "Body rotation")
+  Evidence: tests/test_sim.cpp::test_landed_attachment_and_takeoff (attached ship tracks body translation only)
 
-- [x] M04-R1-07 Handle landed/crashed terminal transitions without rendering an
-  invalid interpolated state.
-  Source: USER
-  Files: src/sim.cpp
-  Evidence: interpolated_state snaps to the authoritative state when
-  landed/crashed (no blending into an invalid intermediate).
+- [x] M05-R1-07 Spacecraft gravity is the superposition of both bodies'
+  fields in the shared global inertial frame:
+  a = -mu0*(r-rp)/|r-rp|^3 - mu1*(r-rc)/|r-rc|^3 + thrust. Both fields are
+  always active. No SOI switching, nearest-body-only gravity, patched conics,
+  hidden capture forces, or orbit stabilization.
+  Source: USER (spec, "Spacecraft gravity")
+  Evidence: tests/test_binary.cpp::test_gravity_superposition; tests/test_sim.cpp::test_one_step_physics
 
-- [x] M04-R1-08 Make the starfield a deterministic fixed screen-space
-  background.
-  Source: USER
-  Required invariant:
-      star_screen_position = function(seed, star_index, viewport_size)
-  Files: include/lander/starfield.hpp
-  Evidence: star_screen_pos returns the seed/viewport-derived position and
-  ignores all camera arguments (this supersedes the earlier inertial
-  camera-rotation starfield behavior).
+- [x] M05-R1-08 All local navigation and surface mechanics use body-relative
+  state: relative_position = ship_position - body_position,
+  relative_velocity = ship_velocity - body_velocity. Derive radial distance,
+  local outward direction, local tangent, longitude/terrain coordinate,
+  surface radius, and altitude from relative_position; derive radial and
+  tangential velocity from relative_velocity. Never use raw global ship
+  velocity for landing-speed tests on a moving body.
+  Source: USER (spec, "Body-relative state")
+  Evidence: tests/test_sim.cpp::test_local_frame
 
-- [x] M04-R1-09 Star screen position must be independent of camera translation,
-  zoom, and rotation.
-  Source: USER
-  Files: include/lander/starfield.hpp, tests/test_starfield.cpp
-  Evidence: tests/test_starfield.cpp asserts identical star screen positions
-  across camera x/y, scale, and angle. ctest lander_starfield_tests passed.
+- [x] M05-R1-09 Terrain coordinate systems: each body owns terrain in its own
+  body-local coordinates. The primary terrain for the same seed remains
+  exactly the accepted M04 surface (refactoring must not silently change it).
+  The companion gets its own deterministic seamlessly-wrapping terrain seed,
+  with natural geometry scaled sensibly to its radius (not a copy of the
+  primary's metre-scale mountains). Drawing and collision use the same local
+  surface; body translation does not regenerate or deform terrain; each body
+  has at least one valid landing site. Landing pads do not obey strict 1/9
+  scaling but must not be shrunk below practical lander dimensions.
+  Source: USER (spec, "Terrain coordinate systems")
+  Evidence: tests/test_sim.cpp::test_terrain; ::test_landing_rules
+
+- [x] M05-R1-10 Collision is checked against both body surfaces. Per body:
+  subtract the body centre from the ship position, compute the body-local
+  longitude, query that body's terrain radius, and compare the relative
+  radial distance to the surface radius. Contact evaluation uses whether
+  contact is on a landing pad, body-relative radial/tangential velocity, and
+  local radial landing attitude. No global vx/vy landing thresholds; no
+  global angle zero as upright.
+  Source: USER (spec, "Collision with moving bodies")
+  Evidence: tests/test_sim.cpp::test_landing_rules; ::test_crash_rules
+
+- [x] M05-R1-11 Landed attachment: a safely landed spacecraft is attached to
+  a specific body and surface location, persisting at least the landed body
+  and the landed surface arc/longitude. While landed: system time continues,
+  both moons continue their binary orbit, the ship moves with the landed
+  body's translational motion and remains attached to the same body-local
+  surface location, global ship velocity follows the body's translational
+  velocity, the ship remains locally upright, and no hidden orbital
+  integration acts on it. Crashed state may remain terminal.
+  Source: USER (spec, "Landed attachment")
+  Evidence: tests/test_sim.cpp::test_landed_attachment_and_takeoff; ::test_reset_state
+
+- [x] M05-R1-12 Takeoff from a landed pad is permitted without respawning the
+  ship into space: takeoff begins from the actual moving body's position and
+  current pad, inherits the body's current global translational velocity,
+  transitions cleanly from attached/landed to free flight, and uses ordinary
+  spacecraft thrust and gravity immediately after release. A low throttle
+  that cannot overcome the local effective downward acceleration must not
+  create a free-floating numerical jitter state; implement the smallest
+  robust ground-support/takeoff rule, not a general contact-dynamics system.
+  Source: USER (spec, "Takeoff")
+  Evidence: tests/test_sim.cpp::test_landed_attachment_and_takeoff
+
+- [x] M05-R1-13 The M04 O developer control is preserved but generalized:
+  circularize relative to the currently selected/reference body i using
+  r_rel = ship_position - body_position and v_circular = sqrt(mu_i/|r_rel|);
+  set relative radial velocity to zero and relative tangential speed to
+  v_circular (preserving meaningful existing tangential direction, with a
+  consistent default when essentially zero), then
+  ship_global_velocity = body_velocity + desired_relative_orbital_velocity.
+  O remains a one-time developer state change with no continuing
+  stabilization. F refuel is preserved.
+  Source: USER (spec, "Circularize developer control")
+  Evidence: tests/test_sim.cpp::test_circularize_state; ::test_orbit_is_usable; ::test_refuel_only_changes_fuel
+
+- [x] M05-R1-14 Companion local orbital behavior: 30 s is the companion's
+  canonical reference scale; the primary's gravity creates real tidal
+  perturbations in the compact binary, which must not be cancelled. Actual
+  terrain-clearing orbits are longer than 30 s, but very-low companion orbit
+  remains practically usable. No artificial SOI boundary; do not distort
+  gravity to force exactly 30.000 s orbits.
+  Source: USER (spec, "Companion local orbital behavior")
+  Evidence: tests/test_sim.cpp::test_orbit_is_usable; ::test_reference_values (no stabilization; ~30 s reference scale). Runtime feel is H06.
+
+- [x] M05-R1-15 Camera: preserve the accepted M04 local player-follow camera
+  (screen up = reference-body local radial outward, screen right = local
+  tangent, exact M04 anchor, AUTO/MANUAL). Add a presentation-only SYSTEM
+  view: inertial orientation, spacecraft near the viewport centre, initial
+  zoom on the order of 0.04X (base_scale 14 px/m -> about 0.56 px/m), both
+  moons at their true simulation coordinates with no fake compression, both
+  bodies visible at the 600 m separation on a 1280x720 viewport from most
+  useful transfer positions, fixed screen-space star backdrop, and a
+  minimum-size ship marker if the correctly scaled lander is hard to see.
+  SYSTEM is a separate explicit control shown in the HUD/help, not an
+  overload of reference-body selection. Do not modify world geometry to fit
+  the camera; the exact zoom may be tuned slightly during human verification.
+  Source: USER (spec, "Camera modes")
+  Evidence: tests/test_camera.cpp (AUTO/MANUAL anchor + SYSTEM-mode tests); tests/test_sim.cpp::test_interpolated_state
+
+- [x] M05-R1-16 Reference body: may drive local HUD altitude, radial/
+  tangential display, local camera orientation, developer circularize, and
+  landing information, but must not control which gravitational fields are
+  active. Chosen deterministically; near a surface it is the locally relevant
+  body; avoid rapid flicker near the crossover region using a simple
+  deterministic hysteresis rule.
+  Source: USER (spec, "Reference body versus physics")
+  Evidence: tests/test_sim.cpp::test_reset_state; ::test_landing_rules (reference_body() tracks the landed/target body with 0.8x hysteresis in src/sim.cpp::update_reference_body)
+
+- [x] M05-R1-17 HUD: preserve the M04 HUD where practical; add compact
+  two-body information: reference body, contract destination body/base,
+  distance to target, and relative velocity useful for interception. Do not
+  turn this into a flight-computer UI project; no trajectory prediction or
+  maneuver-node planning.
+  Source: USER (spec, "HUD")
+  Evidence: src/gui.cpp (HUD draws reference body, contract destination, distance, relative velocity). Runtime feel is H03/H05.
+
+- [x] M05-R1-18 First contract loop: start landed at PRIMARY BASE, receive a
+  contract to COMPANION BASE, take off, intercept the moving companion, match
+  useful relative velocity, land safely on the companion target pad, complete
+  the contract, grant score/reward, then issue the next contract targeting
+  PRIMARY BASE so the player can take off and return. With two bases,
+  contracts alternate between them. Intentionally minimal: no procedural
+  mission generator.
+  Source: USER (spec, "First contract loop")
+  Evidence: tests/test_sim.cpp::test_contract_loop
+
+- [x] M05-R1-19 Contract state: the smallest explicit contract state that
+  identifies origin body/base, destination body/base, completion state, and
+  reward/score value. A contract completes only when the spacecraft safely
+  lands on the designated destination pad; landing safely elsewhere is not
+  completion. After completion, assign the next contract from the current
+  base to the other base. Use the existing score concept; no currency
+  economy, shops, upgrades, inventory, cargo, reputation, or progression
+  trees.
+  Source: USER (spec, "Contract state")
+  Evidence: tests/test_sim.cpp::test_contract_loop; ::test_reset_state
+
+- [x] M05-R1-20 Determinism: for a given game seed and identical inputs the
+  primary terrain, companion terrain, binary initial phase, body ephemerides,
+  contract sequence, and spacecraft simulation are all identical. The
+  analytic ephemeris is driven from authoritative fixed-step simulation time;
+  render interpolation may interpolate presentation states but must not
+  change authoritative physics.
+  Source: USER (spec, "Determinism")
+  Evidence: tests/test_sim.cpp::test_reset_state (identical seeds -> identical state); ::test_fixed_step_determinism; ::test_contract_loop
+
+- [x] M05-R1-21 Render interpolation: preserve the M04 fixed-step/render
+  interpolation architecture. In every rendered frame the camera,
+  spacecraft, and moon positions must represent the same interpolated
+  presentation time (never the spacecraft at one interpolated time and a
+  moon at a different authoritative tick). Physics and collision continue
+  using authoritative fixed-step states only.
+  Source: USER (spec, "Render interpolation")
+  Evidence: tests/test_sim.cpp::test_interpolated_state
+
+- [x] M05-R1-22 Display the spacecraft's angular velocity in the HUD:
+  local angular rate around the reference body,
+  omega = relative_tangential_velocity / relative_radial_distance
+  (rad/s, shown in deg/s with direction), consistent with the body-relative
+  quantities of M05-R1-08.
+  Source: USER (follow-up during M05 activation)
+  Related: M05-R1-08, M05-R1-17
+  Evidence: tests/test_sim.cpp::test_local_frame (local_angular_velocity == tangential / radial); src/gui.cpp renders it in the HUD
 
 ## Preserve / constraints
 
-- [x] M04-R1-P01 Preserve inverse-square radial gravity and existing genuine
-  free-flight orbital physics.
+- [x] M05-R1-P01 Preserve the accepted M04 presentation: exact local player
+  camera anchor, AUTO/MANUAL camera, corrected moon fill, throttle/HUD,
+  fixed screen-space starfield, and continuous presentation-time flame
+  animation.
   Source: USER
-  Evidence: gravity a = -mu*r/|r|^3 unchanged; test_radial_gravity and
-  test_orbit_stays_bounded pass.
+  Evidence: tests/test_camera.cpp (exact M04 anchor, AUTO/MANUAL); tests/test_sim.cpp::test_flame_animation_continuous; ::test_interpolated_state
 
-- [x] M04-R1-P02 Preserve the current moon constants:
-      reference radius = 332.384 m
-      mu = 178976.334 m^3/s^2
-      nominal reference circular period ~= 90 s
-      nominal reference circular speed ~= 23.205 m/s
+- [x] M05-R1-P02 Preserve the M04 fixed-step simulation architecture
+  (fixed_dt = 1/120, semi-implicit Euler) and the existing thrust/fuel model
+  including F refuel and the 1000-unit testing fuel.
   Source: USER
-  Evidence: constants unchanged; test_reference_values passes.
+  Evidence: tests/test_sim.cpp::test_fixed_step_determinism; ::test_one_step_physics; ::test_refuel_only_changes_fuel
 
-- [x] M04-R1-P03 Do not change the orbital integrator merely to hide
-  presentation stutter.
+- [x] M05-R1-P03 The primary body's constants, terrain for the same seed, and
+  its isolated gravitational field behavior remain M04-compatible; changes
+  that alter the primary's surface or field require explicit justification,
+  not silent drift.
   Source: USER
-  Evidence: fixed_dt remains 1/120 and the semi-implicit Euler integrator is
-  unchanged; only presentation interpolation was added.
+  Evidence: tests/test_sim.cpp::test_terrain (primary surface/pads for the same seed match the accepted M04 baseline)
 
-- [x] M04-R1-P04 Preserve production O circularize behavior with no continuing
-  hidden stabilization.
+- [x] M05-R1-P04 No hidden physics assistance anywhere in the simulation: no
+  orbit stabilization, capture forces, SOI switching, or fake distance
+  scaling.
   Source: USER
-  Evidence: circularize() unchanged; test_circularize_state and
-  test_circularize_orbit pass.
+  Evidence: tests/test_binary.cpp::test_gravity_superposition; tests/test_sim.cpp (circularize is one-shot, no continuing force; orbit_is_usable uses plain gravity)
 
-- [x] M04-R1-P05 Preserve F refuel and the current 1000-unit M04 testing fuel.
+- [x] M05-R1-P05 M05 non-goals: do not add ECS, modular spacecraft, multiple
+  ship types, alternative thrusters/fuels, landing balloons, solar sails,
+  cargo, economy/shops/upgrades/inventory, procedural contract generation,
+  more than one companion, numerical N-body moon-moon integration, body
+  axial rotation, tidal locking, atmosphere/aerodynamics, time warp,
+  docking, orbital autopilot, trajectory prediction, or maneuver nodes.
   Source: USER
-  Evidence: refuel() and Config.fuel = 1000 unchanged;
-  test_refuel_only_changes_fuel passes.
-
-- [x] M04-R1-P06 Preserve corrected moon fill, terrain generation, collision,
-  and local-frame world-geometry orientation.
-  Source: USER
-  Evidence: terrain.cpp and the terrain/collision paths are untouched by
-  M04-R1; existing terrain/landing/collision tests pass.
-
-- [x] M04-R1-P07 Preserve throttle and HUD behavior.
-  Source: USER
-  Evidence: throttle and HUD code are untouched by M04-R1.
-
-- [x] M04-R1-P08 Do not add velocity look-ahead in M04.
-  Source: USER
-  Evidence: the camera uses the exact current target only; no look-ahead term.
-
-- [x] M04-R1-P09 Do not begin M05.
-  Source: USER
-  Evidence: only M04 presentation files changed (see git status --short).
+  Evidence: code inspection of include/lander + src (none of the listed systems are present; exactly one companion, analytic ephemeris, no axial spin)
 
 ## Automated verification
 
-- [x] M04-R1-V01 Add a camera regression that moves a synthetic target through
-  at least one full 360-degree revolution and verifies the target remains at
-  the exact intended screen anchor.
-  Files: tests/test_camera.cpp
-  Evidence: test_full_revolution_anchor_and_zoom drives 1200 steps over a full
-  revolution, checking the exact anchor (1e-6) at each step. ctest
-  lander_camera_tests passed.
+- [x] M05-R1-V01 Canonical universe law tests: primary mu0 = g0*R0^2 within
+  tolerance and T0 ~= 90 s; companion scale exactly 1/9; companion intrinsic
+  surface gravity matches the primary; mu1 = mu0/81; companion nominal
+  reference circular period ~= 30 s; companion nominal reference circular
+  speed ~= v0/3.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_sim.cpp::test_reference_values (g1 == g0 to 1e-9); tests/test_binary.cpp::test_canonical_laws (PASS)
 
-- [x] M04-R1-V02 Verify anchor preservation across MANUAL zoom from 0.2X
-  through 4.0X.
-  Files: tests/test_camera.cpp
-  Evidence: test_full_revolution_anchor_and_zoom sweeps manual zoom from 1.0X
-  up to the 4.0X clamp and back down to the 0.2X clamp, checking the exact
-  anchor at every step. ctest lander_camera_tests passed.
+- [x] M05-R1-V02 Binary ephemeris tests: body separation stays 600 m;
+  barycentre remains fixed at the origin within numerical tolerance;
+  a_primary ~= 7.317073 m; a_companion ~= 592.682927 m; T_binary ~=
+  216.94244 s; analytic velocities agree with position derivatives; resetting
+  the same seed/time reproduces body states; advancing one full binary period
+  returns both bodies close to their starting positions and velocities.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_binary.cpp::test_ephemeris; ::test_relative_kinematics (PASS)
 
-- [x] M04-R1-V03 Verify anchor preservation during AUTO zoom transitions.
-  Files: tests/test_camera.cpp
-  Evidence: test_full_revolution_anchor_and_zoom and
-  test_auto_hysteresis_and_zoom drive AUTO overview/landing transitions and
-  check the anchor. ctest lander_camera_tests passed.
+- [x] M05-R1-V03 Multi-body gravity tests: ship acceleration equals the
+  vector sum of both bodies' gravity contributions; neither body's gravity
+  is silently disabled when the other is nearer; the combined field
+  transforms correctly as binary phase changes; no hidden orbit/capture
+  stabilization exists.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_binary.cpp::test_gravity_superposition; tests/test_sim.cpp::test_one_step_physics (PASS)
 
-- [x] M04-R1-V04 Add a fixed-step orbital diagnostic recording radius, angular
-  position, and angular increment and verify smooth monotonic authoritative
-  physics progression.
-  Files: tests/test_sim.cpp
-  Evidence: test_orbit_presentation_is_smooth records per fixed-step
-  radius/angular position/increment for an unpowered circular orbit and checks
-  monotonic, bounded progression. lander_tests passed:
-  physics steps=15221 mean_dtheta=0.000412818290943
-  abs_min=0.00041264791594 abs_max=0.000412988753876.
+- [x] M05-R1-V04 Relative kinematics tests: relative position subtracts body
+  position; relative velocity subtracts body velocity; radial/tangential
+  decomposition uses relative velocity; a ship co-moving with a body has
+  approximately zero local velocity; a globally stationary ship beside the
+  moving companion has large relative tangential velocity.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_binary.cpp::test_relative_kinematics; tests/test_sim.cpp::test_local_frame (PASS)
 
-- [x] M04-R1-V05 Verify interpolated presentation at representative render
-  rates:
-      60 Hz
-      90 Hz
-      120 Hz
-      144 Hz
-  with no repeated/jumped render positions caused by fixed-step cadence.
-  Files: tests/test_sim.cpp
-  Evidence: test_orbit_presentation_is_smooth replays one orbit at each rate and
-  checks interpolated angular progression has no repeat or jump. lander_tests
-  passed (per-rate mean/abs min/abs max all positive and tightly bounded):
-  60 Hz mean=0.000825636581971 min=0.0008252958319 max=0.000825977507736
-  90 Hz mean=0.000550424387938 min=0.000550197221264 max=0.00055065167183
-  120 Hz mean=0.00041281829095 min=0.00041264791594 max=0.000412988753876
-  144 Hz mean=0.000344015242453 min=0.000343873263284 max=0.000344157294896
+- [x] M05-R1-V05 Terrain and collision tests: primary M04 terrain regression
+  unchanged for the same seed; companion terrain is deterministic and
+  seamless; collision works on both moving bodies; drawing/collision query
+  the same body-local surface; safe landing works on both bodies; landing
+  evaluation uses relative rather than global velocity.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_sim.cpp::test_terrain; ::test_landing_rules; ::test_crash_rules (PASS)
 
-- [x] M04-R1-V06 Verify star screen positions are identical when camera x/y,
-  scale, and angle change.
-  Files: tests/test_starfield.cpp
-  Evidence: test_starfield asserts invariance across camera x/y, scale, and
-  angle. ctest lander_starfield_tests passed.
+- [x] M05-R1-V06 Landed attachment and takeoff tests: a landed ship remains
+  attached to the same local surface location as its body moves; a landed
+  ship inherits the body's global translational velocity; system time and
+  body ephemeris continue while landed; a valid takeoff transitions to free
+  flight without teleporting; takeoff begins with the body's current global
+  velocity; insufficient outward thrust does not create surface jitter.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_sim.cpp::test_landed_attachment_and_takeoff; ::test_reset_state (PASS)
 
-- [x] M04-R1-V07 Preserve existing orbital radius and period regression tests
-  without loosening their tolerances merely to obtain a pass.
-  Files: tests/test_sim.cpp
-  Evidence: test_orbit_stays_bounded and test_circularize_orbit are unchanged and
-  passing with identical measured values to the pre-M04-R1 baseline:
-  r0=417.174915020 v_analytic=20.712795196 T_analytic=126.549182365
-  T_measured=126.550000000 min_r=417.088647413 max_r=417.261254043 (cw and ccw).
+- [x] M05-R1-V07 Circularize tests: O around the primary uses primary-relative
+  velocity plus primary global velocity; O around the companion uses
+  companion-relative velocity plus companion global velocity; relative radial
+  velocity becomes approximately zero; relative tangential velocity equals
+  sqrt(mu_i/r); no continuing stabilization force exists.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_sim.cpp::test_circularize_state; ::test_orbit_is_usable (PASS)
 
-- [x] M04-R1-V08 Build successfully:
-      cmake --build build
-  Evidence: cmake --build build -j succeeded in this session (no errors).
+- [x] M05-R1-V08 Camera/presentation tests: the M04 exact local player anchor
+  remains intact; SYSTEM view does not change simulation state; SYSTEM view
+  uses true body positions; the system camera can place both bodies in a
+  useful view at the 600 m separation; the starfield remains fixed in screen
+  space; moving-body render interpolation is smooth at representative render
+  rates.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_camera.cpp (M04 anchor + 4 SYSTEM-mode tests: basic, zoom clamp, save/restore, snap); tests/test_sim.cpp::test_interpolated_state (PASS)
 
-- [x] M04-R1-V09 Pass complete test suite:
-      ctest --test-dir build --output-on-failure
-  Evidence: ctest reported 3/3 tests passed (lander_tests, lander_camera_tests,
-  lander_starfield_tests), 0 failed.
+- [x] M05-R1-V09 Contract tests: the initial contract targets the companion
+  base; landing on a wrong/non-target pad does not complete it; a safe
+  landing on the target pad completes it exactly once; reward/score is
+  applied exactly once; the next contract reverses destination; contract
+  state is deterministic.
+  Source: USER (spec, Automated verification)
+  Evidence: tests/test_sim.cpp::test_contract_loop ((a) complete-once + reward-once + reversal, (b) non-base pad does not complete, (c) two-way alternation); ::test_reset_state (PASS)
 
-- [x] M04-R1-V10 Pass:
-      git diff --check
-  Evidence: git diff --check produced no output (no whitespace errors).
+- [x] M05-R1-V10 Build succeeds: cmake --build build
+  Source: USER (spec, Automated verification)
+  Evidence: cmake --build build --parallel -> clean (exit 0)
 
-- [x] M04-R1-V11 Pass normal and orbit headless smoke runs.
-  Files: src/gui.cpp
-  Evidence: SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy lander_gui
-  --seed 1234 --frames 30 --fps 60 exited 0 (state=flying); and
-  --orbit-demo --frames 300 --fps 60 exited 0 (state=flying, ticks=597).
+- [x] M05-R1-V11 Full test suite passes:
+  ctest --test-dir build --output-on-failure
+  Source: USER (spec, Automated verification)
+  Evidence: ctest --test-dir build --output-on-failure -> 4/4 passed (lander_tests, lander_binary_tests, lander_camera_tests, lander_starfield_tests)
+
+- [x] M05-R1-V12 Pass: git diff --check
+  Source: USER (spec, Automated verification)
+  Evidence: git diff --check -> no whitespace errors
+
+- [x] M05-R1-V13 Headless smoke runs pass (normal spawn, orbit demo, and a
+  landed-binary smoke run) with expected exit status and state output.
+  Source: USER (spec, Automated verification; smoke practice from M04)
+  Evidence: SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy lander_gui: default (landed, exit 0), --orbit-demo (flying, exit 0), --system-view (state identical to default => presentation-only, exit 0), --orbit-demo --system-view --screenshot (exit 0, artifact written)
+
+- [x] M05-R1-V14 The HUD angular-velocity value equals the computed
+  relative_tangential_velocity / relative_radial_distance for the reference
+  body (verified in a test through the same helper the HUD uses).
+  Source: USER (derivation of M05-R1-22)
+  Evidence: tests/test_sim.cpp::test_local_frame (local_angular_velocity == tangential/radial on both bodies, PASS)
 
 ## Human verification
 
-- [x] M04-R1-H01 User confirms the lander remains correctly anchored during
-  orbit and at high/low manual zoom.
-  Source: USER (confirmed 2026-09-28)
+- [ ] M05-R1-H01 User confirms the primary moon still feels like the accepted
+  M04 body (gravity, orbit, terrain, presentation).
+  Source: USER (spec, Runtime / human verification)
 
-- [x] M04-R1-H02 User confirms circular-orbit presentation is visually smooth
-  rather than stuttery.
-  Source: USER (confirmed 2026-09-28)
+- [ ] M05-R1-H02 User confirms the companion visibly moves around the primary
+  and does not behave like a stationary target with a moving sprite.
+  Source: USER (spec, Runtime / human verification)
 
-- [x] M04-R1-H03 User confirms stars remain fixed on screen and no longer trace
-  circles as the local-frame world camera rotates.
-  Source: USER (confirmed 2026-09-28)
+- [ ] M05-R1-H03 User confirms SYSTEM view makes the spatial relationship
+  understandable, stars remain fixed in screen space, and no visible
+  coordinate-frame teleport occurs when changing reference body or camera
+  view.
+  Source: USER (spec, Runtime / human verification)
+
+- [ ] M05-R1-H04 User confirms the player can leave the primary and intercept
+  the moving companion: matching companion velocity matters during approach,
+  and landing evaluation feels relative to the companion rather than to
+  global coordinates.
+  Source: USER (spec, Runtime / human verification)
+
+- [ ] M05-R1-H05 User confirms local camera behavior remains usable near both
+  bodies and M04 flame/camera/orbit presentation remains smooth.
+  Source: USER (spec, Runtime / human verification)
+
+- [ ] M05-R1-H06 User confirms companion gravity feels like the same
+  surface-gravity universe at a much smaller scale, and a very-low companion
+  orbit behaves on roughly the intended ~30-second local scale, with real
+  binary perturbations allowed.
+  Source: USER (spec, Runtime / human verification)
+
+- [ ] M05-R1-H07 User confirms the full contract loop: landing on the
+  companion completes the contract, the next contract points back to the
+  primary, takeoff from the moving companion inherits its motion naturally,
+  and returning toward the primary is possible.
+  Source: USER (spec, Runtime / human verification)
 
 ## Derived implementation tasks
 
-- [x] M04-R1-D01 Replace the alternating +/- manual-zoom check with a true
-  monotonic 1.0X -> 4.0X -> 0.2X sweep that checks the anchor at each step, so
-  V02 is exercised across the full supported range.
+- [x] M05-R1-D01 Add include/lander/binary.hpp defining Body (mu,
+  reference_radius, barycentric orbital radius a, side sign, local Terrain,
+  seed), BinarySystem (two bodies, D, omega, theta0 = 0, mu_system), and the
+  analytic ephemeris:
+      position_i(t) = side_i * a_i * (cos theta, sin theta)
+      velocity_i(t) = side_i * a_i * omega * (-sin theta, cos theta)
+  with theta = theta0 + omega * t (primary on the negative side, companion on
+  the positive side).
   Source: DERIVED
-  Files: tests/test_camera.cpp
-  Evidence: test_full_revolution_anchor_and_zoom now sweeps to the 4.0X clamp
-  and down to the 0.2X clamp; ctest lander_camera_tests passed.
+  Depends: M05-R1-02, M05-R1-05
+  Files: include/lander/binary.hpp
+  Evidence: tests/test_binary.cpp (test_ephemeris, test_relative_kinematics)
 
-## Evidence / notes
-
-Existing orbital evidence (unchanged before and after M04-R1):
-
-    r0 = 417.174915020 m
-    v_analytic = 20.712795196 m/s
-    T_analytic = 126.549182365 s
-    T_measured = 126.550000000 s
-    min_r = 417.088647413 m
-    max_r = 417.261254043 m
-
-The same bounded-orbit result is reported clockwise and counter-clockwise, which
-is evidence that the observed GUI stutter is presentation/timing related rather
-than a failure of the underlying orbital physics.
-
-M04-R1 session output (lander_tests, --orbit-demo source values):
-
-    orbit-presentation physics steps=15221
-        mean_dtheta=0.000412818290943 abs_min=0.00041264791594
-        abs_max=0.000412988753876
-    orbit-presentation render fps=60  frames=7611
-        mean=0.000825636581971 min=0.0008252958319 max=0.000825977507736
-    orbit-presentation render fps=90  frames=11416
-        mean=0.000550424387938 min=0.000550197221264 max=0.00055065167183
-    orbit-presentation render fps=120 frames=15221
-        mean=0.00041281829095 min=0.00041264791594 max=0.000412988753876
-    orbit-presentation render fps=144 frames=18265
-        mean=0.000344015242453 min=0.000343873263284 max=0.000344157294896
-
-Screenshots generated for human inspection (not read back by the model):
-
-    /tmp/opencode/lunar_lander_m04_r1_spawn.ppm   (normal spawn, seed 1234)
-    /tmp/opencode/lunar_lander_m04_r1_orbit.ppm   (orbit-demo, ~20s, seed 1234;
-                                                  camera rotated, stars fixed)
-
-## Request M04-R2 (flame animation: continuous presentation time)
-
-Source: USER (2026-09-28, follow-up after M04-R1 human review)
-
-Human observation:
-- The lander/body motion is now substantially smoother, but the engine flame
-  itself still visibly stutters/flickers in discrete steps, especially while
-  the craft rotates.
-- The flame animation was driven from the integer simulation `ticks` counter
-  (an intentional cosmetic flicker). After interpolated rendering was added,
-  that left the flame quantized to fixed physics steps.
-- Treat this as a presentation-only follow-up. Do not interpret the cosmetic
-  flicker as evidence that the orbital integrator is unstable.
-
-### User requirements
-
-- [x] M04-R2-01 Do not drive the flame animation directly from the integer
-  simulation `ticks` counter.
-  Source: USER
-  Files: src/gui.cpp
-  Evidence: draw_lander no longer uses s.ticks for the flame; the 0.7*ticks /
-  1.3*ticks sine terms were removed and replaced by lander::flame_length().
-
-- [x] M04-R2-02 Use continuous presentation/render time for the flame
-  animation.
-  Source: USER
-  Files: src/gui.cpp
-  Evidence: a double flame_clock (seconds) accumulates real frame dt each frame
-  (frozen while paused, reset on start_mission) and is passed to draw_lander as
-  flame_time.
-
-- [x] M04-R2-03 The flame animation must remain visually smooth at 60, 90,
-  120, and 144 Hz.
-  Source: USER
-  Evidence: flame length is a continuous function of real-time flame_clock with
-  7 Hz / 11 Hz sine components (both below the 30 Hz Nyquist limit at 60 Hz
-  sampling, so no aliasing), independent of refresh cadence.
-
-- [x] M04-R2-04 Rotating the craft must not make the flame appear to jump
-  between discrete positions because of tick-based length changes.
-  Source: USER
-  Evidence: flame_length depends only on thrust_level and the continuous clock,
-  never on state.angle or ticks; rotation only changes flame direction, so
-  length varies continuously through rotation.
-
-### Preserve / constraints
-
-- [x] M04-R2-P01 Preserve throttle-controlled flame magnitude (full throttle
-  gives the original flame extent, low throttle gives a short puff; length
-  scales with the throttle level).
-  Source: USER
-  Evidence: flame_length = thrust_level * (0.7 + 0.9*flame_flick(t)); the
-  full-throttle extent range [0.43, 1.87] matches the original mapping. test
-  checks 0.0 -> 0 and 0.25 < 1.0 at equal time.
-
-- [x] M04-R2-P02 Preserve the cosmetic flame variation (the flame still varies
-  in length over time; it must not become a static fixed-length line).
-  Source: USER
-  Evidence: flame_flick(t) is a non-constant sum of sines; test asserts the
-  one-second length range exceeds 0.3 and that it varies within a single tick.
-
-- [x] M04-R2-P03 The flame animation must not affect physics, fuel consumption,
-  thrust, collision, replay state, or authoritative simulation determinism. It
-  is a purely cosmetic render effect.
-  Source: USER
-  Evidence: flame_flick/flame_length are pure functions in the lander namespace
-  never called by Simulation::step_fixed/advance; the only caller is
-  draw_lander (render). Headless smoke shows ticks=237 and fuel=1000 identical
-  to the pre-change baseline.
-
-### Automated verification
-
-- [ ] M04-R2-V01 Add a focused presentation test asserting the flame length is
-  a continuous, smooth function of presentation time and is NOT constant within
-  a single physics step (i.e., not tick-quantized); also assert it is bounded,
-  varies over time, and that the throttle still scales its magnitude.
-  Files: tests/test_sim.cpp
-  Evidence: test_flame_animation_continuous checks (1) variation within one
-  1/120 s tick window, (2) sub-0.2 jumps across 1 ms sub-steps, (3) 1 s range
-  > 0.3, (4) non-negativity, and (5) throttle scaling (0.0 -> 0, 0.25 < 1.0,
-  full > 0.4). lander_tests passed.
-
-- [x] M04-R2-V02 Rebuild succeeds:
-      cmake --build build
-  Evidence: cmake --build build -j succeeded (sim.cpp, gui.cpp, test_sim.cpp
-  recompiled; no errors).
-
-- [x] M04-R2-V03 Pass complete test suite:
-      ctest --test-dir build --output-on-failure
-  Evidence: ctest reported 3/3 tests passed (lander_tests, lander_camera_tests,
-  lander_starfield_tests), 0 failed.
-
-- [x] M04-R2-V04 Pass:
-      git diff --check
-  Evidence: git diff --check produced no output (exit 0).
-
-- [x] M04-R2-V05 Pass normal and orbit headless smoke runs (confirms the flame
-  change did not break the render loop or state machine).
-  Files: src/gui.cpp
-  Evidence: SDL_VIDEODRIVER=dummy lander_gui --seed 1 --frames 120 exited 0
-  (state=flying, ticks=237); and --orbit-demo --frames 120 exited 0
-  (state=flying, ticks=237).
-
-### Human verification
-
-- [x] M04-R2-H01 User confirms the engine flame animates smoothly (no discrete
-  step flicker), including while the craft rotates, at their display refresh
-  rate (60/90/120/144 Hz).
-  Source: USER (confirmed 2026-09-28)
-
-### Derived implementation tasks
-
-- [ ] M04-R2-D01 Introduce pure `lander::flame_flick(t)` /
-  `lander::flame_length(thrust, t)` helpers driven by a continuous presentation
-  clock (seconds) in the GUI, and use them in `draw_lander` in place of the
-  integer-tick flicker.
+- [x] M05-R1-D02 Refactor Terrain into per-body local terrain: reference_radius
+  and height scale become instance parameters (the primary keeps the M04
+  defaults 332.384 / 1.0 and must generate the identical surface for the same
+  seed); arc/angle/surface queries become instance methods; the companion
+  instance uses reference_radius = 36.9315556, height scale 1/9, keeps the
+  practical pad half-width, and gets a deterministic seed derived from the
+  game seed.
   Source: DERIVED
-  Files: include/lander/sim.hpp, src/sim.cpp, src/gui.cpp
-  Evidence: flame_flick/flame_length defined in sim.cpp (7 Hz / 11 Hz, magnitude
-  preserved); gui.cpp advances a continuous flame_clock and passes it to
-  draw_lander.
+  Depends: M05-R1-09, M05-R1-P03
+  Files: include/lander/terrain.hpp, src/terrain.cpp
+  Evidence: tests/test_sim.cpp::test_terrain (primary regression + companion ~1/9 relief)
+
+- [x] M05-R1-D03 Integrate the binary system into Simulation: two-body
+  gravity superposition in the fixed step; authoritative sim_time_ advanced
+  by fixed_dt every step (flying, landed, crashed); State gains landed_body
+  and landed_arc; landed attachment (ship position/velocity derived from the
+  body ephemeris at the stored local surface point) with a ground-support
+  takeoff rule (outward commanded thrust must exceed local effective downward
+  acceleration; no jitter when it does not); generalized circularize;
+  deterministic reference-body selection with hysteresis.
+  Source: DERIVED
+  Depends: M05-R1-07, M05-R1-08, M05-R1-10, M05-R1-11, M05-R1-12,
+  M05-R1-13, M05-R1-16, M05-R1-D01, M05-R1-D02
+  Files: include/lander/sim.hpp, src/sim.cpp
+  Evidence: tests/test_sim.cpp (gravity, attachment, takeoff, circularize, reference body, determinism)
+
+- [x] M05-R1-D04 Camera and GUI: add CameraMode::kSystem (inertial, initial
+  zoom 0.04, ship-centred) with a separate explicit toggle key shown in the
+  HUD/help; local camera orientation uses the reference body's local radial
+  frame; render both bodies and their terrain at the same interpolated
+  presentation time as the ship; minimum-size ship marker in SYSTEM view;
+  HUD adds reference body, contract destination, distance to target,
+  relative velocity, and angular velocity (M05-R1-22).
+  Source: DERIVED
+  Depends: M05-R1-15, M05-R1-17, M05-R1-21, M05-R1-22
+  Files: include/lander/camera.hpp, src/gui.cpp
+  Evidence: tests/test_camera.cpp (SYSTEM-mode tests); src/gui.cpp (both-body render, HUD, --system-view/--orbit-demo dev flags)
+
+- [x] M05-R1-D05 Add the minimal contract state (origin body, destination
+  body, completion flag, reward) with the initial contract PRIMARY BASE ->
+  COMPANION BASE, completion only on a safe landing on the designated target
+  pad, score applied exactly once, and the next contract alternating bases.
+  Source: DERIVED
+  Depends: M05-R1-18, M05-R1-19
+  Files: include/lander/sim.hpp (Contract), src/sim.cpp
+  Evidence: tests/test_sim.cpp::test_contract_loop
+
+- [x] M05-R1-D06 Tests and build wiring: new tests/test_binary.cpp (canonical
+  laws, ephemeris, gravity superposition, relative kinematics); update
+  tests/test_sim.cpp (spawn landed at primary base, landed attachment,
+  takeoff, generalized circularize, two-body orbit in the primary-relative
+  frame, gravity superposition); extend tests/test_camera.cpp (SYSTEM view);
+  add the new test target to CMakeLists.txt and new sources to the game
+  library as needed.
+  Source: DERIVED
+  Depends: M05-R1-V01 .. M05-R1-V09
+  Files: tests/test_binary.cpp, tests/test_sim.cpp, tests/test_camera.cpp, CMakeLists.txt
+  Evidence: ctest --test-dir build -> 4/4 passed
+
+## Verification evidence
+
+Automated execution summary (all re-run this session):
+
+- Build: `cmake --build build --parallel` -> clean, exit 0 (V10).
+- Tests: `ctest --test-dir build --output-on-failure` -> 4/4 passed
+  (lander_tests, lander_binary_tests, lander_camera_tests,
+  lander_starfield_tests) (V11).
+- Whitespace: `git diff --check` -> no errors (V12).
+- Headless GUI smoke (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`,
+  `build/lander_gui`): default spawn lands and exits 0; `--orbit-demo` flies
+  and exits 0; `--system-view` from the same seed reproduces the default
+  state exactly (confirms SYSTEM is presentation-only); `--orbit-demo
+  --system-view --screenshot /tmp/opencode/m05_system_orbit.ppm` exits 0 and
+  writes the screenshot artifact for the human to inspect (V13).
+- The newly added `tests/test_sim.cpp::test_contract_loop` closes the V09
+  completion gap (complete-once, reward-once, reversal, wrong-pad, two-way
+  alternation) and passes.
+
+Human verification (H01..H07) is the only remaining gate and must be confirmed
+by the user before M05 is closed out to COMPLETE.
