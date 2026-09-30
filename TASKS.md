@@ -60,7 +60,7 @@ identical treatment of both bodies, and re-test/state handling. M05 remains
 ACTIVE during this round and must return to AWAITING HUMAN VERIFICATION when
 the new automated work is complete; it must not be closed.
 
-Automated work for M05-R3-23..30 is complete as of 2026-09-29: `BodyRenderCoverage` / `body_render_coverage(...)` now choose full-body versus local-patch coverage from projected geometry only, the local-patch closure uses a viewport-safe inward concentric arc (no fixed `kWindowHeight + 512.0`), the `scale > 0.35` radial tick path is removed, both bodies use identical coverage, and the new headless geometry tests pass. See the M05-R3-23..30 block in `## Verification evidence`. M05 returns to AWAITING HUMAN VERIFICATION; H17/H22 remain open for human re-test on the next corrected build, and no M05 completion record is written.
+Automated work for M05-R3-23..30 is complete as of 2026-09-29: `BodyRenderCoverage` / `body_render_coverage(...)` now choose full-body versus local-patch coverage from projected geometry only, the local-patch closure uses a viewport-safe inward concentric arc (no fixed `kWindowHeight + 512.0`), the `scale > 0.35` radial tick path is removed, both bodies use identical coverage, and the new headless geometry tests pass. See the M05-R3-23..30 block in `## Verification evidence`. M05 remains in AWAITING HUMAN VERIFICATION; H17/H22 subsequently passed on the `1f3eae3` corrected build, while the older M05-R1/M05-R2/M05-R3-H01..H16 human items remain open and no M05 completion record is written.
 
 M05-R1 human verification (2026-09-28) found three presentation failures:
 (1) the local camera snaps/teleports when the automatically selected reference
@@ -1430,7 +1430,7 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
     Evidence:
       - The `scale > 0.35` dark radial tick block in `src/gui.cpp` is removed; pad, pad-highlight, and intentional guide-line drawing remain.
       - A repository grep confirms no remaining `scale > 0.35` tick path or `kWindowHeight + 512.0` closure coordinate.
-      - Full `ctest` and headless GUI smoke pass after the removal; final human re-test of H22 remains open.
+      - Full `ctest` and headless GUI smoke pass after the removal; H22 subsequently passed on the `1f3eae3` corrected build (2026-09-29 human re-test).
 - [x] M05-R3-27 Preserve already-verified 57a9b8a behavior (57a9b8a re-test)
     - Preserve SYSTEM centring of the spacecraft.
     - Preserve the inertial SYSTEM starfield behaviour (stationary when the
@@ -1468,15 +1468,16 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
     Evidence:
       - New/updated tests: `test_body_render_coverage_wide_local_full`, `test_body_render_coverage_ignores_camera_mode`, `test_body_fill_patch_closure_is_viewport_safe`, `test_body_surface_patch_matches_terrain`, and `test_wide_local_body_fill_is_bounded` in `tests/test_render_geom.cpp`.
       - See M05-R3-V32..V36 and the M05-R3-23..30 block in `## Verification evidence` for the executed build/test/whitespace/headless results.
-- [~] M05-R3-29 Human re-test gate for the corrected 57a9b8a follow-up
+- [x] M05-R3-29 Human re-test gate for the corrected 57a9b8a follow-up
     - After the new corrected build, the user must re-test H17 and H22 and any
       other affected human-verification items.
     - H17/H22 remain FAIL on 57a9b8a and must not be marked complete.
     - M05 must return to AWAITING HUMAN VERIFICATION after automated work, but
       must not be closed.
     Source: USER (57a9b8a human re-test, 2026-09-29)
-    Status: automated corrected build is ready; H17/H22 await explicit human
-    re-test confirmation.
+    Status: H17 and H22 explicitly passed on the M05-R3-23..30 corrected
+    build (`1f3eae3`, 2026-09-29); M05 remains in AWAITING HUMAN
+    VERIFICATION for the older still-open human items.
 - [x] M05-R3-30 Milestone boundary (57a9b8a re-test)
     - This is a follow-up corrective round inside M05-R3.
     - Do not close M05 and do not write an M05 completion record.
@@ -1570,12 +1571,13 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   Euler convention as the in-game integrator (bit-identical step); no new
   physics types added
 - [x] M05-R3-P17 All still-open M05 human-verification items remain open
-  until the user explicitly confirms them (current open set after the
-  57a9b8a re-test: M05-R1 H03/H04/H05 via M05-R2-H01..H04, M05-R3
-  H01..H16, H17, H22; H18/H19/H20/H21 closed on human PASS, with H18/H21
-  confirmed on 57a9b8a and H19/H20 on b49a476).
-  Evidence: this ledger keeps every unconfirmed H-item open; H18/H19/H20/H21
-  marked [x] only with explicit human confirmation
+   until the user explicitly confirms them (current open set after the
+   M05-R3-23..30 re-test: M05-R1 H01..H07 and M05-R2-H01..H04, plus
+   M05-R3-H01..H16; H17/H18/H19/H20/H21/H22 are closed on human PASS, with
+   H17/H22 confirmed on the `1f3eae3` corrected build and H18/H21 on
+   57a9b8a and H19/H20 on b49a476).
+   Evidence: this ledger keeps every unconfirmed H-item open; H17/H18/H19/H20/
+   H21/H22 are marked [x] only with explicit human confirmation
 - [x] M05-R3-P18 Starfield authoritative rule (M05-R3-21): apparent star
   motion depends only on the actual presentation camera angle. No
   SYSTEM-specific star rotation, no LOCAL special case; the single generic
@@ -2158,18 +2160,19 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   view, camera, HUD, guarded controls, crash dialog).
 - [ ] M05-R3-H16 `R x3` retry feels deliberate with clear progress feedback,
   and a single `R` no longer restarts the game.
-- [ ] M05-R3-H17 LOCAL manual wide zoom is smooth and reaches a similar scale
-  range as SYSTEM; the reference body stays clearly "down" at the widest
-  zoom and the screen orientation never changes while zooming.
-  Status: FAIL on the b49a476 build (2026-09-29): the wide range works, but
-  extreme/wide LOCAL zoom exposes a visible rendering/draw error. Corrected
-  by M05-R3-17.
-  Status: STILL FAIL on the 57a9b8a corrected build (2026-09-29 human
-  re-test): the wide range and screen orientation work, but the
-  reference-body-specific body still breaks at wide LOCAL MANUAL zoom
-   (around 0.01x-0.03x) while the non-reference body renders correctly.
-   Corrective round M05-R3-23..30; the automated corrected build is ready
-   (2026-09-29) and remains open until the human re-tests it.
+- [x] M05-R3-H17 LOCAL manual wide zoom is smooth and reaches a similar scale
+   range as SYSTEM; the reference body stays clearly "down" at the widest
+   zoom and the screen orientation never changes while zooming.
+   Status: FAIL on the b49a476 build (2026-09-29): the wide range works, but
+   extreme/wide LOCAL zoom exposes a visible rendering/draw error. Corrected
+   by M05-R3-17.
+   Status: STILL FAIL on the 57a9b8a corrected build (2026-09-29 human
+   re-test): the wide range and screen orientation work, but the
+   reference-body-specific body still breaks at wide LOCAL MANUAL zoom
+    (around 0.01x-0.03x) while the non-reference body renders correctly.
+    Corrective round M05-R3-23..30.
+   Human verification: PASS on the M05-R3-23..30 corrected build
+   (`1f3eae3`, 2026-09-29 re-test).
 - [x] M05-R3-H18 The starfield rotates smoothly and consistently with the
   scene's camera rotation in both LOCAL and SYSTEM, with no drift from
   zooming, panning, mode switches, reference switches, or binary phase; the
@@ -2211,16 +2214,16 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   Human verification: PASS on the 57a9b8a corrected build (2026-09-29
   re-test) — `T x3` works with the corrected velocity-only, non-blocking
   semantics.
-- [ ] M05-R3-H22 No black radial/vertical seams are visible on either
-  rotating body (PRIMARY and COMPANION) at representative close and wide
-  zooms, including at several tidal rotation angles, wide SYSTEM zoom, and
-  the widest LOCAL MANUAL zoom.
-  Source: USER (M05-R3-18); first testable on the corrected build.
-  Status: FAIL on the 57a9b8a corrected build (2026-09-29 human re-test):
-   visible radial/vertical seam artifacts remain, including the reference
-   body's radial tick/closure artifacts. Corrective round M05-R3-23..30;
-   the automated corrected build is ready (2026-09-29) and remains open
-   until the human re-tests it.
+- [x] M05-R3-H22 No black radial/vertical seams are visible on either
+   rotating body (PRIMARY and COMPANION) at representative close and wide
+   zooms, including at several tidal rotation angles, wide SYSTEM zoom, and
+   the widest LOCAL MANUAL zoom.
+   Source: USER (M05-R3-18); first testable on the corrected build.
+   Status: FAIL on the 57a9b8a corrected build (2026-09-29 human re-test):
+    visible radial/vertical seam artifacts remain, including the reference
+    body's radial tick/closure artifacts. Corrective round M05-R3-23..30.
+   Human verification: PASS on the M05-R3-23..30 corrected build
+   (`1f3eae3`, 2026-09-29 re-test).
 
 ## Verification evidence
 
@@ -2339,8 +2342,8 @@ M05-R3-17..22 (automated work complete, awaiting human re-test) — re-run on
   measurable via LL_TRANSFER_DEBUG (M05-R3-V31, M05-R3-V29).
 - No image files were read at any point (text-only constraint, M05-R3-P07).
 
-M05-R3-23..30 (automated work complete, awaiting human re-test) — re-run on
-2026-09-29:
+M05-R3-23..30 (automated work complete; H17/H22 subsequently passed human
+re-test) — re-run on 2026-09-29:
 
 - Build: `cmake --build build` -> clean, exit 0 (M05-R3-V32).
 - Tests: `ctest --test-dir build --output-on-failure` -> 6/6 passed
@@ -2359,8 +2362,10 @@ M05-R3-23..30 (automated work complete, awaiting human re-test) — re-run on
   `--orbit-demo` completes deterministically in flight (M05-R3-V35).
 - No image files were read at any point (text-only constraint,
   M05-R3-V36).
-- M05 returns to AWAITING HUMAN VERIFICATION with H17/H22 still open for
-  human re-test; no M05 completion record is written.
+- M05 remains in AWAITING HUMAN VERIFICATION; H17/H22 subsequently passed on
+  the `1f3eae3` corrected build (2026-09-29 human re-test), while the older
+  M05-R1/M05-R2/M05-R3-H01..H16 human items remain open and no M05 completion
+  record is written.
 
 Transfer solver design notes (M05-R3-16): the solver in
 `src/sim.cpp::transfer` is a bounded multi-basin shooting method. It tries
@@ -2402,10 +2407,10 @@ initializer, not a defect.
 
 The M05-R3-23..30 automated corrective round (geometry-driven body coverage,
 viewport-safe patch closure, removal of the visible radial tick/seam
-artifacts, and regression tests) is complete as of 2026-09-29; M05 has
-returned to AWAITING HUMAN VERIFICATION. The still-open human items are the
-unconfirmed M05-R1 items, M05-R2-H01..H04 (which re-verify the failed
-M05-R1-H03/H04/H05), M05-R3-H01..H16, and M05-R3-H17/H22 (both still FAIL on
-57a9b8a and open for re-test on the M05-R3-23..30 corrected build).
-H18/H19/H20/H21 are closed with human evidence. M05 stays open, with no
-completion record, until the user confirms all remaining items.
+artifacts, and regression tests) is complete as of 2026-09-29, and H17/H22
+subsequently passed on the `1f3eae3` corrected build. M05 remains in
+AWAITING HUMAN VERIFICATION for the still-open human items: M05-R1-H01..H07,
+M05-R2-H01..H04 (which re-verify the failed M05-R1-H03/H04/H05), and
+M05-R3-H01..H16. H17/H18/H19/H20/H21/H22 are closed with human evidence.
+M05 stays open, with no completion record, until the user confirms all
+remaining items.

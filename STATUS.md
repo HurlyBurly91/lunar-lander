@@ -6,13 +6,15 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M05-R3-23..30 automated corrective round complete; awaiting human
-re-test of H17 and H22 on the next corrected build. H18, H19, H20, and H21
-are confirmed PASS. The round implemented geometry-driven body render
-coverage (full body at wide zoom, viewport-safe local patch only when its
-closure is provably outside the viewport), removed the visible radial
-tick/seam artifacts, made PRIMARY/COMPANION treatment identical, and added
-new headless regression tests. See TASKS.md.
+Phase: M05-R3-23..30 corrective round complete, including the H17/H22 human
+re-test (PASS on the `1f3eae3` corrected build, 2026-09-29). M05 remains in
+AWAITING HUMAN VERIFICATION for the older still-open human items
+(M05-R1-H01..H07, M05-R2-H01..H04, and M05-R3-H01..H16). The round
+implemented geometry-driven body render coverage (full body at wide zoom,
+viewport-safe local patch only when its closure is provably outside the
+viewport), removed the visible radial tick/seam artifacts, made
+PRIMARY/COMPANION treatment identical, and added new headless regression
+tests. See TASKS.md.
 
 M05-R1 and M05-R2 automated work is complete, but their human-verification
 items remain open. Human verification of the M05-R2 build produced the
@@ -73,13 +75,14 @@ reference-body rendering) and H22 (radial/vertical seam artifacts) remain
 FAIL. The failure is reference-body-specific and matches the remaining
 camera-mode/reference-body-dependent `full_body` coverage and the
 `scale > 0.35` radial tick path in `src/gui.cpp`. This created the
-M05-R3-23..30 follow-up corrective round, whose automated work is now
-complete (2026-09-29).
+M05-R3-23..30 follow-up corrective round, whose automated work is complete
+and whose H17/H22 human re-test subsequently passed on the `1f3eae3`
+corrected build (2026-09-29).
 
-All still-open human-verification items (M05-R1, M05-R2, M05-R3
-H01..H16, H17, and H22) remain open until explicitly confirmed by the user
-(H18/H19/H20/H21 are closed with human evidence). M05 remains open and no
-completion record has been written.
+All still-open human-verification items are M05-R1-H01..H07,
+M05-R2-H01..H04, and M05-R3-H01..H16; they remain open until explicitly
+confirmed by the user. H17/H18/H19/H20/H21/H22 are closed with human
+evidence. M05 remains open and no completion record has been written.
 
 M05 turns the M04 flight simulation into the first complete game loop by
 extending the world to a compact two-body system: a 1/9-scale companion
