@@ -2117,11 +2117,17 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
     Evidence: no image files were read during this round; verification used
       build output, `ctest`, `git diff --check`, headless GUI
       stdout/stderr, and numeric test assertions only.
-- [ ] M05-R3-V37 Commit/push and origin sync for the M05-R3-23..30 round
-   - Commit only explicit active-project files.
-   - Allow the post-commit hook to push; verify `HEAD == origin/main` after
-     push (retry `git push origin main` only if the hook reports failure).
-   Evidence: (pending)
+- [x] M05-R3-V37 Commit/push and origin sync for the M05-R3-23..30 round
+    - Commit only explicit active-project files.
+    - Allow the post-commit hook to push; verify `HEAD == origin/main` after
+      push (retry `git push origin main` only if the hook reports failure).
+    Evidence: commit `1f3eae3f783609de94d7501229310408dc9fd2a9` staged only
+    `STATUS.md`, `TASKS.md`, `include/lander/render_geom.hpp`,
+    `milestones/M05-binary-moon-contract-loop.md`, `src/gui.cpp`, and
+    `tests/test_render_geom.cpp`; the post-commit hook pushed
+    `57a9b8a..1f3eae3 main -> main`, and `git rev-parse HEAD origin/main`
+    shows both refs at `1f3eae3f783609de94d7501229310408dc9fd2a9`
+    (2026-09-29).
 
 ### Human verification
 
