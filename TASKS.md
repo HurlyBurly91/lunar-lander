@@ -2,7 +2,7 @@
 
 Milestone: M05
 Request: M05-R1, M05-R2, M05-R3
-State: ACTIVE
+State: AWAITING HUMAN VERIFICATION
 
 ## Bootstrap note
 
@@ -44,6 +44,23 @@ no-regression rule, and the verification/state handling). The ledger is back
 to ACTIVE; when the new automated work completes it returns to AWAITING
 HUMAN VERIFICATION with H17, H18, H21 (re-tested) and the new H22 open. No
 M05 completion record exists yet.
+
+Human re-test of the M05-R3-17..22 corrected build (commit 57a9b8a,
+2026-09-29) returned: H17 still FAIL (the reference-body-specific wide
+`LOCAL MANUAL` body still breaks at wide zoom, including around 0.01x-0.03x;
+the non-reference body renders correctly, which identifies the previous
+camera-mode/reference-body-dependent full-body handling as the remaining
+defect), H22 still FAIL (visible radial/vertical seam artifacts remain),
+H18 PASS (the inertial/stationary SYSTEM star behaviour is correct),
+H19/H20 remain PASS, and H21 PASS (`T x3` works without the previous
+freeze/teleport failure). This created the new corrective round
+M05-R3-23..30 below: geometry-driven body render coverage, viewport-safe
+local patch closure, removal of the visible radial tick/seam artifacts,
+identical treatment of both bodies, and re-test/state handling. M05 remains
+ACTIVE during this round and must return to AWAITING HUMAN VERIFICATION when
+the new automated work is complete; it must not be closed.
+
+Automated work for M05-R3-23..30 is complete as of 2026-09-29: `BodyRenderCoverage` / `body_render_coverage(...)` now choose full-body versus local-patch coverage from projected geometry only, the local-patch closure uses a viewport-safe inward concentric arc (no fixed `kWindowHeight + 512.0`), the `scale > 0.35` radial tick path is removed, both bodies use identical coverage, and the new headless geometry tests pass. See the M05-R3-23..30 block in `## Verification evidence`. M05 returns to AWAITING HUMAN VERIFICATION; H17/H22 remain open for human re-test on the next corrected build, and no M05 completion record is written.
 
 M05-R1 human verification (2026-09-28) found three presentation failures:
 (1) the local camera snaps/teleports when the automatically selected reference
@@ -802,11 +819,11 @@ prediction, maneuver nodes, autopilot, or other flight-computer features.
 
 ## M05-R3 — human-verification feedback: camera readability, HUD clarity, reaction-wheel and circularize controls, tidal locking, debug orbit/transfer initializers
 
-Source: USER (human-verification feedback on the M05-R2 build, 2026-09-28; extended 2026-09-29 with M05-R3-10..16; extended 2026-09-29 with M05-R3-17..22 from human verification of the b49a476 build)
+Source: USER (human-verification feedback on the M05-R2 build, 2026-09-28; extended 2026-09-29 with M05-R3-10..16; extended 2026-09-29 with M05-R3-17..22 from human verification of the b49a476 build; extended 2026-09-29 with M05-R3-23..30 from the human re-test of the 57a9b8a build)
 
 Request group: M05-R3
 
-Status: ACTIVE
+Status: AWAITING HUMAN VERIFICATION
 
 Supersedes: direction-preservation behavior for the `O` circularize control; the new explicit CW/CCW requirement is authoritative. M05-R3-09 additionally supersedes the M05 "Body rotation" non-goal (originally: "Do not add axial rotation in M05"; tidal locking, body spin, and rotational surface velocity listed as non-goals/future work): both moons are now tidally locked and the change is recorded in the milestone spec. M05-R3-12 supersedes the M04 fixed screen-space starfield and the M05 spec "stars remain fixed in screen space" bullets (SYSTEM view requirements, automated verification, human verification): the starfield is now an inertial background that rotates with the final presentation camera angle and does not parallax-translate with the world. M05-R3-13 supersedes M05-R3-02's destination auto-fit zoom and midpoint-focus behavior: the SYSTEM camera never auto-pans; the ship is always exactly centred and the destination remains available through the offscreen indicator and readouts only. M05-R3-20 supersedes M05-R3-16's departure-shell repositioning rule: T x3 no longer moves the spacecraft to a canonical departure shell; it changes only the spacecraft's VELOCITY to a solved ballistic-transfer initial velocity while leaving the current position bit-identical (like circularize: an instantaneous velocity-state initializer). The milestone spec's `T x3` section has been updated accordingly.
 
@@ -1346,7 +1363,128 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
     - All automated work for the M05-R3-17..22 round is complete and verified
       (M05-R3-V27..V31); the ledger therefore transitions to AWAITING HUMAN
       VERIFICATION with M05 left open and no completion record written.
-  Source: USER (b49a476 human run, 2026-09-29)
+   Source: USER (b49a476 human run, 2026-09-29)
+- [x] M05-R3-23 Geometry-driven body render coverage (57a9b8a re-test)
+    - The choice between rendering a body as a full closed circle and as a
+      local surface patch must be computed from projected geometry only.
+    - It must not depend on `CameraMode::kLocal`, `CameraMode::kSystem`,
+      `cam.system_view()`, the reference-body index, or the call-site
+      `full_body` boolean.
+    - PRIMARY and COMPANION must use the same rule in the same scene.
+    - Use a pure helper (for example `BodyRenderCoverage` and
+      `body_render_coverage(...)`) based on projected body radius, viewport
+      size, and/or the requested local window extent.
+    - The `draw_body` call sites must stop passing different coverage choices
+      to the reference and non-reference bodies.
+    Files: include/lander/render_geom.hpp, src/gui.cpp
+    Source: USER (57a9b8a human re-test, 2026-09-29: reference body breaks,
+    non-reference body renders correctly; camera-mode-dependent coverage is
+    the identified failure class)
+    Evidence:
+      - `body_render_coverage(...)` in `include/lander/render_geom.hpp` uses only projected body radius, viewport size, and requested local window extent; it has no camera-mode, reference-body, or call-site identity input.
+      - `src/gui.cpp::draw_body` computes coverage internally for both bodies and no longer takes a coverage boolean.
+      - `tests/test_render_geom.cpp::test_body_render_coverage_wide_local_full` and `test_body_render_coverage_ignores_camera_mode` verify identical LOCAL/SYSTEM coverage and `kFull` at wide zooms for both bodies.
+- [x] M05-R3-24 Wide zoom must render the full bounded body (57a9b8a re-test)
+    - At any zoom at which the body's projected size is bounded enough that a
+      partial arc's closure could become visible, the body must be rendered as
+      a full closed body.
+    - In particular, on the 1280x720 viewport, wide `LOCAL MANUAL` zooms such
+      as 0.01x, 0.03x, and 0.04x, and the equivalent wide SYSTEM zooms, must
+      use the full-body path for both PRIMARY and COMPANION.
+    - Do not fix this by narrowing the LOCAL MANUAL zoom range, forcing
+      AUTO/SYSTEM, hiding a body, or changing world scale.
+    Files: include/lander/render_geom.hpp, src/gui.cpp
+    Source: USER (57a9b8a human re-test, 2026-09-29: H17 still FAIL at wide
+    LOCAL MANUAL zoom)
+    Evidence:
+      - `body_render_coverage(...)` returns `kFull` whenever the projected body radius plus a 16 px margin is no larger than half the smaller viewport dimension.
+      - `tests/test_render_geom.cpp::test_body_render_coverage_wide_local_full` checks the 0.01/0.03/0.04-equivalent wide-zoom cases for both PRIMARY and COMPANION.
+      - `test_wide_local_body_fill_is_bounded` proves the wide-LOCAL fill stays within the projected body extent and does not create a giant fixed-bottom column.
+- [x] M05-R3-25 Viewport-safe local surface patch closure (57a9b8a re-test)
+    - A local surface patch may be used only when its sampled endpoints and
+      every closure vertex are safely outside the visible viewport.
+    - Remove the fixed `kWindowHeight + 512.0` bottom-closure construction.
+    - No patch may create a visible vertical column, giant fill, or closure
+      chord crossing the visible viewport.
+    - Patch terrain must remain the same terrain surface as the full-body path
+      (same sampled arcs; no terrain modification).
+    Files: include/lander/render_geom.hpp, src/gui.cpp
+    Source: USER (57a9b8a human re-test, 2026-09-29: H17/H22 failure involves
+    the patch closure and visible artifacts)
+    Evidence:
+      - `patch_closure_offset(...)` accepts a candidate inward closure only when the entire inner concentric arc and its side edges remain 32 px outside an expanded viewport rectangle.
+      - `body_fill_polygon(...)` closes the local patch with the outer sampled arc plus the reversed safe inner arc; the fixed `kWindowHeight + 512.0` construction is gone.
+      - `tests/test_render_geom.cpp::test_body_fill_patch_closure_is_viewport_safe` and `test_body_surface_patch_matches_terrain` verify viewport safety and terrain equivalence.
+- [x] M05-R3-26 Remove the visible radial tick/seam artifacts (57a9b8a
+    re-test)
+    - Remove or disable the current dark radial surface ticks drawn when
+      `scale > 0.35`, because they appear as unwanted radial/vertical seam
+      artifacts on the rendered body.
+    - Preserve landing pads, pad highlights, and intentional navigation/base
+      guide lines.
+    - No black radial/vertical seams or tick artifacts must remain visible on
+      either body at representative close and wide zooms, including wide
+      SYSTEM and wide LOCAL MANUAL zooms.
+    Files: src/gui.cpp, include/lander/render_geom.hpp
+    Source: USER (57a9b8a human re-test, 2026-09-29: H22 still FAIL)
+    Evidence:
+      - The `scale > 0.35` dark radial tick block in `src/gui.cpp` is removed; pad, pad-highlight, and intentional guide-line drawing remain.
+      - A repository grep confirms no remaining `scale > 0.35` tick path or `kWindowHeight + 512.0` closure coordinate.
+      - Full `ctest` and headless GUI smoke pass after the removal; final human re-test of H22 remains open.
+- [x] M05-R3-27 Preserve already-verified 57a9b8a behavior (57a9b8a re-test)
+    - Preserve SYSTEM centring of the spacecraft.
+    - Preserve the inertial SYSTEM starfield behaviour (stationary when the
+      SYSTEM camera angle is inertial/zero; rotating only with the actual
+      presentation camera angle).
+    - Preserve `B x3` synchronous-orbit behavior.
+    - Preserve `T x3` velocity-only, non-blocking transfer behavior.
+    - Preserve tidal locking, rotating-surface collision/landing, true-scale
+      geometry, and the existing contract loop.
+    Source: USER (57a9b8a human re-test, 2026-09-29: H18/H19/H20/H21 correct)
+    Evidence:
+      - The change is presentation-only in `render_geom.hpp` / `gui.cpp`; terrain, binary ephemeris, tidal locking, transfer, sync-orbit, camera, and contract code are unchanged.
+      - `tests/test_camera.cpp`, `tests/test_starfield.cpp`, `tests/test_sim.cpp` (including `test_sync_orbit_*` and `test_transfer`), and the full `ctest` suite still pass.
+      - Headless LOCAL, SYSTEM, and `--orbit-demo` smoke runs complete deterministically.
+- [x] M05-R3-28 Automated verification for geometry-driven body coverage
+    (57a9b8a re-test)
+    - Add/extend headless pure-geometry tests in
+      `tests/test_render_geom.cpp` covering at least 0.01x, 0.03x, and 0.04x
+      for both PRIMARY and COMPANION in both LOCAL-oriented and SYSTEM-oriented
+      camera states.
+    - Assert the coverage decision is identical for the two camera orientations
+      and is `kFull` at wide zooms where the projected body is bounded.
+    - Assert no fixed screen-bottom closure vertices exist in the rendered
+      body fill polygon at wide zooms.
+    - Assert any local patch endpoints/closure are safely outside the visible
+      viewport and that patch terrain samples match the corresponding
+      full-body terrain samples.
+    - Add a deterministic numeric regression proving the body fill geometry
+      stays within a bounded projected-body extent at wide LOCAL zoom (no
+      hundreds-of-pixels vertical column from a fixed bottom closure).
+    - Run: `cmake --build build`, `ctest --test-dir build
+      --output-on-failure`, `git diff --check`, and the existing headless GUI
+      smoke paths.
+    Source: USER (derived from M05-R3-23..26)
+    Evidence:
+      - New/updated tests: `test_body_render_coverage_wide_local_full`, `test_body_render_coverage_ignores_camera_mode`, `test_body_fill_patch_closure_is_viewport_safe`, `test_body_surface_patch_matches_terrain`, and `test_wide_local_body_fill_is_bounded` in `tests/test_render_geom.cpp`.
+      - See M05-R3-V32..V36 and the M05-R3-23..30 block in `## Verification evidence` for the executed build/test/whitespace/headless results.
+- [~] M05-R3-29 Human re-test gate for the corrected 57a9b8a follow-up
+    - After the new corrected build, the user must re-test H17 and H22 and any
+      other affected human-verification items.
+    - H17/H22 remain FAIL on 57a9b8a and must not be marked complete.
+    - M05 must return to AWAITING HUMAN VERIFICATION after automated work, but
+      must not be closed.
+    Source: USER (57a9b8a human re-test, 2026-09-29)
+    Status: automated corrected build is ready; H17/H22 await explicit human
+    re-test confirmation.
+- [x] M05-R3-30 Milestone boundary (57a9b8a re-test)
+    - This is a follow-up corrective round inside M05-R3.
+    - Do not close M05 and do not write an M05 completion record.
+    - Do not begin M06.
+    Source: USER (57a9b8a human re-test, 2026-09-29)
+    Evidence:
+      - `STATUS.md` is set to `AWAITING HUMAN VERIFICATION` (not COMPLETE).
+      - No M05 completion record is written and no M06 work is started.
 
 ### Constraints / non-goals
 
@@ -1432,20 +1570,44 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   Euler convention as the in-game integrator (bit-identical step); no new
   physics types added
 - [x] M05-R3-P17 All still-open M05 human-verification items remain open
-  until the user explicitly confirms them (current open set: M05-R1
-  H03/H04/H05 via M05-R2-H01..H04, M05-R3 H01..H18, H21..H22; H19/H20 closed
-  on human PASS of the b49a476 build, 2026-09-29).
-  Evidence: this ledger keeps every unconfirmed H-item open; H19/H20 marked
-  [x] only with explicit human confirmation
-- [ ] M05-R3-P18 Starfield authoritative rule (M05-R3-21): apparent star
+  until the user explicitly confirms them (current open set after the
+  57a9b8a re-test: M05-R1 H03/H04/H05 via M05-R2-H01..H04, M05-R3
+  H01..H16, H17, H22; H18/H19/H20/H21 closed on human PASS, with H18/H21
+  confirmed on 57a9b8a and H19/H20 on b49a476).
+  Evidence: this ledger keeps every unconfirmed H-item open; H18/H19/H20/H21
+  marked [x] only with explicit human confirmation
+- [x] M05-R3-P18 Starfield authoritative rule (M05-R3-21): apparent star
   motion depends only on the actual presentation camera angle. No
   SYSTEM-specific star rotation, no LOCAL special case; the single generic
   transform (final smoothed presentation camera angle -> inverse apparent
   inertial-star rotation) is the only star-motion code path.
-- [ ] M05-R3-P19 Transfer solver (M05-R3-19): correctness must not depend on
+  Evidence: tests/test_starfield.cpp (angle-driven rotation, inertial/no-parallax,
+  deterministic generation); H18 PASS on the 57a9b8a corrected build.
+- [x] M05-R3-P19 Transfer solver (M05-R3-19): correctness must not depend on
   a wall-clock timeout; the solver has deterministic fixed work bounds. No
   threading/job architecture is introduced in M05; a small one-frame
   computation cost is the acceptable ceiling.
+  Evidence: `src/sim.cpp::transfer` uses a deterministic bounded coarse grid
+  and bounded Newton refinement; tests/test_sim.cpp::test_transfer asserts
+  bounded runtime (<200 ms), velocity-only mutation, and deterministic
+  outcomes.
+- [x] M05-R3-P20 Body render coverage (M05-R3-23) must be a pure function of
+  projected geometry and viewport size. Camera mode, camera state, reference
+  body, contract state, and call-site identity must not choose whether a
+  body is drawn as a full circle or a local patch.
+  Evidence: `include/lander/render_geom.hpp::body_render_coverage` takes only
+  terrain/body/camera/ship/rotation geometry inputs;
+  `tests/test_render_geom.cpp::test_body_render_coverage_ignores_camera_mode`
+  verifies camera-mode independence.
+- [x] M05-R3-P21 No fixed screen-space closure coordinate (in particular no
+  `kWindowHeight + 512.0` or equivalent) may be used to close a local
+  surface-patch body fill. Every closure vertex must be provably outside the
+  visible viewport.
+  Evidence: the fixed bottom-closure construction is removed;
+  `patch_closure_offset(...)` validates every closure vertex/edge against an
+  expanded viewport, and
+  `tests/test_render_geom.cpp::test_body_fill_patch_closure_is_viewport_safe`
+  checks the produced fill polygon.
 
 ### Derived implementation tasks
 
@@ -1503,43 +1665,115 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   terrain/pads rotated by `body_rotation(t)`.
   Files: src/sim.cpp (moving-pad navigation_cues), src/gui.cpp (rotated
   terrain/pad rendering, destination marker)
-- [ ] M05-R3-D16 Guard `R` with the triple-tap mechanism (new guarded key) and
+- [x] M05-R3-D16 Guard `R` with the triple-tap mechanism (new guarded key) and
   add RETRY progress feedback; keep the existing same-seed restart behavior.
   Files: include/lander/guarded_actions.hpp, src/gui.cpp
-- [ ] M05-R3-D17 Remove the SYSTEM auto-fit target zoom and the midpoint
+  Evidence: tests/test_guarded_actions.cpp::test_new_guarded_keys (R
+  triple-tap, progress label, same-seed restart semantics preserved).
+- [x] M05-R3-D17 Remove the SYSTEM auto-fit target zoom and the midpoint
   focus override; SYSTEM focus is always exactly the ship, with wheel-driven
   zoom only.
   Files: include/lander/camera.hpp, src/gui.cpp
-- [ ] M05-R3-D18 Widen the LOCAL MANUAL zoom range to the system-wide minimum
+  Evidence: tests/test_camera.cpp::test_system_destination_never_moves_camera
+  and test_system_smooth_zoom_and_no_local_switch.
+- [x] M05-R3-D18 Widen the LOCAL MANUAL zoom range to the system-wide minimum
   (0.01) while keeping the maximum at 4.0 and the LOCAL AUTO readability
   floor unchanged.
   Files: include/lander/camera.hpp
-- [ ] M05-R3-D19 Regenerate the starfield in a rotation-safe disk and make
+  Evidence: tests/test_camera.cpp::test_manual_mode_and_wheel (0.01..4.0
+  manual clamp; AUTO readability floor unchanged).
+- [x] M05-R3-D19 Regenerate the starfield in a rotation-safe disk and make
   `star_screen_pos` rotate stars about the viewport centre with the same
   linear transform as world rendering, driven by the final presentation
   camera angle.
   Files: include/lander/starfield.hpp, src/gui.cpp
-- [ ] M05-R3-D20 Add adaptive zoom formatting (`0.04X` / `0.10X` / `0.25X` /
+  Evidence: tests/test_starfield.cpp (rotation-safe generation, presentation-angle
+  rotation, no parallax, 2*pi identity, determinism).
+- [x] M05-R3-D20 Add adaptive zoom formatting (`0.04X` / `0.10X` / `0.25X` /
   `1.00X` style) and use it for all HUD zoom displays.
   Files: src/gui.cpp
-- [ ] M05-R3-D21 Implement the one-shot body-synchronous orbit initializer in
+  Evidence: `src/gui.cpp` HUD zoom formatting uses the adaptive
+  two-significant-figure style; headless GUI smoke runs render the HUD
+  without error.
+- [x] M05-R3-D21 Implement the one-shot body-synchronous orbit initializer in
   the simulation and wire `B x3` in the GUI with progress feedback and help
   text.
   Files: include/lander/sim.hpp, src/sim.cpp, src/gui.cpp
-- [ ] M05-R3-D22 Implement the deterministic ballistic inter-body transfer
+  Evidence: tests/test_sim.cpp::test_sync_orbit_state /
+  test_sync_orbit_stability; H20 PASS (b49a476 human run).
+- [x] M05-R3-D22 Implement the deterministic ballistic inter-body transfer
   shooting solver in the simulation and wire `T x3` in the GUI with progress
   feedback, a no-solution display, and help text.
   Files: include/lander/sim.hpp, src/sim.cpp, src/gui.cpp
-- [ ] M05-R3-D23 Extend the automated tests for the new guarded keys, the
+  Evidence: tests/test_sim.cpp::test_transfer (bounded solve, velocity-only
+  mutation, deterministic outcomes); H21 PASS on the 57a9b8a corrected
+  build.
+- [x] M05-R3-D23 Extend the automated tests for the new guarded keys, the
   SYSTEM no-auto-pan invariants, the wider LOCAL manual range, the inertial
   starfield, and the two debug initializers (both directions, multiple
   phases, preserved invariants, no-solution handling, determinism).
   Files: tests/test_guarded_actions.cpp, tests/test_camera.cpp,
   tests/test_starfield.cpp, tests/test_sim.cpp
-- [ ] M05-R3-D24 Update the M05 milestone spec (starfield supersession,
+  Evidence: the tests listed under D16-D22 above all pass in the current
+  `ctest` run.
+- [x] M05-R3-D24 Update the M05 milestone spec (starfield supersession,
   SYSTEM no-auto-pan, debug initializers, autopilot non-goal clarification)
   and this ledger.
   Files: milestones/M05-binary-moon-contract-loop.md, TASKS.md
+  Evidence: the M05 milestone spec records the starfield supersession,
+  SYSTEM no-auto-pan, `B x3` / `T x3` initializers, and autopilot non-goal;
+  this ledger records the corresponding requirement/evidence links.
+- [x] M05-R3-D25 Add `BodyRenderCoverage` and a pure
+  `body_render_coverage(...)` helper in the render-geometry header, deriving
+  full-body versus local-patch coverage from projected body radius, viewport
+  size, and requested local window extent.
+  Files: include/lander/render_geom.hpp
+  Depends: M05-R3-23, M05-R3-24, M05-R3-P20
+  Evidence: `include/lander/render_geom.hpp` now defines `BodyRenderCoverage`
+  and `body_render_coverage(...)`; coverage is derived only from projected
+  body radius, viewport size, and local window extent.
+- [x] M05-R3-D26 Change `body_surface_ring` / `draw_body` to consume
+  geometry-driven coverage instead of a camera-mode/reference-body `full_body`
+  boolean, and make the local-patch closure viewport-safe (no fixed
+  screen-bottom coordinate).
+  Files: include/lander/render_geom.hpp, src/gui.cpp
+  Depends: M05-R3-23, M05-R3-25, M05-R3-P21
+  Evidence: `body_surface_ring(...)` takes `BodyRenderCoverage`;
+  `draw_body(...)` computes coverage internally; `body_fill_polygon(...)`
+  closes the local patch with the viewport-safe inner arc produced by
+  `patch_closure_offset(...)`.
+- [x] M05-R3-D27 Remove the asymmetric `draw_body` call-site coverage flags so
+  both PRIMARY and COMPANION use the same geometry-driven rule.
+  Files: src/gui.cpp
+  Depends: M05-R3-23, M05-R3-24
+  Evidence: both `draw_body` call sites in `src/gui.cpp` use the same
+  signature with no reference-body-specific coverage flag.
+- [x] M05-R3-D28 Remove the `scale > 0.35` dark radial surface ticks while
+  preserving pads, pad highlights, and intentional guide lines.
+  Files: src/gui.cpp
+  Depends: M05-R3-26
+  Evidence: the `scale > 0.35` tick block is removed from `src/gui.cpp`;
+  pad/highlight/guide drawing remains intact.
+- [x] M05-R3-D29 Add/extend `tests/test_render_geom.cpp` for wide-zoom
+  coverage independence, no fixed-bottom closure vertices, viewport-safe
+  patch closure, patch/full terrain equivalence, and bounded wide-LOCAL body
+  fill geometry.
+  Files: tests/test_render_geom.cpp, include/lander/render_geom.hpp
+  Depends: M05-R3-28
+  Evidence: new tests `test_body_render_coverage_wide_local_full`,
+  `test_body_render_coverage_ignores_camera_mode`,
+  `test_body_fill_patch_closure_is_viewport_safe`,
+  `test_body_surface_patch_matches_terrain`, and
+  `test_wide_local_body_fill_is_bounded` all pass.
+- [x] M05-R3-D30 Update verification evidence, STATUS.md, and the milestone
+  spec for the geometry-driven body rendering rule, then return M05 to
+  AWAITING HUMAN VERIFICATION without closing it.
+  Files: TASKS.md, STATUS.md,
+  milestones/M05-binary-moon-contract-loop.md
+  Depends: M05-R3-29, M05-R3-30
+  Evidence: `TASKS.md` now records the M05-R3-23..30 evidence; `STATUS.md`
+  is set to `AWAITING HUMAN VERIFICATION`; the milestone spec records the
+  geometry-driven body-rendering rule.
 
 ### Automated verification
 
@@ -1842,18 +2076,52 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   representative phases; the result is deterministic per seed; and fuel/
   score/contract/seed/phase are preserved. T stays triple-tap guarded. Pass.
 - [x] M05-R3-V31 Full verification commands for the M05-R3-17..22 round
-  - `cmake --build build`
-  - `ctest --test-dir build --output-on-failure`
-  - `git diff --check`
-  - Existing headless GUI smoke paths
-  - New transfer performance measurement
-  Evidence: clean `cmake --build build` (no warnings); `ctest --test-dir
-  build --output-on-failure` 6/6 pass (lander_tests incl. test_transfer,
-  lander_binary_tests, lander_camera_tests, lander_starfield_tests,
-  lander_guarded_actions_tests, lander_render_geom_tests); `git diff --check`
-  clean; headless GUI smoke (SDL_VIDEODRIVER=dummy) in LOCAL and SYSTEM view
-  reaches `state=landed` with no crash (exit 0, deterministic); transfer
-  timing measured via LL_TRANSFER_DEBUG + the ms<200 test bound.
+   - `cmake --build build`
+   - `ctest --test-dir build --output-on-failure`
+   - `git diff --check`
+   - Existing headless GUI smoke paths
+   - New transfer performance measurement
+   Evidence: clean `cmake --build build` (no warnings); `ctest --test-dir
+   build --output-on-failure` 6/6 pass (lander_tests incl. test_transfer,
+   lander_binary_tests, lander_camera_tests, lander_starfield_tests,
+   lander_guarded_actions_tests, lander_render_geom_tests); `git diff --check`
+   clean; headless GUI smoke (SDL_VIDEODRIVER=dummy) in LOCAL and SYSTEM view
+   reaches `state=landed` with no crash (exit 0, deterministic); transfer
+   timing measured via LL_TRANSFER_DEBUG + the ms<200 test bound.
+- [x] M05-R3-V32 Build succeeds for the M05-R3-23..30 round
+    - `cmake --build build`
+    Evidence: `cmake --build build` -> clean, exit 0 (2026-09-29).
+- [x] M05-R3-V33 Full test suite passes for the M05-R3-23..30 round
+    - `ctest --test-dir build --output-on-failure`
+    - New/updated `lander_render_geom_tests` cover the geometry-driven
+      coverage and closure regressions required by M05-R3-28.
+    Evidence: `ctest --test-dir build --output-on-failure` -> 6/6 passed
+      (lander_tests, lander_binary_tests, lander_camera_tests,
+      lander_starfield_tests, lander_guarded_actions_tests,
+      lander_render_geom_tests) (2026-09-29).
+- [x] M05-R3-V34 Whitespace check for the M05-R3-23..30 round
+    - `git diff --check`
+    Evidence: `git diff --check` -> no errors (2026-09-29).
+- [x] M05-R3-V35 Existing headless GUI smoke paths still pass for the
+    M05-R3-23..30 round
+    - `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy build/lander_gui`
+    - LOCAL and SYSTEM smoke paths complete without crash and reach the
+      expected deterministic terminal state.
+    Evidence: headless LOCAL, SYSTEM, and `--orbit-demo` smoke runs completed
+      deterministically with expected final states (see the M05-R3-23..30
+      block in `## Verification evidence`).
+- [x] M05-R3-V36 Text-only constraint for the M05-R3-23..30 round
+    - No image files are read or attached; graphical behaviour is verified
+      through process exit status, logs, simulation state, automated tests,
+      and scripted input behaviour only.
+    Evidence: no image files were read during this round; verification used
+      build output, `ctest`, `git diff --check`, headless GUI
+      stdout/stderr, and numeric test assertions only.
+- [ ] M05-R3-V37 Commit/push and origin sync for the M05-R3-23..30 round
+   - Commit only explicit active-project files.
+   - Allow the post-commit hook to push; verify `HEAD == origin/main` after
+     push (retry `git push origin main` only if the hook reports failure).
+   Evidence: (pending)
 
 ### Human verification
 
@@ -1889,8 +2157,14 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   zoom and the screen orientation never changes while zooming.
   Status: FAIL on the b49a476 build (2026-09-29): the wide range works, but
   extreme/wide LOCAL zoom exposes a visible rendering/draw error. Corrected
-  by M05-R3-17; remains open until the human re-tests.
-- [ ] M05-R3-H18 The starfield rotates smoothly and consistently with the
+  by M05-R3-17.
+  Status: STILL FAIL on the 57a9b8a corrected build (2026-09-29 human
+  re-test): the wide range and screen orientation work, but the
+  reference-body-specific body still breaks at wide LOCAL MANUAL zoom
+   (around 0.01x-0.03x) while the non-reference body renders correctly.
+   Corrective round M05-R3-23..30; the automated corrected build is ready
+   (2026-09-29) and remains open until the human re-tests it.
+- [x] M05-R3-H18 The starfield rotates smoothly and consistently with the
   scene's camera rotation in both LOCAL and SYSTEM, with no drift from
   zooming, panning, mode switches, reference switches, or binary phase; the
   backdrop remains visually pleasant at all camera angles.
@@ -1900,8 +2174,10 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   inertial/non-rotating — the human confirmed this is CORRECT. Do not add a
   SYSTEM-specific star rotation. The authoritative rule: apparent star
   motion depends only on the actual presentation camera angle (M05-R3-21,
-  M05-R3-P18). Remains open until the human re-confirms on the corrected
-  build.
+  M05-R3-P18).
+  Human verification: PASS on the 57a9b8a corrected build (2026-09-29
+  re-test) — the inertial SYSTEM starfield being stationary while the SYSTEM
+  camera angle is inertial/zero is correct behaviour.
 - [x] M05-R3-H19 The SYSTEM view no longer pans or auto-zooms toward the
   destination; the ship stays exactly centred at every zoom and the
   destination remains trackable through the indicator, `DIST` / `V REL` /
@@ -1915,7 +2191,7 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   Human verification: PASS (b49a476 build, 2026-09-29) — "B x3
   synchronous/osculating orbit appears to behave correctly. Preserve this
   behavior."
-- [ ] M05-R3-H21 TRANSFER (`T x3`) does not visibly freeze the game; no
+- [x] M05-R3-H21 TRANSFER (`T x3`) does not visibly freeze the game; no
   position teleport occurs and the craft immediately departs from its actual
   current location on a visible ballistic arc to the other moon that
   approaches/arrives near the target's surface with zero thrust and no
@@ -1925,13 +2201,20 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
   Status: FAIL on the b49a476 build (2026-09-29): the trajectory worked, but
   T x3 froze the game while solving and teleported the craft to a canonical
   departure position. Corrected by M05-R3-19 (non-blocking solve) and
-  M05-R3-20 (velocity-only semantics); remains open until the human
-  re-tests.
+  M05-R3-20 (velocity-only semantics).
+  Human verification: PASS on the 57a9b8a corrected build (2026-09-29
+  re-test) — `T x3` works with the corrected velocity-only, non-blocking
+  semantics.
 - [ ] M05-R3-H22 No black radial/vertical seams are visible on either
   rotating body (PRIMARY and COMPANION) at representative close and wide
   zooms, including at several tidal rotation angles, wide SYSTEM zoom, and
   the widest LOCAL MANUAL zoom.
-  Source: USER (M05-R3-18); new item, first testable on the corrected build.
+  Source: USER (M05-R3-18); first testable on the corrected build.
+  Status: FAIL on the 57a9b8a corrected build (2026-09-29 human re-test):
+   visible radial/vertical seam artifacts remain, including the reference
+   body's radial tick/closure artifacts. Corrective round M05-R3-23..30;
+   the automated corrected build is ready (2026-09-29) and remains open
+   until the human re-tests it.
 
 ## Verification evidence
 
@@ -2050,6 +2333,29 @@ M05-R3-17..22 (automated work complete, awaiting human re-test) — re-run on
   measurable via LL_TRANSFER_DEBUG (M05-R3-V31, M05-R3-V29).
 - No image files were read at any point (text-only constraint, M05-R3-P07).
 
+M05-R3-23..30 (automated work complete, awaiting human re-test) — re-run on
+2026-09-29:
+
+- Build: `cmake --build build` -> clean, exit 0 (M05-R3-V32).
+- Tests: `ctest --test-dir build --output-on-failure` -> 6/6 passed
+  (lander_tests, lander_binary_tests, lander_camera_tests,
+  lander_starfield_tests, lander_guarded_actions_tests,
+  lander_render_geom_tests) (M05-R3-V33). New/updated geometry tests:
+  `test_body_render_coverage_wide_local_full`,
+  `test_body_render_coverage_ignores_camera_mode`,
+  `test_body_fill_patch_closure_is_viewport_safe`,
+  `test_body_surface_patch_matches_terrain`, and
+  `test_wide_local_body_fill_is_bounded`.
+- Whitespace: `git diff --check` -> no errors (M05-R3-V34).
+- Headless GUI smoke (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`,
+  `build/lander_gui`): LOCAL and SYSTEM 120-frame runs complete
+  deterministically and reach the expected `state=landed` terminal state;
+  `--orbit-demo` completes deterministically in flight (M05-R3-V35).
+- No image files were read at any point (text-only constraint,
+  M05-R3-V36).
+- M05 returns to AWAITING HUMAN VERIFICATION with H17/H22 still open for
+  human re-test; no M05 completion record is written.
+
 Transfer solver design notes (M05-R3-16): the solver in
 `src/sim.cpp::transfer` is a bounded multi-basin shooting method. It tries
 candidate flight times as fractions of the binary period
@@ -2088,7 +2394,12 @@ physics (the companion's Hill sphere is small); it remains crash-free over
 two periods, but the drift is expected behaviour for a one-shot debug
 initializer, not a defect.
 
-The only remaining M05 work is human verification: the still-open M05-R1
-items, M05-R2-H01..H04 (which re-verify the failed M05-R1-H03/H04/H05),
-M05-R3-H01..H15, and the new M05-R3-H16..H22. M05 stays open, with no
-completion record, until the user confirms those items.
+The M05-R3-23..30 automated corrective round (geometry-driven body coverage,
+viewport-safe patch closure, removal of the visible radial tick/seam
+artifacts, and regression tests) is complete as of 2026-09-29; M05 has
+returned to AWAITING HUMAN VERIFICATION. The still-open human items are the
+unconfirmed M05-R1 items, M05-R2-H01..H04 (which re-verify the failed
+M05-R1-H03/H04/H05), M05-R3-H01..H16, and M05-R3-H17/H22 (both still FAIL on
+57a9b8a and open for re-test on the M05-R3-23..30 corrected build).
+H18/H19/H20/H21 are closed with human evidence. M05 stays open, with no
+completion record, until the user confirms all remaining items.

@@ -421,7 +421,7 @@ void draw_space(SDL_Renderer* renderer,
 // spot.
 void draw_body(SDL_Renderer* renderer, const lander::Body& body,
                 const lander::Vec2& bpos, const lander::Camera& cam,
-                const lander::State& ship, bool full_body,
+                const lander::State& ship,
                 bool highlight_base, double body_rotation) {
     const lander::Terrain& terrain = body.terrain;
     const double scale = cam.scale();
@@ -431,9 +431,15 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
     // faces the ship: the ship's world direction minus the body's spin.
     const double s_target = terrain.arc_at_angle(theta_ship - body_rotation);
 
+    // M05-R3-23..26: both bodies use the same geometry-driven rule. A body
+    // that fits the viewport is drawn as the full closed circle; a partial
+    // patch is used only when its closure can be placed outside the viewport.
+    const lander::Vec2 ship_pos{ship.x, ship.y};
+    const lander::BodyRenderCoverage coverage =
+        lander::body_render_coverage(body, bpos, cam, ship_pos, body_rotation);
+    const bool full_body = coverage == lander::BodyRenderCoverage::kFull;
+
     double half_angle = 0.0;
-    double u_start = 0.0;
-    double u_end = C;
     if (!full_body) {
         // Local view: an arc window centred on the direction from this
         // body's centre to the ship (the M04 framing, now body-relative).
@@ -442,9 +448,6 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
         half_angle =
             (kWindowWidth / 2.0 + 256.0) / scale / target_r;
         half_angle = std::clamp(half_angle, 0.10, 0.75);
-        const double half_arc = half_angle * terrain.reference_radius();
-        u_start = s_target - half_arc;
-        u_end = s_target + half_arc;
     }
 
     // The surface is one continuous, shared-vertex mesh (M05-R3-18): an
@@ -455,28 +458,17 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
     // overdraw that banded the surface at wide zooms (M05-R3-17), while the
     // tessellation count stays bounded at every zoom.
     lander::SurfaceRing ring = lander::body_surface_ring(
-        body, bpos, cam, lander::Vec2{ship.x, ship.y}, full_body,
-        body_rotation);
+        body, bpos, cam, ship_pos, coverage, body_rotation);
     const std::vector<lander::Vec2>& l_outer = ring.outer;
     if (l_outer.size() < 2) {
         return;
     }
     const lander::Vec2 l_centre = lander::to_screen_point(bpos.x, bpos.y, cam);
 
-    std::vector<Vec2> polygon;
-    polygon.reserve(l_outer.size() + 2);
-    for (const auto& p : l_outer) {
-        polygon.push_back({p.x, p.y});
-    }
-    if (!full_body) {
-        // Close the sampled arc on the interior/downward side of the surface,
-        // well outside the viewport, so the moon body does not show radial
-        // chords back to the moon centre.
-        const double bottom = kWindowHeight + 512.0;
-        polygon.push_back({polygon.back().x, bottom});
-        polygon.push_back({polygon.front().x, bottom});
-    }
-    fill_poly(renderer, polygon, make_color(66, 70, 82));
+    fill_poly(renderer,
+              to_vec2s(lander::body_fill_polygon(ring, l_centre, coverage,
+                                                 cam)),
+              make_color(66, 70, 82));
 
     // Dark inner rim: one continuous 8-px band centred on the inner ring.
     fill_poly(renderer,
@@ -486,24 +478,6 @@ void draw_body(SDL_Renderer* renderer, const lander::Body& body,
     fill_poly(renderer,
               to_vec2s(lander::thick_ring(ring.outer, l_centre, 1.25, 1.25)),
               make_color(125, 130, 145));
-
-    // Small surface ticks are useful up close; at system scale they would
-    // just add noise.
-    if (scale > 0.35) {
-        const double tick_start =
-            full_body ? 0.0 : std::ceil(u_start / 10.0) * 10.0;
-        const double tick_end = full_body ? C - 1.0e-9 : u_end;
-        for (double u = tick_start; u <= tick_end + 1.0e-9; u += 10.0) {
-            const double theta = terrain.angle_at_arc(u) + body_rotation;
-            const double r = terrain.surface_radius_at_arc(u);
-            const Vec2 a = to_screen(bpos.x + std::cos(theta) * r,
-                                     bpos.y + std::sin(theta) * r, cam);
-            const Vec2 b = to_screen(bpos.x + std::cos(theta) * (r - 0.5),
-                                     bpos.y + std::sin(theta) * (r - 0.5),
-                                     cam);
-            draw_thick_line(renderer, a, b, 1.0, make_color(44, 47, 58));
-        }
-    }
 
     for (const lander::Pad& pad : terrain.pads()) {
         if (!full_body) {
@@ -1538,13 +1512,12 @@ int main(int argc, char** argv) {
 
         // The backdrop rotates with the final presentation angle (M05-R3-12).
         draw_space(renderer, stars, cam.angle());
-        const bool sys_view = cam.system_view();
         const int dest = sim.contract().destination_body;
         const lander::Vec2 other_pos = bin.position(1 - ref, t_present);
         draw_body(renderer, bin.body(1 - ref), other_pos, cam, render_state,
-                  true, 1 - ref == dest, body_rot);
+                  1 - ref == dest, body_rot);
         draw_body(renderer, bin.body(ref), ref_pos, cam, render_state,
-                  sys_view, ref == dest, body_rot);
+                  ref == dest, body_rot);
         draw_lander(renderer, render_state, thrust_level, flame_clock, cam);
         if (s.crashed) {
             // Time is frozen after a crash, so the crash body's centre at

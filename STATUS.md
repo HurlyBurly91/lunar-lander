@@ -6,12 +6,13 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M05-R3 corrective round (M05-R3-17..22) automated work complete —
-awaiting human re-test of the corrected build: H17 (wide LOCAL zoom no longer
-exposes a rendering failure), H18 (starfield re-confirm: LOCAL rotates, SYSTEM
-stays correctly stationary), H21 (`T x3` no longer freezes or teleports), and
-H22 (no black radial/vertical seams on either body at close and wide zoom).
-H19 and H20 were confirmed PASS on b49a476 and remain closed. See TASKS.md.
+Phase: M05-R3-23..30 automated corrective round complete; awaiting human
+re-test of H17 and H22 on the next corrected build. H18, H19, H20, and H21
+are confirmed PASS. The round implemented geometry-driven body render
+coverage (full body at wide zoom, viewport-safe local patch only when its
+closure is provably outside the viewport), removed the visible radial
+tick/seam artifacts, made PRIMARY/COMPANION treatment identical, and added
+new headless regression tests. See TASKS.md.
 
 M05-R1 and M05-R2 automated work is complete, but their human-verification
 items remain open. Human verification of the M05-R2 build produced the
@@ -63,13 +64,22 @@ wide-LOCAL-zoom rendering failure (M05-R3-17), fixes black terrain/body seams
 (M05-R3-18), makes `T x3` non-blocking (M05-R3-19), reworks `T x3` to change
 only velocity with no position teleport (M05-R3-20), adds a starfield
 no-regression check (M05-R3-21), and handles the b49a476 human-verification
-state (M05-R3-22). Automated work for this round is complete (2026-09-29);
+ state (M05-R3-22). Automated work for this round is complete (2026-09-29);
 awaiting human re-test on the corrected build.
 
+Human re-test of that corrected build (57a9b8a, 2026-09-29) confirmed H18
+(starfield), H21 (`T x3`), and the still-closed H19/H20, but H17 (wide LOCAL
+reference-body rendering) and H22 (radial/vertical seam artifacts) remain
+FAIL. The failure is reference-body-specific and matches the remaining
+camera-mode/reference-body-dependent `full_body` coverage and the
+`scale > 0.35` radial tick path in `src/gui.cpp`. This created the
+M05-R3-23..30 follow-up corrective round, whose automated work is now
+complete (2026-09-29).
+
 All still-open human-verification items (M05-R1, M05-R2, M05-R3
-H01..H18, H21, and the new H22) remain open until explicitly confirmed by
-the user (H19 and H20 were confirmed PASS on the b49a476 build and are
-closed). M05 remains open and no completion record has been written.
+H01..H16, H17, and H22) remain open until explicitly confirmed by the user
+(H18/H19/H20/H21 are closed with human evidence). M05 remains open and no
+completion record has been written.
 
 M05 turns the M04 flight simulation into the first complete game loop by
 extending the world to a compact two-body system: a 1/9-scale companion

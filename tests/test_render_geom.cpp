@@ -314,14 +314,17 @@ void test_body_surface_ring_bounded() {
 
         char label[48];
         std::snprintf(label, sizeof(label), "%s (full)", labels[i]);
-        check_ring_bounded(
-            lander::body_surface_ring(body, bpos, cam, ship, true, 0.0), true,
-            label);
+        check_ring_bounded(lander::body_surface_ring(
+                              body, bpos, cam, ship,
+                              lander::BodyRenderCoverage::kFull, 0.0),
+                           true, label);
 
         std::snprintf(label, sizeof(label), "%s (local)", labels[i]);
         check_ring_bounded(
-            lander::body_surface_ring(body, bpos, cam, ship, false, 0.0), false,
-            label);
+            lander::body_surface_ring(
+                body, bpos, cam, ship,
+                lander::BodyRenderCoverage::kSurfacePatch, 0.0),
+            false, label);
     }
 }
 
@@ -362,8 +365,9 @@ void test_body_surface_ring_matrix() {
                                   "body%d scale%.2f ship%d full rot%d", bi,
                                   scales[si], sh, ri);
                     check_ring_bounded(
-                        lander::body_surface_ring(body, bpos, cam, ship, true,
-                                                 rotations[ri]),
+                        lander::body_surface_ring(
+                            body, bpos, cam, ship,
+                            lander::BodyRenderCoverage::kFull, rotations[ri]),
                         true, label);
                 }
 
@@ -372,8 +376,9 @@ void test_body_surface_ring_matrix() {
                                                       "local",
                               bi, scales[si], sh);
                 check_ring_bounded(
-                    lander::body_surface_ring(body, bpos, cam, ship, false,
-                                              0.0),
+                    lander::body_surface_ring(
+                        body, bpos, cam, ship,
+                        lander::BodyRenderCoverage::kSurfacePatch, 0.0),
                     false, llabel);
             }
         }
@@ -400,7 +405,8 @@ void test_body_annulus_shared_endpoints() {
             lander::Camera cam(p);
             const auto ring = lander::body_surface_ring(
                 body, bpos, cam,
-                lander::Vec2{0.0, body.reference_radius + 20.0}, true, rot);
+                lander::Vec2{0.0, body.reference_radius + 20.0},
+                lander::BodyRenderCoverage::kFull, rot);
 
             const auto centre = lander::to_screen_point(bpos.x, bpos.y, cam);
             const auto band = lander::thick_ring(ring.outer, centre, 4.0, 4.0);
@@ -467,7 +473,9 @@ void test_local_window_covers_arc() {
     lander::Camera cam(p);
 
     const auto ring =
-        lander::body_surface_ring(body, bpos, cam, ship, false, 0.0);
+        lander::body_surface_ring(body, bpos, cam, ship,
+                                  lander::BodyRenderCoverage::kSurfacePatch,
+                                  0.0);
 
     // Screen-space angles of the ring about the body centre (window centre
     // is the viewport centre; the body centre maps to it).
@@ -496,6 +504,251 @@ void test_local_window_covers_arc() {
           "the local window stays within the clamped maximum arc");
 }
 
+// M05-R3-23..25: at the wide LOCAL/SYSTEM zoom range the body fits the
+// viewport, so both bodies must choose the full closed body. This is the
+// geometry-level form of the H17 regression: the reference body no longer
+// takes a different, broken local-patch path at wide zooms.
+void test_body_render_coverage_wide_local_full() {
+    const lander::BinarySystem sys =
+        lander::BinarySystem::canonical(178976.334, 503, 9001);
+    const lander::Vec2 bpos{0.0, 0.0};
+    const double scales[] = {14.0 * 0.01, 14.0 * 0.03, 14.0 * 0.04};
+
+    for (int bi = 0; bi < 2; ++bi) {
+        const lander::Body& body = sys.body(bi);
+        const lander::Vec2 ship{0.0, body.reference_radius + 20.0};
+
+        for (double scale : scales) {
+            lander::CameraParams p{};
+            p.base_scale = scale;
+            lander::Camera cam(p);
+            cam.snap(ship.x, ship.y, 0.0);
+
+            char label[64];
+            std::snprintf(label, sizeof(label),
+                          "body%d wide LOCAL %.2f px/m uses the full body",
+                          bi, scale);
+            check(lander::body_render_coverage(body, bpos, cam, ship, 0.0) ==
+                      lander::BodyRenderCoverage::kFull,
+                  label);
+        }
+    }
+}
+
+// M05-R3-23: the coverage decision depends on the camera transform and the
+// body geometry, never on `CameraMode` or a call-site boolean.
+void test_body_render_coverage_ignores_camera_mode() {
+    lander::Body body;
+    body.reference_radius = lander::kReferenceRadius;
+    body.terrain = lander::Terrain(503);
+    const lander::Vec2 bpos{0.0, 0.0};
+    const lander::Vec2 ship{0.0, body.reference_radius + 20.0};
+
+    const struct {
+        double local_scale;
+        double system_base;
+        double system_zoom;
+    } cases[] = {
+        {0.56, 14.0, 0.04},  // wide: both fit, both full
+        {56.0, 56.0, 1.0},   // close: both large, same patch decision
+    };
+
+    for (const auto& c : cases) {
+        lander::CameraParams local_params{};
+        local_params.base_scale = c.local_scale;
+        lander::Camera local_cam(local_params);
+        local_cam.snap(ship.x, ship.y, 0.0);
+
+        lander::CameraParams system_params{};
+        system_params.base_scale = c.system_base;
+        system_params.system_zoom = c.system_zoom;
+        lander::Camera system_cam(system_params);
+        system_cam.set_system(true);
+        system_cam.snap(ship.x, ship.y, 0.0);
+
+        char label[64];
+        std::snprintf(label, sizeof(label),
+                      "coverage is camera-mode independent at %.2f px/m",
+                      c.local_scale);
+        check(
+            lander::body_render_coverage(body, bpos, local_cam, ship, 0.0) ==
+                lander::body_render_coverage(body, bpos, system_cam, ship,
+                                             0.0),
+            label);
+    }
+}
+
+// M05-R3-25..26: when a partial patch is used, its fill closure is an inner
+// concentric arc whose vertices and segments are safely outside the visible
+// viewport. There is no fixed screen-bottom closure and no visible radial
+// side edge.
+void test_body_fill_patch_closure_is_viewport_safe() {
+    lander::Body body;
+    body.reference_radius = lander::kReferenceRadius;
+    body.terrain = lander::Terrain(503);
+    const lander::Vec2 bpos{0.0, 0.0};
+    const lander::Vec2 ship{0.0, body.reference_radius + 20.0};
+
+    bool saw_patch = false;
+    const double scales[] = {14.0, 28.0, 56.0};
+    for (double scale : scales) {
+        lander::CameraParams p{};
+        p.base_scale = scale;
+        lander::Camera cam(p);
+        cam.snap(ship.x, ship.y, 0.0);
+
+        const auto coverage =
+            lander::body_render_coverage(body, bpos, cam, ship, 0.0);
+        if (coverage != lander::BodyRenderCoverage::kSurfacePatch) {
+            continue;
+        }
+        saw_patch = true;
+
+        const auto ring = lander::body_surface_ring(
+            body, bpos, cam, ship, lander::BodyRenderCoverage::kSurfacePatch,
+            0.0);
+        const auto centre = lander::to_screen_point(bpos.x, bpos.y, cam);
+        const auto polygon =
+            lander::body_fill_polygon(ring, centre,
+                                      lander::BodyRenderCoverage::kSurfacePatch,
+                                      cam);
+        const size_t n = ring.outer.size();
+
+        char label[80];
+        std::snprintf(label, sizeof(label),
+                      "%.0f px/m patch uses an inner closure arc, not a "
+                      "fixed bottom line",
+                      scale);
+        check(polygon.size() == 2 * n, label);
+
+        bool vertices_safe = true;
+        for (size_t i = n; i < polygon.size(); ++i) {
+            if (!lander::point_outside_viewport(polygon[i], cam, 32.0)) {
+                vertices_safe = false;
+                break;
+            }
+        }
+        check(vertices_safe, "patch closure vertices are outside the viewport");
+
+        bool segments_safe = true;
+        for (size_t i = n; i + 1 < polygon.size(); ++i) {
+            if (lander::segment_intersects_viewport(polygon[i], polygon[i + 1],
+                                                    cam, 32.0)) {
+                segments_safe = false;
+                break;
+            }
+        }
+        if (segments_safe && n > 0 && polygon.size() >= n + 1) {
+            if (lander::segment_intersects_viewport(polygon[n - 1],
+                                                    polygon[n], cam, 32.0)) {
+                segments_safe = false;
+            }
+            if (lander::segment_intersects_viewport(
+                    polygon.back(), polygon.front(), cam, 32.0)) {
+                segments_safe = false;
+            }
+        }
+        check(segments_safe,
+              "patch closure segments stay outside the viewport");
+    }
+    check(saw_patch, "a close local view uses a viewport-safe patch");
+}
+
+// M05-R3-25: the local patch is sampled from the same terrain as the full
+// body: every patch vertex lies on the terrain radius for its world angle.
+void test_body_surface_patch_matches_terrain() {
+    lander::Body body;
+    body.reference_radius = lander::kReferenceRadius;
+    body.terrain = lander::Terrain(503);
+    const lander::Vec2 bpos{0.0, 0.0};
+    const lander::Vec2 ship{0.0, body.reference_radius + 20.0};
+
+    lander::CameraParams p{};
+    p.base_scale = 56.0;
+    lander::Camera cam(p);
+    cam.snap(ship.x, ship.y, 0.0);
+
+    const auto ring = lander::body_surface_ring(
+        body, bpos, cam, ship, lander::BodyRenderCoverage::kSurfacePatch, 0.0);
+    const auto centre = lander::to_screen_point(bpos.x, bpos.y, cam);
+
+    bool on_terrain = ring.outer.size() >= 2;
+    for (const auto& v : ring.outer) {
+        const double wx = (v.x - centre.x) / cam.scale();
+        const double wy = -(v.y - centre.y) / cam.scale();
+        const double theta = std::atan2(wy, wx);
+        const double expected = body.terrain.surface_radius_at_angle(theta);
+        const double actual = std::hypot(wx, wy);
+        if (!std::isfinite(actual) ||
+            std::fabs(actual - expected) > 1.0e-3) {
+            on_terrain = false;
+            break;
+        }
+    }
+    check(on_terrain, "patch vertices lie on the body terrain");
+}
+
+// M05-R3-27: the wide LOCAL fill stays a bounded body-sized polygon (the old
+// fixed-bottom closure could create a giant vertical column).
+void test_wide_local_body_fill_is_bounded() {
+    const lander::BinarySystem sys =
+        lander::BinarySystem::canonical(178976.334, 503, 9001);
+    const lander::Vec2 bpos{0.0, 0.0};
+    const double scales[] = {14.0 * 0.01, 14.0 * 0.03, 14.0 * 0.04};
+
+    for (int bi = 0; bi < 2; ++bi) {
+        const lander::Body& body = sys.body(bi);
+        const lander::Vec2 ship{0.0, body.reference_radius + 20.0};
+
+        for (double scale : scales) {
+            lander::CameraParams p{};
+            p.base_scale = scale;
+            lander::Camera cam(p);
+            cam.snap(ship.x, ship.y, 0.0);
+
+            const auto coverage =
+                lander::body_render_coverage(body, bpos, cam, ship, 0.0);
+            const auto ring = lander::body_surface_ring(
+                body, bpos, cam, ship, coverage, 0.0);
+            const auto centre = lander::to_screen_point(bpos.x, bpos.y, cam);
+            const auto polygon =
+                lander::body_fill_polygon(ring, centre, coverage, cam);
+
+            char label[80];
+            std::snprintf(label, sizeof(label),
+                          "body%d wide LOCAL %.2f px/m fill is bounded", bi,
+                          scale);
+
+            bool finite = polygon.size() == ring.outer.size();
+            bool in_int_range = finite;
+            double min_x = 1.0e30, max_x = -1.0e30;
+            double min_y = 1.0e30, max_y = -1.0e30;
+            for (const auto& v : polygon) {
+                if (!std::isfinite(v.x) || !std::isfinite(v.y)) {
+                    finite = false;
+                }
+                if (std::fabs(v.x) > 1.0e9 || std::fabs(v.y) > 1.0e9) {
+                    in_int_range = false;
+                }
+                min_x = std::min(min_x, v.x);
+                max_x = std::max(max_x, v.x);
+                min_y = std::min(min_y, v.y);
+                max_y = std::max(max_y, v.y);
+            }
+            check(finite, label);
+            check(in_int_range, label);
+
+            const double projected = body.terrain.max_surface_radius() * scale;
+            std::snprintf(label, sizeof(label),
+                          "body%d wide LOCAL %.2f px/m fill is body-sized",
+                          bi, scale);
+            check((max_x - min_x) <= 2.0 * projected + 64.0 &&
+                      (max_y - min_y) <= 2.0 * projected + 64.0,
+                  label);
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -506,6 +759,11 @@ int main() {
     test_body_surface_ring_matrix();
     test_body_annulus_shared_endpoints();
     test_local_window_covers_arc();
+    test_body_render_coverage_wide_local_full();
+    test_body_render_coverage_ignores_camera_mode();
+    test_body_fill_patch_closure_is_viewport_safe();
+    test_body_surface_patch_matches_terrain();
+    test_wide_local_body_fill_is_bounded();
 
     if (failures == 0) {
         std::puts("All lander_render_geom_tests passed");

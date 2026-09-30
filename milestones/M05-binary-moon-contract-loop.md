@@ -1082,6 +1082,12 @@ Add tests covering at least:
   minimum while LOCAL AUTO keeps the readability floor (M05-R3-11)
 - HUD zoom displays use unambiguous adaptive formatting such as `0.04X`,
   `0.10X`, `0.25X`, `1.00X` (M05-R3-14)
+- body render coverage is geometry-driven rather than camera-mode or
+  reference-body driven: at wide zooms where a partial arc's closure could be
+  visible, both bodies render the full closed body; a local surface patch is
+  used only when its endpoints and closure are safely outside the visible
+  viewport, with no fixed screen-bottom closure and no visible radial
+  seam/tick artifacts (M05-R3-23..26)
 - `R x3` fires the same-seed retry; single/double presses do nothing
   (M05-R3-10)
 - the `B x3` synchronous-orbit initializer places a one-shot co-rotating
