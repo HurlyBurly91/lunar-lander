@@ -652,4 +652,5 @@ game. Full stable semantics live in the M06 milestone specification.
   Depends: M06-R1-D09
   Evidence:
   - `STATUS.md` and `TASKS.md` set to `AWAITING HUMAN VERIFICATION`.
-  - Commit and push are the remaining gate actions for this ledger update.
+  - The M06 implementation and state update were committed as
+    `8f94974396e5bdb4af09f115165ae64e671c60f7` and pushed to `origin/main`.
