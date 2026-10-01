@@ -1,6 +1,7 @@
 // M05 simulation tests: the two-body binary system, body-relative navigation,
 // landing / crash / takeoff rules, the contract loop, circularize, and the
 // presentation-only helpers (interpolation, flame animation).
+#include "lander/guarded_actions.hpp"
 #include "lander/sim.hpp"
 
 #include <algorithm>
@@ -2033,6 +2034,57 @@ void test_rotating_determinism() {
           "the reset rotation phase is zero");
 }
 
+// M05-R4-03: the reaction-wheel damping control is a discrete GUI toggle
+// composed into the simulation input. The test covers the pure toggle rules
+// (discrete presses, no autorepeat, manual-rotation priority, inactive
+// context, and reset) so the GUI can rely on one small helper rather than
+// duplicating the composition.
+void test_reaction_wheel_toggle() {
+    lander::ReactionWheelToggle rw;
+    check(!rw.enabled(), "the reaction-wheel toggle starts OFF");
+    check(!rw.input(false), "an OFF reaction-wheel toggle produces no input");
+
+    rw.press();
+    check(rw.enabled(), "a non-repeat E press turns the reaction wheels ON");
+    check(rw.input(false),
+          "an ON reaction-wheel toggle enables damping without rotation");
+
+    check(!rw.input(true),
+          "manual rotation suppresses the damping input while the toggle is ON");
+    check(rw.enabled(),
+          "manual rotation does not switch the stored reaction-wheel toggle OFF");
+    check(rw.input(false),
+          "releasing manual rotation resumes damping automatically");
+
+    rw.press();
+    check(!rw.enabled(), "a second non-repeat E press turns the wheels OFF");
+    check(!rw.input(false),
+          "an OFF reaction-wheel toggle produces no damping input again");
+
+    rw.press();
+    check(rw.input(false, true),
+          "an active ON reaction-wheel toggle produces damping input");
+    check(!rw.input(false, false),
+          "an inactive context disables the reaction-wheel input without "
+          "changing the stored toggle");
+    check(rw.enabled(),
+          "an inactive context does not clear the stored reaction-wheel "
+          "toggle");
+
+    rw.press();  // OFF again
+    rw.press(true);
+    check(!rw.enabled(), "key autorepeat does not toggle the reaction wheels");
+
+    rw.press();  // ON
+    rw.press(true);
+    check(rw.enabled(), "key autorepeat while ON does not toggle the wheels");
+
+    rw.reset();
+    check(!rw.enabled(), "resetting the reaction-wheel toggle turns it OFF");
+    check(!rw.input(false),
+          "a reset reaction-wheel toggle produces no damping input");
+}
+
 int main() {
     test_reference_values();
     test_terrain();
@@ -2055,6 +2107,7 @@ int main() {
     test_reference_body_influence();
     test_target_range_rate();
     test_reaction_wheel_damping();
+    test_reaction_wheel_toggle();
     test_navigation_cues();
     test_hud_helper_readouts();
     test_landed_attachment_rotating();

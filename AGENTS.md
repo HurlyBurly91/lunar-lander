@@ -526,3 +526,16 @@ until the user explicitly confirms the corrected behavior.
 If the new request supersedes an earlier active requirement, preserve that
 relationship explicitly in `TASKS.md` rather than deleting or silently rewriting
 the earlier requirement.
+
+## Canonical domain rules
+
+Stable cross-milestone game/system rules may live under `docs/`; `docs/` is an
+active project path. Read the relevant canonical document whenever current work
+touches its domain, but do not load all of `docs/` automatically.
+
+For gravity, body scaling, orbital mechanics, ephemerides, or trajectory
+physics, the canonical reference is `docs/physics-model-gravity.md`.
+
+Authority for current work is: latest user instruction -> TASKS.md -> active
+milestone -> applicable `docs/` rules -> PROJECT.md. If a requirement changes a
+canonical rule, update the applicable document in the same work.

@@ -166,4 +166,30 @@ private:
     Sequence sequences_[kKeyCount]{};
 };
 
+// M05-R4-03: discrete reaction-wheel damping toggle. This is a
+// GUI/control-layer state object, not a simulation input. The GUI presses it
+// on each non-autorepeat `E` key-down, composes the per-frame
+// `Input.reaction_wheels` value from it, and resets it whenever a new
+// mission/seed begins. `active` lets the caller suppress the input entirely
+// (for example after a crash) without changing the stored toggle state.
+class ReactionWheelToggle {
+public:
+    void press(bool repeat = false) {
+        if (!repeat) {
+            enabled_ = !enabled_;
+        }
+    }
+
+    void reset() { enabled_ = false; }
+
+    bool enabled() const { return enabled_; }
+
+    bool input(bool manual_rotation, bool active = true) const {
+        return active && enabled_ && !manual_rotation;
+    }
+
+private:
+    bool enabled_{false};
+};
+
 }  // namespace lander

@@ -581,13 +581,28 @@ Add a small manual reaction-wheel control for angular-rate damping.
 Requirements:
 
 - use an unused, documented key
-- while held, apply a finite angular acceleration opposite `State::omega`
-- taper or clamp the effect near zero
-- release ends the damping
+- the simulation applies a finite angular acceleration opposite `State::omega`
+  while `Input.reaction_wheels` is true, and tapers/clamps the effect near zero
 - do not directly set `omega = 0`
 - do not add translation, teleport, autopilot, or fuel consumption
 
 This is a manual pilot aid, not an automatic stabilization system.
+
+M05-R4 replaces the original hold-to-damp control rule with a discrete `E`
+toggle that lives in the GUI/control layer:
+
+- `E` toggles the reaction-wheel state OFF -> ON -> OFF; key autorepeat does
+  not toggle it.
+- When the toggle is ON and no manual A/D or LEFT/RIGHT rotation is
+  commanded, the per-frame `Input.reaction_wheels` value is true.
+- When manual rotation is commanded, manual rotation has priority for that
+  step: the per-frame `Input.reaction_wheels` value is false, but the stored
+  toggle remains ON and damping resumes automatically when the player
+  releases the rotation control.
+- Retry/new mission/new seed reset the stored toggle to OFF; a crash produces
+  no active control effect.
+- The HUD shows a compact `RW ON` / `RW OFF` state indicator and the control
+  legend documents `E` as the reaction-wheel toggle.
 
 ---
 
@@ -758,7 +773,10 @@ Requirements:
   correctly shows a stationary starfield
 - include a minimum-size ship marker when the correctly scaled lander would be
   difficult to see, and switch to a real lander representation once it is
-  readable
+  readable (M05-R4: while the minimum-size marker is in use, active
+  main-engine thrust shows a compact deterministic plume behind the marker,
+  opposite the nose, rotating with attitude/camera and growing/brightening
+  with throttle; the full-model flame is unchanged)
 - mouse wheel changes a target SYSTEM zoom multiplicatively
 - rendered SYSTEM zoom eases toward the target rather than jumping
 - SYSTEM zoom is clamped between a wide minimum and a close maximum of at
@@ -796,6 +814,13 @@ reference-body selection with camera behavior.
 
 The exact key may be chosen to fit the current control layout and must be shown
 in the HUD/help.
+
+M05-R4 camera-control refinement: in a local view, `M` continues to toggle
+LOCAL AUTO / LOCAL MANUAL. In the SYSTEM view, `M` leaves SYSTEM directly into
+LOCAL MANUAL (restoring the saved local zoom/state and easing the camera angle
+to the current reference-body radial-down direction instead of snapping). `V`
+retains its save/restore round-trip behavior, so a later `V` from SYSTEM
+restores the local mode that was saved when SYSTEM was entered.
 
 ---
 
@@ -1315,3 +1340,12 @@ After acceptance:
 6. allow the post-commit hook to push main to origin
 7. verify origin/main
 8. do not begin M06 in the same task
+
+---
+
+## Canonical physics reference
+
+The gravity, body-scaling, inertial-frame, binary-mechanics, tidal-locking, and
+body-relative rules established by this milestone are maintained for future
+milestones in `docs/physics-model-gravity.md`. M05-specific requirements and
+acceptance history remain authoritative in this milestone document.

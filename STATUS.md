@@ -6,19 +6,22 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M05-R3-23..30 corrective round complete, including the H17/H22 human
-re-test (PASS on the `1f3eae3` corrected build, 2026-09-29). M05 remains in
-AWAITING HUMAN VERIFICATION for the older still-open human items
-(M05-R1-H01..H07, M05-R2-H01..H04, and M05-R3-H01..H16). The round
-implemented geometry-driven body render coverage (full body at wide zoom,
-viewport-safe local patch only when its closure is provably outside the
-viewport), removed the visible radial tick/seam artifacts, made
-PRIMARY/COMPANION treatment identical, and added new headless regression
-tests. See TASKS.md.
+Phase: M05-R4 final camera/control presentation polish. All M05-R4 automated
+work is complete (2026-09-30): `M` from SYSTEM enters LOCAL MANUAL through
+`Camera::enter_manual()`, the minimum-size SYSTEM marker shows a compact
+deterministic thrust plume, and reaction-wheel damping is a visible `E`
+toggle with manual-rotation priority and reset on new mission/seed/retry.
+The M05-R4 build passes the full test suite and headless GUI smokes. The
+only open M05 items are M05-R4-H01..H03. All previously open existing M05
+human-verification items (M05-R1-H01..H07, M05-R2-H01..H04,
+M05-R3-H01..H16) passed in the final M05 playtest on 2026-09-30, and
+H17..H22 remain PASS from the `1f3eae3` build. See TASKS.md. M05 must not be
+closed until M05-R4-H01..H03 are human-confirmed.
 
-M05-R1 and M05-R2 automated work is complete, but their human-verification
-items remain open. Human verification of the M05-R2 build produced the
-M05-R3 follow-up request group (see TASKS.md): LOCAL AUTO needs a projected
+M05-R1 and M05-R2 automated work is complete, and their human-verification
+items passed in the final M05 playtest on 2026-09-30. Earlier human
+verification of the M05-R2 build produced the M05-R3 follow-up request group
+(see TASKS.md): LOCAL AUTO needs a projected
 lander readability floor, SYSTEM zoom needs smooth wide-to-close wheel control
 with a readable lander, the HUD needs explicit reference-frame readouts,
 reaction-wheel angular damping is requested, a navigation/gravity vector
@@ -66,8 +69,7 @@ wide-LOCAL-zoom rendering failure (M05-R3-17), fixes black terrain/body seams
 (M05-R3-18), makes `T x3` non-blocking (M05-R3-19), reworks `T x3` to change
 only velocity with no position teleport (M05-R3-20), adds a starfield
 no-regression check (M05-R3-21), and handles the b49a476 human-verification
- state (M05-R3-22). Automated work for this round is complete (2026-09-29);
-awaiting human re-test on the corrected build.
+ state (M05-R3-22). Automated work for this round is complete (2026-09-29).
 
 Human re-test of that corrected build (57a9b8a, 2026-09-29) confirmed H18
 (starfield), H21 (`T x3`), and the still-closed H19/H20, but H17 (wide LOCAL
@@ -79,10 +81,13 @@ M05-R3-23..30 follow-up corrective round, whose automated work is complete
 and whose H17/H22 human re-test subsequently passed on the `1f3eae3`
 corrected build (2026-09-29).
 
-All still-open human-verification items are M05-R1-H01..H07,
-M05-R2-H01..H04, and M05-R3-H01..H16; they remain open until explicitly
-confirmed by the user. H17/H18/H19/H20/H21/H22 are closed with human
-evidence. M05 remains open and no completion record has been written.
+The final M05 playtest (2026-09-30) confirmed all previously open existing
+human-verification items: M05-R1-H01..H07, M05-R2-H01..H04, and
+M05-R3-H01..H16. H17/H18/H19/H20/H21/H22 had already passed on the `1f3eae3`
+corrected build. The playtest also produced the final M05-R4 polish request
+group. All M05-R4 automated work is now complete, so M05 is awaiting
+human verification of M05-R4-H01..H03; M05 remains open and no completion
+record has been written until those items are confirmed.
 
 M05 turns the M04 flight simulation into the first complete game loop by
 extending the world to a compact two-body system: a 1/9-scale companion

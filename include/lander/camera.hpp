@@ -106,6 +106,26 @@ public:
     }
     bool system_view() const { return mode_ == CameraMode::kSystem; }
 
+    // M05-R4-01: enter the local MANUAL camera directly. From SYSTEM this
+    // restores the saved local zoom/want-landing state and forces the local
+    // mode to MANUAL; from a local AUTO it switches to MANUAL; from an
+    // already MANUAL local camera it is a no-op except for recording MANUAL
+    // as the saved local mode. The current angle is deliberately left in
+    // place so the next update() eases it to the reference-body radial-down
+    // direction instead of snapping.
+    void enter_manual() {
+        if (system_view()) {
+            wants_landing_ = saved_wants_landing_;
+            zoom_ = saved_zoom_;
+            system_target_zoom_ = params_.system_zoom;
+            angle_transition_active_ = false;
+        }
+        mode_ = CameraMode::kManual;
+        saved_mode_ = CameraMode::kManual;
+        saved_zoom_ = zoom_;
+        saved_wants_landing_ = wants_landing_;
+    }
+
     void snap(double x, double y, double target_angle = kNoTargetAngle) {
         target_x_ = x;
         target_y_ = y;
@@ -394,6 +414,57 @@ inline MarkerTriangle marker_triangle(double cx, double cy, double ship_angle,
     return {nose,
             {bx + px * 0.5 * size, by + py * 0.5 * size},
             {bx - px * 0.5 * size, by - py * 0.5 * size}};
+}
+
+struct MarkerPlume {
+    bool active{};
+    MarkerPoint base{};
+    MarkerPoint tip{};
+    MarkerPoint left{};
+    MarkerPoint right{};
+};
+
+// M05-R4-02: compact screen-space thrust plume for the minimum-size ship
+// marker. It is drawn opposite the marker nose, rotates with the ship and
+// the camera, and grows/brightens monotonically with the authoritative
+// presentation throttle. It is a presentation cue only; it does not affect
+// physics and is intentionally shorter than any navigation vector.
+inline MarkerPlume marker_plume(double cx, double cy, double ship_angle,
+                                double camera_angle, double marker_size,
+                                double throttle) {
+    MarkerPlume out{};
+    const double t = std::clamp(throttle, 0.0, 1.0);
+    if (t <= 0.0) {
+        return out;
+    }
+
+    const double nx = -std::sin(ship_angle);
+    const double ny = std::cos(ship_angle);
+    const double c = std::cos(camera_angle);
+    const double s = std::sin(camera_angle);
+    double dx = nx * c + ny * s;
+    double dy = nx * s - ny * c;
+    const double len = std::hypot(dx, dy);
+    if (len < 1.0e-9) {
+        dx = 0.0;
+        dy = -1.0;
+    } else {
+        dx /= len;
+        dy /= len;
+    }
+
+    const double base_r = -0.6 * marker_size;
+    const double tail = 4.0 + 8.0 * t;
+    const double half = 1.5 + 1.5 * t;
+    const double px = -dy;
+    const double py = dx;
+
+    out.active = true;
+    out.base = {cx + dx * base_r, cy + dy * base_r};
+    out.tip = {cx + dx * (base_r - tail), cy + dy * (base_r - tail)};
+    out.left = {out.base.x + px * half, out.base.y + py * half};
+    out.right = {out.base.x - px * half, out.base.y - py * half};
+    return out;
 }
 
 struct ScreenRect {

@@ -40,3 +40,7 @@ Do not implement future milestones.
 
 At accepted milestone completion, follow the milestone Closeout section and the
 bounded TASKS.md archival/reset procedure in AGENTS.md.
+
+When current work touches a domain with canonical rules under `docs/`, read the
+relevant document before implementation. Gravity/orbital work uses
+`docs/physics-model-gravity.md`.

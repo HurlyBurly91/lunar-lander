@@ -563,6 +563,28 @@ void draw_lander(SDL_Renderer* renderer, const lander::State& s,
         const Vec2 p = to_screen(s.x, s.y, cam);
         const Color marker =
             s.crashed ? make_color(158, 64, 52) : make_color(235, 240, 250);
+
+        // M05-R4-02: a compact, deterministic thrust plume behind the
+        // marker. It is drawn first so the marker and heading tick remain
+        // readable over it, and it is suppressed on a crashed ship even if a
+        // stale throttle value is present.
+        const double plume_throttle = s.crashed ? 0.0 : thrust_level;
+        const lander::MarkerPlume plume = lander::marker_plume(
+            p.x, p.y, s.angle, cam.angle(), 9.0, plume_throttle);
+        if (plume.active) {
+            // The renderer's simple colour model has no alpha channel, so the
+            // throttle's "intensity" cue is expressed as a deterministic
+            // brightness ramp instead of transparency.
+            const double t = std::clamp(thrust_level, 0.0, 1.0);
+            fill_poly(
+                renderer,
+                {Vec2{plume.left.x, plume.left.y},
+                 Vec2{plume.tip.x, plume.tip.y},
+                 Vec2{plume.right.x, plume.right.y}},
+                make_color(255, static_cast<Uint8>(96 + 42 * t),
+                           static_cast<Uint8>(24 + 14 * t)));
+        }
+
         const lander::MarkerTriangle tri =
             lander::marker_triangle(p.x, p.y, s.angle, cam.angle(), 9.0);
         fill_poly(
@@ -760,6 +782,7 @@ void draw_navigation_overlay(SDL_Renderer* renderer,
 
 void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
                std::uint64_t seed, double throttle,
+               bool reaction_wheels_enabled,
                const lander::Camera& cam,
                const std::string& tap_progress) {
     const lander::State& s = sim.state();
@@ -908,7 +931,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
               kWindowHeight - 72, 1, dim);
     draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  G NAV", 18,
               kWindowHeight - 56, 1, dim);
-    draw_text(renderer, "E WHEELS  O X3 CIRC  SH+O X3 CCW", 18,
+    draw_text(renderer, "E RW TOGGLE  O X3 CIRC  SH+O X3 CCW", 18,
               kWindowHeight - 40, 1, dim);
     draw_text(renderer, "F FUEL  P PAUSE  N X3 SEED  R X3 RETRY", 18,
               kWindowHeight - 24, 1, dim);
@@ -930,6 +953,16 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
     const int cam_x =
         kWindowWidth - 8 - static_cast<int>(cam_line.size()) * 6;
     draw_text(renderer, cam_line, cam_x, 16, 1, cam_color);
+
+    // M05-R4-03: compact reaction-wheel toggle state. The indicator reports
+    // the stored toggle, not the instantaneous input: manual rotation
+    // suppresses damping for that step but does not switch the toggle off.
+    const std::string rw_line =
+        reaction_wheels_enabled ? "RW ON" : "RW OFF";
+    const Color rw_color = reaction_wheels_enabled ? green : dim;
+    const int rw_x =
+        kWindowWidth - 8 - static_cast<int>(rw_line.size()) * 6;
+    draw_text(renderer, rw_line, rw_x, 32, 1, rw_color);
 }
 
 // ----------------------------------------------------------------- overlay
@@ -1095,12 +1128,12 @@ void print_usage() {
         "                   binary (developer mode; the V key toggles it)\n"
         "  --help           show this message\n"
         "Controls: Up/W increase throttle, Down/S decrease throttle, X\n"
-        "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual),\n"
-        "V system view, mouse wheel zoom, O x3 clockwise circularize around\n"
-        "the reference body, Shift+O x3 counter-clockwise circularize, E\n"
-        "reaction-wheel angular damping, G navigation/gravity overlay, F\n"
-        "refill fuel (also on the ground), N x3 new seed, P pause, Esc/Q\n"
-        "quit.\n"
+        "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual;\n"
+        "from System enters Manual), V system view, mouse wheel zoom, O x3\n"
+        "clockwise circularize around the reference body, Shift+O x3\n"
+        "counter-clockwise circularize, E toggle reaction-wheel damping, G\n"
+        "navigation/gravity overlay, F refill fuel (also on the ground), N x3\n"
+        "new seed, P pause, Esc/Q quit.\n"
         "Developer controls (all triple-tap guarded, progress shown on the\n"
         "HUD, firing on the third tap within 700 ms):\n"
         "  R x3  retry the same seed\n"
@@ -1214,12 +1247,18 @@ int main(int argc, char** argv) {
     // circularize CW/CCW).
     lander::TripleTapGuard tap_guard;
 
+    // M05-R4-03: persistent reaction-wheel toggle. It is GUI/control state,
+    // not simulation state; the per-frame input below composes it with the
+    // manual-rotation priority rule.
+    lander::ReactionWheelToggle reaction_wheels;
+
     auto start_mission = [&]() {
         sim.reset(seed);
         throttle = 0.0;
         paused = false;
         flame_clock = 0.0;
         tap_guard.reset();
+        reaction_wheels.reset();
         last_completed_seen = sim.last_completed();
         contract_banner_time = 0.0;
         debug_message.clear();
@@ -1298,11 +1337,22 @@ int main(int argc, char** argv) {
                         // Immediate main-engine cutoff.
                         throttle = 0.0;
                         break;
+                    case SDL_SCANCODE_E:
+                        // M05-R4-03: discrete reaction-wheel toggle. The
+                        // outer event filter already excludes autorepeat, and
+                        // the helper ignores repeats as well.
+                        reaction_wheels.press();
+                        break;
                     case SDL_SCANCODE_M:
-                        // Toggle between the automatic and the manual local
-                        // camera. (Ignored while the system view is up; V
-                        // leaves it.)
-                        pending_cam_toggle = true;
+                        // M05-R4-01: in a local view, M toggles AUTO and
+                        // MANUAL. In SYSTEM view, M leaves SYSTEM directly
+                        // into MANUAL (V still performs the normal
+                        // save/restore round trip).
+                        if (cam.system_view()) {
+                            cam.enter_manual();
+                        } else {
+                            pending_cam_toggle = true;
+                        }
                         break;
                     case SDL_SCANCODE_V:
                         // Toggle the system-scale view of the whole binary.
@@ -1421,7 +1471,13 @@ int main(int argc, char** argv) {
         // the preserved physics.
         input.rotate_right = key(SDL_SCANCODE_LEFT) || key(SDL_SCANCODE_A);
         input.rotate_left = key(SDL_SCANCODE_RIGHT) || key(SDL_SCANCODE_D);
-        input.reaction_wheels = key(SDL_SCANCODE_E);
+        // M05-R4-03: the stored toggle remains ON while a manual rotation is
+        // commanded, but the simulation receives no damping input for that
+        // step. After a crash there is no active control effect even if the
+        // toggle happens to be ON.
+        input.reaction_wheels = reaction_wheels.input(
+            input.rotate_left || input.rotate_right,
+            !sim.state().crashed);
 
         if (!paused) {
             sim.advance(dt, input);
@@ -1530,8 +1586,9 @@ int main(int argc, char** argv) {
         if (nav_overlay && !s.crashed && !paused) {
             draw_navigation_overlay(renderer, sim, render_state, cam);
         }
-        draw_hud(renderer, sim, seed, throttle, cam,
-                 tap_guard.progress_label(SDL_GetTicks()));
+        draw_hud(renderer, sim, seed, throttle,
+                  reaction_wheels.enabled(), cam,
+                  tap_guard.progress_label(SDL_GetTicks()));
         draw_contract_banner(renderer, last_completed_seen,
                               contract_banner_time);
         draw_landed_banner(renderer, s);

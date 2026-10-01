@@ -749,6 +749,91 @@ void test_wide_local_body_fill_is_bounded() {
     }
 }
 
+// M05-R4-02: the minimum-size SYSTEM marker's thrust plume is a pure
+// screen-space presentation object. It must be inactive at zero throttle,
+// point opposite the marker nose, rotate consistently with the camera, and
+// grow monotonically and boundedly with throttle.
+void test_marker_plume_geometry() {
+    const double cx = 100.0;
+    const double cy = 100.0;
+    const double size = 9.0;
+
+    const auto zero = lander::marker_plume(cx, cy, 0.0, 0.0, size, 0.0);
+    check(!zero.active, "a zero-throttle marker plume is inactive");
+
+    const auto mid = lander::marker_plume(cx, cy, 0.0, 0.0, size, 0.5);
+    check(mid.active, "a positive-throttle marker plume is active");
+
+    bool finite = true;
+    for (const auto& point : {mid.base, mid.tip, mid.left, mid.right}) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+            finite = false;
+        }
+    }
+    check(finite, "the marker plume vertices are finite");
+
+    const auto triangle =
+        lander::marker_triangle(cx, cy, 0.0, 0.0, size);
+    const double nose_dx = triangle.nose.x - cx;
+    const double nose_dy = triangle.nose.y - cy;
+    const double tail_dx = mid.tip.x - mid.base.x;
+    const double tail_dy = mid.tip.y - mid.base.y;
+    const double dot = nose_dx * tail_dx + nose_dy * tail_dy;
+    const double cross = nose_dx * tail_dy - nose_dy * tail_dx;
+    check(dot < 0.0, "the marker plume points opposite the marker nose");
+    check_close(cross, 0.0, 1.0e-9,
+                "the marker plume is collinear with the marker nose");
+
+    const double base_cx = (triangle.left.x + triangle.right.x) / 2.0;
+    const double base_cy = (triangle.left.y + triangle.right.y) / 2.0;
+    check_close(mid.base.x, base_cx, 1.0e-9,
+                "the marker plume starts at the marker base centre");
+    check_close(mid.base.y, base_cy, 1.0e-9,
+                "the marker plume starts at the marker base centre (y)");
+
+    const auto low = lander::marker_plume(cx, cy, 0.0, 0.0, size, 0.25);
+    const auto high = lander::marker_plume(cx, cy, 0.0, 0.0, size, 0.75);
+    const double low_len =
+        std::hypot(low.tip.x - low.base.x, low.tip.y - low.base.y);
+    const double high_len = std::hypot(high.tip.x - high.base.x,
+                                       high.tip.y - high.base.y);
+    check(high_len > low_len,
+          "the marker plume length increases with throttle");
+    const double low_width =
+        std::hypot(low.left.x - low.right.x, low.left.y - low.right.y);
+    const double high_width =
+        std::hypot(high.left.x - high.right.x, high.left.y - high.right.y);
+    check(high_width > low_width,
+          "the marker plume width increases with throttle");
+
+    // A 90-degree camera rotation rotates the whole plume consistently with
+    // the marker triangle's screen-space convention.
+    const auto cam0 = lander::marker_plume(cx, cy, 0.3, 0.0, size, 0.8);
+    const auto cam90 = lander::marker_plume(
+        cx, cy, 0.3, 0.5 * lander::kPi, size, 0.8);
+    const double v0x = cam0.tip.x - cam0.base.x;
+    const double v0y = cam0.tip.y - cam0.base.y;
+    const double v90x = cam90.tip.x - cam90.base.x;
+    const double v90y = cam90.tip.y - cam90.base.y;
+    check_close(v90x, -v0y, 1.0e-9,
+                "a 90-degree camera rotation rotates the plume x component");
+    check_close(v90y, v0x, 1.0e-9,
+                "a 90-degree camera rotation rotates the plume y component");
+
+    // Ship attitude rotates the plume as well: at ship angle 0 the nose is
+    // up, so the plume is below; at +pi/2 the nose is left, so the plume is
+    // to the right.
+    const auto ship0 = lander::marker_plume(cx, cy, 0.0, 0.0, size, 0.5);
+    const auto ship90 =
+        lander::marker_plume(cx, cy, 0.5 * lander::kPi, 0.0, size, 0.5);
+    check_close(ship0.tip.x - cx, 0.0, 1.0e-9,
+                "at ship angle 0 the plume is vertically below the marker");
+    check(ship0.tip.y > cy,
+          "at ship angle 0 the plume points down on screen (larger y)");
+    check(ship90.tip.x > cx,
+          "at ship angle +pi/2 the plume points horizontally to the right");
+}
+
 }  // namespace
 
 int main() {
@@ -764,6 +849,7 @@ int main() {
     test_body_fill_patch_closure_is_viewport_safe();
     test_body_surface_patch_matches_terrain();
     test_wide_local_body_fill_is_bounded();
+    test_marker_plume_geometry();
 
     if (failures == 0) {
         std::puts("All lander_render_geom_tests passed");

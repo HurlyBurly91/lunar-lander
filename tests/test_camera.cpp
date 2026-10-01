@@ -740,6 +740,115 @@ void test_crash_modal_geometry() {
           "the crash modal clamps to a small viewport");
 }
 
+// M05-R4-01: M from a local view toggles AUTO/MANUAL; M from SYSTEM enters
+// MANUAL directly, restores the saved local zoom, and eases the angle to the
+// target reference-body direction without changing simulation state.
+void test_m_local_toggles_auto_manual() {
+    lander::Camera cam;
+    const double R = lander::kReferenceRadius + 20.0;
+    cam.snap(0.0, R);
+    check(cam.mode() == lander::CameraMode::kAuto,
+          "M local test starts in AUTO");
+
+    cam.update(0.0, 0.0, R, 20.0, 0, true);
+    check(cam.mode() == lander::CameraMode::kManual,
+          "M from LOCAL AUTO enters MANUAL");
+
+    cam.update(0.0, 0.0, R, 20.0, 0, true);
+    check(cam.mode() == lander::CameraMode::kAuto,
+          "M from LOCAL MANUAL returns to AUTO");
+}
+
+void test_m_from_system_enters_manual() {
+    lander::Camera cam;
+    const double R = lander::kReferenceRadius + 20.0;
+    cam.snap(0.0, R);
+    check(cam.mode() == lander::CameraMode::kAuto,
+          "M-from-system test starts in AUTO");
+
+    cam.set_system(true);
+    cam.update(1.0 / 60.0, 0.0, R, 20.0, 0, false);
+    check(cam.system_view(), "premise: camera is in SYSTEM view");
+
+    cam.enter_manual();
+    check(!cam.system_view(), "M from SYSTEM leaves SYSTEM view");
+    check(cam.mode() == lander::CameraMode::kManual,
+          "M from SYSTEM enters LOCAL MANUAL, not the saved AUTO mode");
+    check_close(cam.zoom(), 1.0, 1e-12,
+                "M from SYSTEM restores the saved local zoom");
+
+    // The SYSTEM camera holds angle 0. Leaving into manual should not snap
+    // to an arbitrary local angle; the next update eases toward the
+    // reference-body radial-down direction supplied by the caller.
+    const double tx = R;
+    const double ty = 0.0;
+    const double target_angle = -0.5 * lander::kPi;
+    const double angle_before = cam.angle();
+    check_close(angle_before, 0.0, 1e-12,
+                "premise: SYSTEM left the camera angle at zero");
+    cam.update(1.0 / 60.0, tx, ty, 20.0, 0, false, target_angle);
+    check(!cam.system_view(), "the next update remains in the local view");
+    check(cam.mode() == lander::CameraMode::kManual,
+          "the next update remains MANUAL");
+    check(cam.angle() < angle_before && cam.angle() > target_angle,
+          "the angle starts easing toward the target without snapping");
+
+    for (int i = 0; i < 240; ++i) {
+        cam.update(1.0 / 60.0, tx, ty, 20.0, 0, false, target_angle);
+    }
+    check_close(cam.angle(), target_angle, 1e-6,
+                "the manual camera converges to the radial-down angle");
+    check_anchor(cam, tx, ty);
+}
+
+void test_m_from_system_keeps_v_restore_semantics() {
+    lander::Camera cam;
+    const double R = lander::kReferenceRadius + 20.0;
+    cam.snap(0.0, R);
+    cam.update(0.0, 0.0, R, 20.0, 0, true);  // MANUAL
+    check(cam.mode() == lander::CameraMode::kManual,
+          "premise: local mode before SYSTEM is MANUAL");
+
+    cam.set_system(true);
+    cam.update(1.0 / 60.0, 0.0, R, 20.0, 0, false);
+    cam.set_system(false);
+    check(cam.mode() == lander::CameraMode::kManual,
+          "V restore still returns to the saved MANUAL mode");
+
+    // If the player chooses MANUAL from SYSTEM instead, that explicit choice
+    // becomes the saved local mode for the next V round trip.
+    cam.set_system(true);
+    cam.update(1.0 / 60.0, 0.0, R, 20.0, 0, false);
+    cam.enter_manual();
+    check(cam.mode() == lander::CameraMode::kManual,
+          "M from SYSTEM chooses MANUAL");
+    cam.set_system(true);
+    cam.update(1.0 / 60.0, 0.0, R, 20.0, 0, false);
+    cam.set_system(false);
+    check(cam.mode() == lander::CameraMode::kManual,
+          "a later V restore preserves the explicitly chosen MANUAL mode");
+}
+
+void test_m_from_system_does_not_modify_simulation() {
+    lander::Simulation sim;
+    sim.reset(7);
+    const lander::State before = sim.state();
+    const std::vector<double> before_terrain = sample_terrain(sim.terrain());
+
+    lander::Camera cam;
+    cam.snap(before.x, before.y);
+    cam.set_system(true);
+    cam.update(1.0 / 60.0, before.x, before.y, 20.0, 0, false);
+    cam.enter_manual();
+    for (int i = 0; i < 120; ++i) {
+        cam.update(1.0 / 60.0, before.x, before.y, 20.0, 0, false);
+    }
+
+    check(sim.state() == before, "M from SYSTEM does not modify simulation");
+    check(sample_terrain(sim.terrain()) == before_terrain,
+          "M from SYSTEM does not modify terrain");
+}
+
 }  // namespace
 
 int main() {
@@ -763,6 +872,10 @@ int main() {
     test_system_smooth_zoom_and_no_local_switch();
     test_offscreen_indicator();
     test_marker_triangle_orientation();
+    test_m_local_toggles_auto_manual();
+    test_m_from_system_enters_manual();
+    test_m_from_system_keeps_v_restore_semantics();
+    test_m_from_system_does_not_modify_simulation();
     test_crash_modal_geometry();
 
     if (failures == 0) {

@@ -1,7 +1,7 @@
 # Active Task
 
 Milestone: M05
-Request: M05-R1, M05-R2, M05-R3
+Request: M05-R1, M05-R2, M05-R3, M05-R4
 State: AWAITING HUMAN VERIFICATION
 
 ## Bootstrap note
@@ -60,7 +60,7 @@ identical treatment of both bodies, and re-test/state handling. M05 remains
 ACTIVE during this round and must return to AWAITING HUMAN VERIFICATION when
 the new automated work is complete; it must not be closed.
 
-Automated work for M05-R3-23..30 is complete as of 2026-09-29: `BodyRenderCoverage` / `body_render_coverage(...)` now choose full-body versus local-patch coverage from projected geometry only, the local-patch closure uses a viewport-safe inward concentric arc (no fixed `kWindowHeight + 512.0`), the `scale > 0.35` radial tick path is removed, both bodies use identical coverage, and the new headless geometry tests pass. See the M05-R3-23..30 block in `## Verification evidence`. M05 remains in AWAITING HUMAN VERIFICATION; H17/H22 subsequently passed on the `1f3eae3` corrected build, while the older M05-R1/M05-R2/M05-R3-H01..H16 human items remain open and no M05 completion record is written.
+Automated work for M05-R3-23..30 is complete as of 2026-09-29: `BodyRenderCoverage` / `body_render_coverage(...)` now choose full-body versus local-patch coverage from projected geometry only, the local-patch closure uses a viewport-safe inward concentric arc (no fixed `kWindowHeight + 512.0`), the `scale > 0.35` radial tick path is removed, both bodies use identical coverage, and the new headless geometry tests pass. See the M05-R3-23..30 block in `## Verification evidence`. H17/H22 passed on the `1f3eae3` corrected build, and the final M05 playtest on 2026-09-30 confirmed all remaining existing M05 human items, producing the active M05-R4 final polish group. No M05 completion record is written yet.
 
 M05-R1 human verification (2026-09-28) found three presentation failures:
 (1) the local camera snaps/teleports when the automatically selected reference
@@ -435,41 +435,48 @@ work passes and the user re-confirms every open H-item.
 
 ## Human verification
 
-- [ ] M05-R1-H01 User confirms the primary moon still feels like the accepted
+- [x] M05-R1-H01 User confirms the primary moon still feels like the accepted
   M04 body (gravity, orbit, terrain, presentation).
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R1-H02 User confirms the companion visibly moves around the primary
+- [x] M05-R1-H02 User confirms the companion visibly moves around the primary
   and does not behave like a stationary target with a moving sprite.
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R1-H03 User confirms SYSTEM view makes the spatial relationship
-  understandable, stars remain fixed in screen space, and no visible
-  coordinate-frame teleport occurs when changing reference body or camera
-  view.
+- [x] M05-R1-H03 User confirms SYSTEM view makes the spatial relationship
+  understandable, and no visible coordinate-frame teleport occurs when
+  changing reference body or camera view. Star behaviour is judged under the
+  later M05-R3 inertial-starfield rule.
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R1-H04 User confirms the player can leave the primary and intercept
+- [x] M05-R1-H04 User confirms the player can leave the primary and intercept
   the moving companion: matching companion velocity matters during approach,
   and landing evaluation feels relative to the companion rather than to
   global coordinates.
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R1-H05 User confirms local camera behavior remains usable near both
+- [x] M05-R1-H05 User confirms local camera behavior remains usable near both
   bodies and M04 flame/camera/orbit presentation remains smooth.
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R1-H06 User confirms companion gravity feels like the same
+- [x] M05-R1-H06 User confirms companion gravity feels like the same
   surface-gravity universe at a much smaller scale, and a very-low companion
   orbit behaves on roughly the intended ~30-second local scale, with real
   binary perturbations allowed.
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R1-H07 User confirms the full contract loop: landing on the
+- [x] M05-R1-H07 User confirms the full contract loop: landing on the
   companion completes the contract, the next contract points back to the
   primary, takeoff from the moving companion inherits its motion naturally,
   and returning toward the primary is possible.
   Source: USER (spec, Runtime / human verification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
 ## Derived implementation tasks
 
@@ -737,26 +744,30 @@ prediction, maneuver nodes, autopilot, or other flight-computer features.
 
 ### Human verification
 
-- [ ] M05-R2-H01 When the reference body changes, the local camera rotates
+- [x] M05-R2-H01 When the reference body changes, the local camera rotates
   smoothly to the new body's radial-up (no snap/teleport), and near-surface
   local flight still feels like M04 (readable zoom, stable frame). Re-verifies
   M05-R1-H05.
   Source: USER (issue 1, camera clarification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R2-H02 In SYSTEM view, with the destination offscreen, the edge
+- [x] M05-R2-H02 In SYSTEM view, with the destination offscreen, the edge
   direction indicator clearly points toward it and the HUD CLOSING/OPENING
   speed plus distance make navigation legible without needing both bodies on
   screen. Re-verifies M05-R1-H03 and M05-R1-H04.
   Source: USER (issue 2, camera clarification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R2-H03 The minimum-size ship marker now reads as a small oriented
+- [x] M05-R2-H03 The minimum-size ship marker now reads as a small oriented
   craft (chevron/triangle/silhouette) showing attitude, not a white square, in
   SYSTEM view.
   Source: USER (issue 3)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
-- [ ] M05-R2-H04 Long-range navigation does NOT rely on zooming AUTO/SYSTEM
+- [x] M05-R2-H04 Long-range navigation does NOT rely on zooming AUTO/SYSTEM
   until the ship and destination both fit; the spacecraft stays readable.
   Source: USER (camera clarification)
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 
 ### Derived implementation tasks
 
@@ -823,7 +834,8 @@ Source: USER (human-verification feedback on the M05-R2 build, 2026-09-28; exten
 
 Request group: M05-R3
 
-Status: AWAITING HUMAN VERIFICATION
+Status: HUMAN VERIFICATION COMPLETE (2026-09-30); M05 remains open for active
+M05-R4.
 
 Supersedes: direction-preservation behavior for the `O` circularize control; the new explicit CW/CCW requirement is authoritative. M05-R3-09 additionally supersedes the M05 "Body rotation" non-goal (originally: "Do not add axial rotation in M05"; tidal locking, body spin, and rotational surface velocity listed as non-goals/future work): both moons are now tidally locked and the change is recorded in the milestone spec. M05-R3-12 supersedes the M04 fixed screen-space starfield and the M05 spec "stars remain fixed in screen space" bullets (SYSTEM view requirements, automated verification, human verification): the starfield is now an inertial background that rotates with the final presentation camera angle and does not parallax-translate with the world. M05-R3-13 supersedes M05-R3-02's destination auto-fit zoom and midpoint-focus behavior: the SYSTEM camera never auto-pans; the ship is always exactly centred and the destination remains available through the offscreen indicator and readouts only. M05-R3-20 supersedes M05-R3-16's departure-shell repositioning rule: T x3 no longer moves the spacecraft to a canonical departure shell; it changes only the spacecraft's VELOCITY to a solved ballistic-transfer initial velocity while leaving the current position bit-identical (like circularize: an instantaneous velocity-state initializer). The milestone spec's `T x3` section has been updated accordingly.
 
@@ -2133,33 +2145,49 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
 
 ### Human verification
 
-- [ ] M05-R3-H01 LOCAL AUTO keeps the lander readable at altitude (~16 px major/height) and does not zoom out until the ship is a dot.
-- [ ] M05-R3-H02 SYSTEM mouse-wheel zoom feels smooth from wide to close, does not auto-switch to LOCAL, and the lander becomes clearly readable at close zoom without an attitude pop.
-- [ ] M05-R3-H03 The navigation/gravity vector overlay is useful, compact, and not visually cluttered; `G` toggles it.
-- [ ] M05-R3-H04 HUD labels are explicit and consistent with the chosen reference/destination frames.
-- [ ] M05-R3-H05 Reaction-wheel damping feels controllable and gentle, not a hard stop or autopilot.
-- [ ] M05-R3-H06 `O` / `Shift+O` circularize direction is intuitive and matches the expected CW/CCW orbit.
-- [ ] M05-R3-H07 Re-run affected M05-R1/M05-R2 flows (primary/companion flight, SYSTEM view, landing, takeoff, contract loop) and confirm no regressions.
-- [ ] M05-R3-H08 `N x3`, `O x3`, and `Shift+O x3` feel deliberate; single/double
+- [x] M05-R3-H01 LOCAL AUTO keeps the lander readable at altitude (~16 px major/height) and does not zoom out until the ship is a dot.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H02 SYSTEM mouse-wheel zoom feels smooth from wide to close, does not auto-switch to LOCAL, and the lander becomes clearly readable at close zoom without an attitude pop.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H03 The navigation/gravity vector overlay is useful, compact, and not visually cluttered; `G` toggles it.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H04 HUD labels are explicit and consistent with the chosen reference/destination frames.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H05 Reaction-wheel damping feels controllable and gentle, not a hard stop or autopilot.
+  Human verification: PASS (final M05 playtest, 2026-09-30); M05-R4-03 changes only the control/HUD presentation, not the verified damping physics.
+- [x] M05-R3-H06 `O` / `Shift+O` circularize direction is intuitive and matches the expected CW/CCW orbit.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H07 Re-run affected M05-R1/M05-R2 flows (primary/companion flight, SYSTEM view, landing, takeoff, contract loop) and confirm no regressions.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H08 `N x3`, `O x3`, and `Shift+O x3` feel deliberate; single/double
   presses do not accidentally restart or circularize, and the compact progress
   feedback is understandable.
-- [ ] M05-R3-H09 The CRASHED dialog is compact and identical in shape for
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H09 The CRASHED dialog is compact and identical in shape for
   primary/companion crashes, with no tall column artifact, while preserving the
   existing text/actions.
-- [ ] M05-R3-H10 Each moon visibly keeps the same face toward the other while
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H10 Each moon visibly keeps the same face toward the other while
   orbiting (terrain relief/pads rotate with the body, not a fixed texture).
-- [ ] M05-R3-H11 A landed ship rides the moving surface without slipping,
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H11 A landed ship rides the moving surface without slipping,
   popping, or teleporting.
-- [ ] M05-R3-H12 Takeoff from a rotating surface departs with the surface
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H12 Takeoff from a rotating surface departs with the surface
   motion (no visible jump); landing on a rotating pad is achievable.
-- [ ] M05-R3-H13 The contract loop completes end to end with rotating bodies
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H13 The contract loop completes end to end with rotating bodies
   (including the return contract).
-- [ ] M05-R3-H14 `DIST`/`V REL`/`CLOSE-OPEN` track the moving destination pad
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H14 `DIST`/`V REL`/`CLOSE-OPEN` track the moving destination pad
   sensibly.
-- [ ] M05-R3-H15 No regressions in M05-R1/R2/R3-01..08 flows (flight, SYSTEM
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H15 No regressions in M05-R1/R2/R3-01..08 flows (flight, SYSTEM
   view, camera, HUD, guarded controls, crash dialog).
-- [ ] M05-R3-H16 `R x3` retry feels deliberate with clear progress feedback,
+  Human verification: PASS (final M05 playtest, 2026-09-30).
+- [x] M05-R3-H16 `R x3` retry feels deliberate with clear progress feedback,
   and a single `R` no longer restarts the game.
+  Human verification: PASS (final M05 playtest, 2026-09-30).
 - [x] M05-R3-H17 LOCAL manual wide zoom is smooth and reaches a similar scale
    range as SYSTEM; the reference body stays clearly "down" at the widest
    zoom and the screen orientation never changes while zooming.
@@ -2223,7 +2251,316 @@ Supersedes: direction-preservation behavior for the `O` circularize control; the
     visible radial/vertical seam artifacts remain, including the reference
     body's radial tick/closure artifacts. Corrective round M05-R3-23..30.
    Human verification: PASS on the M05-R3-23..30 corrected build
-   (`1f3eae3`, 2026-09-29 re-test).
+    (`1f3eae3`, 2026-09-29 re-test).
+
+## M05-R4 — final camera/control presentation polish
+
+Source: USER (final M05 playtest, 2026-09-30)
+
+Request group: M05-R4
+
+Status: AWAITING HUMAN VERIFICATION (automated work complete; H01..H03 open)
+
+This is the final human-feedback polish round before M05 closeout. It changes
+presentation/control state only. It must not close M05, write an M05
+completion record, or begin M06.
+
+### User requirements
+
+- [x] M05-R4-01 `M` from SYSTEM must enter LOCAL MANUAL
+    - `M` currently does nothing while SYSTEM is active.
+    - Required mapping:
+      - LOCAL AUTO + `M` -> LOCAL MANUAL
+      - LOCAL MANUAL + `M` -> LOCAL AUTO
+      - SYSTEM + `M` -> LOCAL MANUAL
+    - From SYSTEM, `M` must leave SYSTEM, enter LOCAL MANUAL directly,
+      restore an appropriate local zoom/state, immediately use the current
+      reference body's radial-down orientation, preserve the existing
+      smooth camera-angle/reference transition behavior, and not alter
+      authoritative spacecraft/world state.
+    - `V` retains its existing meaning:
+      - local mode -> SYSTEM
+      - SYSTEM -> restore the previously saved local mode
+    - Required flows:
+      - LOCAL AUTO -> `V` -> SYSTEM -> `V` -> LOCAL AUTO
+      - LOCAL MANUAL -> `V` -> SYSTEM -> `V` -> LOCAL MANUAL
+      - LOCAL AUTO/MANUAL -> `V` -> SYSTEM -> `M` -> LOCAL MANUAL
+    - SYSTEM -> `M` explicitly chooses MANUAL rather than restoring whatever
+      saved local mode existed.
+    - Prefer an explicit Camera API operation such as `enter_manual()` rather
+      than duplicating camera state logic in `gui.cpp` or manufacturing an
+      unrelated flag sequence.
+    - Add camera tests for all transitions above.
+    Evidence: `tests/test_camera.cpp::test_m_local_toggles_auto_manual`,
+      `test_m_from_system_enters_manual`,
+      `test_m_from_system_keeps_v_restore_semantics`, and
+      `test_m_from_system_does_not_modify_simulation`; the V save/restore
+      flows also rely on the existing
+      `test_system_mode_saves_restores_local_state`.
+    Source: USER
+
+- [x] M05-R4-02 SYSTEM minimum-size ship marker must show thrust
+    - Human verification confirms the oriented minimum-size SYSTEM marker is
+      useful even at very wide zoom.
+    - When the spacecraft is represented by the minimum-size marker (the
+      path used when `lander_uses_full_model(cam.scale()) == false` or the
+      equivalent), add a compact thrust indication.
+    - The thrust indication must:
+      - appear only when the main engine is actually producing thrust
+      - point opposite the spacecraft thrust/nose direction
+      - rotate correctly with spacecraft attitude and camera orientation
+      - remain legible at minimum marker size
+      - communicate throttle approximately through intensity/length
+      - not look like another navigation vector
+      - not obscure TARGET / VREL / gravity cues
+      - not affect physics
+    - A simple screen-space plume/tail behind the triangle/chevron is
+      sufficient. Low throttle produces a short tail; high throttle produces
+      a longer/brighter tail. Avoid random flicker that makes the marker hard
+      to read.
+    - Use the existing authoritative/presentation throttle level already
+      passed to `draw_lander` where possible.
+    - The existing full-model lander/flame at close zoom remains unchanged.
+    - Add pure marker/thrust geometry tests if the rendering helper can be
+      exposed cleanly.
+    Evidence: `include/lander/camera.hpp::marker_plume()` plus
+      `tests/test_render_geom.cpp::test_marker_plume_geometry`; the
+      minimum-marker path in `src/gui.cpp::draw_lander()` renders the plume
+      only when `lander_uses_full_model(scale) == false` and the ship is not
+      crashed, while the full-model flame path is unchanged.
+    Source: USER
+
+- [x] M05-R4-03 Reaction-wheel damping becomes a toggle with HUD state
+    - The verified damping behavior itself is correct and must not be changed
+      unnecessarily.
+    - Change `E` from hold-to-damp to a discrete toggle:
+      - RW OFF + `E` -> RW ON
+      - RW ON + `E` -> RW OFF
+    - No key-repeat toggling; the player must not hold `E` continuously.
+    - Store the toggle as player/control state, not as a hidden modification
+      of spacecraft physics.
+    - When RW is ON and no manual rotation is being commanded, use the
+      existing finite reaction-wheel damping behavior.
+    - When A/D or LEFT/RIGHT manual rotation is being commanded, manual
+      rotation has priority for that step and reaction-wheel damping is
+      suppressed for that step. The RW toggle remains ON.
+    - After the player releases manual rotation, damping resumes
+      automatically because RW is still ON.
+    - This remains angular-rate damping only, not an attitude-hold
+      autopilot.
+    - Reset behavior:
+      - retry/new mission -> RW OFF
+      - new seed -> RW OFF
+      - crash -> no active control effect
+      - no latent damping after reset
+    - Add a compact explicit HUD indicator, for example `RW  ON` or
+      `RW  OFF`, using the existing active/readable HUD styling.
+    - Update the bottom control legend from the old `E WHEEL` concept to a
+      compact unambiguous label such as `E RW TOGGLE`.
+    - Keep authoritative physical input distinct from persistent UI state.
+      A clean model is:
+      - GUI/control layer stores `bool reaction_wheels_enabled`
+      - `E` keydown toggles it
+      - each frame computes `manual_rotation` from A/D or LEFT/RIGHT
+      - `input.rotate_left/right` comes from manual controls
+      - `input.reaction_wheels = reaction_wheels_enabled && !manual_rotation`
+      - Simulation continues to know only `Input.reaction_wheels`
+    Evidence: `include/lander/guarded_actions.hpp::ReactionWheelToggle`,
+      `src/gui.cpp` (`E` keydown, per-frame input composition, `start_mission`
+      reset, `RW ON`/`RW OFF` HUD indicator, `E RW TOGGLE` legend/usage), and
+      `tests/test_sim.cpp::test_reaction_wheel_toggle`.
+    Source: USER
+
+### Preserve / constraints
+
+- [x] M05-R4-P01 Preserve all already-human-verified M05 behavior: canonical
+  PRIMARY, moving COMPANION, simultaneous two-body gravity, tidal locking,
+  rotating-surface landing/takeoff, LOCAL radial-down camera, wide LOCAL
+  MANUAL zoom, LOCAL AUTO readability floor, smooth reference-body camera
+  transition, inertial starfield behavior, SYSTEM exact ship centering,
+  SYSTEM wheel zoom, offscreen target navigation, oriented minimum-size
+  marker, HUD reference-frame labels, gravity/navigation overlay, CW/CCW
+  circularize, guarded R/N/O/B/T controls, sync-orbit debug initializer,
+  velocity-only ballistic transfer initializer, contract loop, compact crash
+  dialog, geometry-driven body rendering, and no seam/tick artifacts.
+  Source: USER
+  Evidence: full `ctest` suite passed on the M05-R4 build (all six targets,
+    including the pre-existing M05 simulation/binary/camera/starfield/guarded
+    action/render-geometry tests).
+- [x] M05-R4-P02 Camera input must not mutate authoritative spacecraft or
+  simulation state; only presentation camera state may change.
+  Source: USER (M05-R4-01)
+  Evidence: `tests/test_camera.cpp::test_m_from_system_does_not_modify_simulation`.
+- [x] M05-R4-P03 Reaction wheels remain angular-rate damping only. Do not
+  implement attitude hold, autopilot, or implicit orientation restoration.
+  Source: USER (M05-R4-03)
+  Evidence: `src/sim.cpp` damping is unchanged and
+    `tests/test_sim.cpp::test_reaction_wheel_damping` still passes.
+- [x] M05-R4-P04 Persistent reaction-wheel arming stays in the GUI/control
+  layer. The Simulation layer continues to receive only the already-tested
+  `Input.reaction_wheels` bool and performs the existing finite damping.
+  Source: USER (control-architecture note)
+  Evidence: the persistent toggle lives in
+    `include/lander/guarded_actions.hpp::ReactionWheelToggle` / `src/gui.cpp`;
+    the simulation still sees only `Input.reaction_wheels`.
+- [x] M05-R4-P05 Do not close M05, do not write the M05 completion record,
+  and do not start M06 until M05-R4-H01..H03 are human-confirmed.
+  Source: USER
+  Evidence: no M05 completion record has been written and no M06 work has
+    been started; STATUS/TASKS remain open for M05-R4-H01..H03.
+
+### Automated verification
+
+- [x] M05-R4-V01 LOCAL AUTO -> `V` -> SYSTEM -> `V` returns to LOCAL AUTO.
+  Source: USER (camera transition 1)
+- [x] M05-R4-V02 LOCAL MANUAL -> `V` -> SYSTEM -> `V` returns to LOCAL
+  MANUAL.
+  Source: USER (camera transition 2)
+- [x] M05-R4-V03 LOCAL AUTO -> `V` -> SYSTEM -> `M` enters LOCAL MANUAL.
+  Source: USER (camera transition 3)
+- [x] M05-R4-V04 LOCAL MANUAL -> `V` -> SYSTEM -> `M` remains LOCAL MANUAL.
+  Source: USER (camera transition 4)
+- [x] M05-R4-V05 SYSTEM -> `M` does not mutate spacecraft/simulation state.
+  Source: USER (camera transition 5)
+- [x] M05-R4-V06 After SYSTEM -> `M`, LOCAL MANUAL has correct radial-down
+  orientation, finite/in-range zoom, and no NaN/snap state.
+  Source: USER (camera transition 6)
+- [x] M05-R4-V07 `E` toggles RW OFF -> ON -> OFF on discrete keydowns.
+  Source: USER (reaction-wheel test 7)
+- [x] M05-R4-V08 Held or repeated `E` keydown does not rapidly toggle the RW
+  state.
+  Source: USER (reaction-wheel test 8)
+- [x] M05-R4-V09 RW ON with no manual rotation produces an active damping
+  input.
+  Source: USER (reaction-wheel test 9)
+- [x] M05-R4-V10 RW ON with manual A/D rotation suppresses damping for that
+  step while manual rotation remains active.
+  Source: USER (reaction-wheel test 10)
+- [x] M05-R4-V11 Releasing manual rotation while RW is still ON resumes
+  damping.
+  Source: USER (reaction-wheel test 11)
+- [x] M05-R4-V12 Retry/new mission resets RW OFF.
+  Source: USER (reaction-wheel test 12)
+- [x] M05-R4-V13 Existing Simulation reaction-wheel damping tests still pass
+  unchanged or with minimal adaptation.
+  Source: USER (reaction-wheel test 13)
+- [x] M05-R4-V14 Minimum-marker thrust geometry points behind/opposite the
+  nose direction.
+  Source: USER (SYSTEM thrust marker test 14)
+- [x] M05-R4-V15 Camera rotation preserves correct marker/plume orientation.
+  Source: USER (SYSTEM thrust marker test 15)
+- [x] M05-R4-V16 Throttle 0 produces no plume.
+  Source: USER (SYSTEM thrust marker test 16)
+- [x] M05-R4-V17 Higher throttle produces plume magnitude >= lower throttle.
+  Source: USER (SYSTEM thrust marker test 17)
+- [x] M05-R4-V18 Full-model lander flame behavior remains unchanged.
+  Source: USER (SYSTEM thrust marker test 18)
+- [x] M05-R4-V19 Full M05-R4 verification: `cmake --build build`,
+   `ctest --test-dir build --output-on-failure`, `git diff --check`, and
+   appropriate headless GUI smokes.
+  Source: USER
+
+Execution evidence for M05-R4-V01..V19 (2026-09-30, this session):
+
+- V01/V02: `tests/test_camera.cpp::test_m_from_system_keeps_v_restore_semantics`
+  (MANUAL save/restore and explicit-M save) and the pre-existing
+  `test_system_mode_saves_restores_local_state` (AUTO save/restore) pass.
+- V03/V04/V06: `tests/test_camera.cpp::test_m_from_system_enters_manual` and
+  `test_m_from_system_keeps_v_restore_semantics` pass; the test confirms the
+  SYSTEM angle is left in place, the next update eases toward the supplied
+  radial-down target without snapping, the angle converges, the player anchor
+  is exact, and the restored local zoom is finite/in-range.
+- V05: `tests/test_camera.cpp::test_m_from_system_does_not_modify_simulation`
+  passes (state and terrain unchanged through SYSTEM -> M -> 120 updates).
+- V07/V08/V09/V10/V11/V12: `tests/test_sim.cpp::test_reaction_wheel_toggle`
+  passes (discrete toggle, autorepeat ignored, manual-priority suppression,
+  release resumes damping, inactive context, reset). The same test exercises
+  `ReactionWheelToggle::reset()`, and `src/gui.cpp::start_mission()` calls that
+  reset for retry/new mission/new seed.
+- V13: the unchanged `tests/test_sim.cpp::test_reaction_wheel_damping` passes.
+- V14/V15/V16/V17: `tests/test_render_geom.cpp::test_marker_plume_geometry`
+  passes (opposite-nose direction, collinearity, base-centre alignment,
+  90-degree camera-rotation consistency, ship-attitude rotation, zero-throttle
+  inactivity, monotonic length/width with throttle, finite vertices).
+- V18: the full-model flame path in `src/gui.cpp::draw_lander()` is unchanged
+  and `tests/test_sim.cpp::test_flame_animation_continuous` passes.
+- V19: `cmake --build build` completed cleanly (exit 0);
+  `ctest --test-dir build --output-on-failure` passed 6/6 targets
+  (`lander_tests`, `lander_binary_tests`, `lander_camera_tests`,
+  `lander_starfield_tests`, `lander_guarded_actions_tests`,
+  `lander_render_geom_tests`); `git diff --check` reported no errors; and
+  headless GUI smokes (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`) ran
+  `--seed 7 --frames 3`, `--system-view --seed 7 --frames 3`, and
+  `--orbit-demo --system-view --seed 7 --frames 5` and all exited 0 with sane
+  final state. No image files were read (text-only constraint).
+
+### Human verification
+
+- [ ] M05-R4-H01 From SYSTEM, pressing `M` immediately enters LOCAL MANUAL
+  with sensible zoom and correct radial-down orientation.
+  Source: USER
+- [ ] M05-R4-H02 At wide SYSTEM zoom, thrust is obvious on the minimum-size
+  spacecraft marker and points in the correct direction without cluttering
+  navigation cues.
+  Source: USER
+- [ ] M05-R4-H03 `E` works naturally as a reaction-wheel toggle; RW ON/OFF is
+  visible in the HUD; manual rotation temporarily takes precedence and
+  releasing the control lets RW damping resume.
+  Source: USER
+
+### Derived implementation tasks
+
+- [x] M05-R4-D01 Add/extend the Camera API with an explicit manual-entry
+  operation (for example `enter_manual()`) that sets LOCAL MANUAL, restores a
+  valid local zoom, preserves smooth angle/reference transition state, and
+  does not require unrelated flag sequences.
+  Source: DERIVED
+  Depends: M05-R4-01
+  Files: include/lander/camera.hpp, tests/test_camera.cpp
+- [x] M05-R4-D02 Wire the GUI `M` keydown so LOCAL AUTO toggles to LOCAL
+  MANUAL, LOCAL MANUAL toggles to LOCAL AUTO, and SYSTEM enters LOCAL MANUAL
+  via the Camera API.
+  Source: DERIVED
+  Depends: M05-R4-01, M05-R4-D01
+  Files: src/gui.cpp
+- [x] M05-R4-D03 Add a pure helper for minimum-marker thrust geometry
+  (plume/tail length, direction, and optional width/alpha as a function of
+  throttle and attitude) that can be tested without SDL rendering.
+  Source: DERIVED
+  Depends: M05-R4-02
+  Files: include/lander/camera.hpp or include/lander/render_geom.hpp,
+  tests/test_render_geom.cpp or tests/test_camera.cpp
+- [x] M05-R4-D04 Render the compact thrust plume only in the minimum-marker
+  path of `draw_lander`, using the existing throttle/presentation value and
+  preserving full-model flame behavior.
+  Source: DERIVED
+  Depends: M05-R4-02, M05-R4-D03
+  Files: src/gui.cpp
+- [x] M05-R4-D05 Store `reaction_wheels_enabled` in the GUI/control state,
+  toggle it only on non-repeat `E` keydown, and reset it on retry/new
+  mission/new seed as required.
+  Source: DERIVED
+  Depends: M05-R4-03
+  Files: src/gui.cpp
+- [x] M05-R4-D06 Compose per-frame simulation input so
+  `input.reaction_wheels = reaction_wheels_enabled && !manual_rotation`,
+  where manual rotation is A/D or LEFT/RIGHT.
+  Source: DERIVED
+  Depends: M05-R4-03, M05-R4-D05
+  Files: src/gui.cpp
+- [x] M05-R4-D07 Add the `RW ON` / `RW OFF` HUD indicator and update the
+  control legend to a compact unambiguous label such as `E RW TOGGLE`.
+  Source: DERIVED
+  Depends: M05-R4-03
+  Files: src/gui.cpp
+- [x] M05-R4-D08 Add tests for camera transitions, RW toggle/input
+  composition/reset, and minimum-marker thrust geometry as specified in
+  M05-R4-V01..V18.
+  Source: DERIVED
+  Depends: M05-R4-D01, M05-R4-D02, M05-R4-D03, M05-R4-D04, M05-R4-D05,
+  M05-R4-D06
+  Files: tests/test_camera.cpp, tests/test_render_geom.cpp, tests/test_sim.cpp
+  or the appropriate existing test targets
 
 ## Verification evidence
 
@@ -2408,9 +2745,17 @@ initializer, not a defect.
 The M05-R3-23..30 automated corrective round (geometry-driven body coverage,
 viewport-safe patch closure, removal of the visible radial tick/seam
 artifacts, and regression tests) is complete as of 2026-09-29, and H17/H22
-subsequently passed on the `1f3eae3` corrected build. M05 remains in
-AWAITING HUMAN VERIFICATION for the still-open human items: M05-R1-H01..H07,
-M05-R2-H01..H04 (which re-verify the failed M05-R1-H03/H04/H05), and
-M05-R3-H01..H16. H17/H18/H19/H20/H21/H22 are closed with human evidence.
-M05 stays open, with no completion record, until the user confirms all
-remaining items.
+passed on the `1f3eae3` corrected build. The final M05 playtest on
+2026-09-30 confirmed all remaining existing human items: M05-R1-H01..H07,
+M05-R2-H01..H04, and M05-R3-H01..H16. That playtest produced the
+M05-R4 final camera/control presentation polish group.
+
+All automated work for M05-R4 is complete as of 2026-09-30: `M` from SYSTEM
+enters LOCAL MANUAL through `Camera::enter_manual()`, the minimum-size SYSTEM
+marker has a deterministic throttle-scaled thrust plume, and `E` is a
+discrete reaction-wheel toggle with manual-rotation priority, an `RW
+ON`/`RW OFF` HUD indicator, and reset on new mission/seed/retry. The M05-R4
+build passes the full test suite and headless GUI smokes. M05 is therefore
+back in AWAITING HUMAN VERIFICATION with only M05-R4-H01..H03 open. M05
+stays open, with no completion record, until those three human items are
+confirmed.
