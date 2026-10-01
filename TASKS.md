@@ -2,7 +2,7 @@
 
 Milestone: M05
 Request: M05-R1, M05-R2, M05-R3, M05-R4, M05-R5
-State: AWAITING HUMAN VERIFICATION
+State: COMPLETE
 
 ## Bootstrap note
 
@@ -2259,7 +2259,8 @@ Source: USER (final M05 playtest, 2026-09-30)
 
 Request group: M05-R4
 
-Status: AWAITING HUMAN VERIFICATION (automated work complete; H01..H03 open)
+Status: COMPLETE (all M05-R4 automated and human-verification items passed;
+H01..H03 confirmed by the user on 2026-09-30)
 
 This is the final human-feedback polish round before M05 closeout. It changes
 presentation/control state only. It must not close M05, write an M05
@@ -2406,8 +2407,9 @@ completion record, or begin M06.
 - [x] M05-R4-P05 Do not close M05, do not write the M05 completion record,
   and do not start M06 until M05-R4-H01..H03 are human-confirmed.
   Source: USER
-  Evidence: no M05 completion record has been written and no M06 work has
-    been started; STATUS/TASKS remain open for M05-R4-H01..H03.
+  Evidence: M05 remained open through M05-R4 implementation; after the user
+    confirmed M05-R4-H01..H03 (and M05-R5-H01..H02) on 2026-09-30, M05 was
+    closed in the M05 completion record.
 
 ### Automated verification
 
@@ -2496,17 +2498,23 @@ Execution evidence for M05-R4-V01..V19 (2026-09-30, this session):
 
 ### Human verification
 
-- [ ] M05-R4-H01 From SYSTEM, pressing `M` immediately enters LOCAL MANUAL
+- [x] M05-R4-H01 From SYSTEM, pressing `M` immediately enters LOCAL MANUAL
   with sensible zoom and correct radial-down orientation.
   Source: USER
-- [ ] M05-R4-H02 At wide SYSTEM zoom, thrust is obvious on the minimum-size
+  Evidence: user confirmation on 2026-09-30 ("all check") that all open
+    M05-R4/M05-R5 human-verification items pass.
+- [x] M05-R4-H02 At wide SYSTEM zoom, thrust is obvious on the minimum-size
   spacecraft marker and points in the correct direction without cluttering
   navigation cues.
   Source: USER
-- [ ] M05-R4-H03 `E` works naturally as a reaction-wheel toggle; RW ON/OFF is
+  Evidence: user confirmation on 2026-09-30 ("all check") that all open
+    M05-R4/M05-R5 human-verification items pass.
+- [x] M05-R4-H03 `E` works naturally as a reaction-wheel toggle; RW ON/OFF is
   visible in the HUD; manual rotation temporarily takes precedence and
   releasing the control lets RW damping resume.
   Source: USER
+  Evidence: user confirmation on 2026-09-30 ("all check") that all open
+    M05-R4/M05-R5 human-verification items pass.
 
 ### Derived implementation tasks
 
@@ -2564,8 +2572,8 @@ Execution evidence for M05-R4-V01..V19 (2026-09-30, this session):
 
 ## Request M05-R5
 
-Status: AWAITING HUMAN VERIFICATION (automated work complete on 2026-09-30;
-M05-R5-H01..H02 open, and M05-R4-H01..H03 still open)
+Status: COMPLETE (all M05-R5 automated and human-verification items passed;
+H01..H02 confirmed by the user on 2026-09-30)
 
 The user requested: "make shift + e RW hold, maintain e as toggle".
 
@@ -2642,8 +2650,9 @@ while preserving M05-R4's discrete `E` toggle.
   and do not start M06; M05-R4-H01..H03 and the new M05-R5 human items
   remain open.
   Source: USER
-  Evidence: no M05 completion record has been written, no M06 work has been
-    started, and the M05-R4/M05-R5 H-items remain `[ ]`.
+  Evidence: M05 remained open while M05-R5 was implemented; after the user
+    confirmed all remaining M05-R4/M05-R5 human items on 2026-09-30, M05
+    was closed in the M05 completion record.
 
 ### Automated verification
 
@@ -2703,14 +2712,18 @@ Execution evidence for M05-R5-V01..V09 (2026-09-30, this session):
 
 ### Human verification
 
-- [ ] M05-R5-H01 Holding `Shift+E` feels like a temporary reaction-wheel
+- [x] M05-R5-H01 Holding `Shift+E` feels like a temporary reaction-wheel
   damping input: it acts while held, stops when released, and does not change
   the stored `E` toggle state.
   Source: USER
-- [ ] M05-R5-H02 The on-screen control feedback is unambiguous: `E` toggles
+  Evidence: user confirmation on 2026-09-30 ("all check") that all open
+    M05-R4/M05-R5 human-verification items pass.
+- [x] M05-R5-H02 The on-screen control feedback is unambiguous: `E` toggles
   the stored RW state, `Shift+E` visibly shows the hold state, and manual
   rotation still takes priority.
   Source: USER
+  Evidence: user confirmation on 2026-09-30 ("all check") that all open
+    M05-R4/M05-R5 human-verification items pass.
 
 ### Derived implementation tasks
 
@@ -2940,7 +2953,11 @@ toggle. All M05-R5 automated work is complete as of 2026-09-30: the
 extended `ReactionWheelToggle` composes the stored toggle with the transient
 hold, manual-rotation priority and crash suppression apply to both, the GUI
 reads `Shift+E` from the polled keyboard/modifier state, and the
-HUD/legend/usage document both controls. The M05-R5 build passes the full
-test suite and headless GUI smokes. M05 is therefore back in AWAITING HUMAN
-VERIFICATION with M05-R4-H01..H03 and M05-R5-H01..H02 open. M05 stays open,
-with no completion record, until all five human items are confirmed.
+HUD/legend/usage document both controls. The M05-R5 build passed the full
+test suite and headless GUI smokes.
+
+The user confirmed on 2026-09-30 ("all check") that all remaining open
+human-verification items pass: M05-R4-H01..H03 and M05-R5-H01..H02. With all
+M05 automated and human-verification work complete, M05 is COMPLETE and has
+been closed out in `records/M05-binary-moon-contract-loop.md`. No M06 work
+has been started.
