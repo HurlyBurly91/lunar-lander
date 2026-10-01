@@ -6,17 +6,19 @@ M05 — Binary moon and first contract loop
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M05-R4 final camera/control presentation polish. All M05-R4 automated
-work is complete (2026-09-30): `M` from SYSTEM enters LOCAL MANUAL through
-`Camera::enter_manual()`, the minimum-size SYSTEM marker shows a compact
-deterministic thrust plume, and reaction-wheel damping is a visible `E`
-toggle with manual-rotation priority and reset on new mission/seed/retry.
-The M05-R4 build passes the full test suite and headless GUI smokes. The
-only open M05 items are M05-R4-H01..H03. All previously open existing M05
-human-verification items (M05-R1-H01..H07, M05-R2-H01..H04,
-M05-R3-H01..H16) passed in the final M05 playtest on 2026-09-30, and
-H17..H22 remain PASS from the `1f3eae3` build. See TASKS.md. M05 must not be
-closed until M05-R4-H01..H03 are human-confirmed.
+Phase: M05-R5 reaction-wheel hold control. The user requested `Shift+E` as a
+hold-to-damp control while keeping `E` as the discrete reaction-wheel
+toggle. All M05-R4 and M05-R5 automated work is complete (2026-09-30):
+`Shift+E` arms reaction-wheel damping only while held, `E` still toggles the
+stored state, manual rotation and crash take priority, the HUD distinguishes
+`RW HOLD` from `RW ON`/`RW OFF`, and the legend/usage document both controls.
+The M05-R5 build passes the full test suite and headless GUI smokes. The
+only open M05 items are M05-R4-H01..H03 and M05-R5-H01..H02. All previously
+open existing M05 human-verification items (M05-R1-H01..H07,
+M05-R2-H01..H04, M05-R3-H01..H16) passed in the final M05 playtest on
+2026-09-30, and H17..H22 remain PASS from the `1f3eae3` build. See TASKS.md.
+M05 must not be closed until M05-R4-H01..H03 and M05-R5-H01..H02 are
+human-confirmed.
 
 M05-R1 and M05-R2 automated work is complete, and their human-verification
 items passed in the final M05 playtest on 2026-09-30. Earlier human
@@ -84,9 +86,11 @@ corrected build (2026-09-29).
 The final M05 playtest (2026-09-30) confirmed all previously open existing
 human-verification items: M05-R1-H01..H07, M05-R2-H01..H04, and
 M05-R3-H01..H16. H17/H18/H19/H20/H21/H22 had already passed on the `1f3eae3`
-corrected build. The playtest also produced the final M05-R4 polish request
-group. All M05-R4 automated work is now complete, so M05 is awaiting
-human verification of M05-R4-H01..H03; M05 remains open and no completion
+corrected build. The playtest also produced the M05-R4 polish request group,
+whose automated work is complete. A follow-up user request then created
+M05-R5 (`Shift+E` hold-to-damp while `E` remains the discrete toggle), whose
+automated work is also complete. M05 is now awaiting human verification of
+M05-R4-H01..H03 and M05-R5-H01..H02; it remains open and no completion
 record has been written until those items are confirmed.
 
 M05 turns the M04 flight simulation into the first complete game loop by

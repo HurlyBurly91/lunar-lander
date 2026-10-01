@@ -166,26 +166,36 @@ private:
     Sequence sequences_[kKeyCount]{};
 };
 
-// M05-R4-03: discrete reaction-wheel damping toggle. This is a
-// GUI/control-layer state object, not a simulation input. The GUI presses it
-// on each non-autorepeat `E` key-down, composes the per-frame
-// `Input.reaction_wheels` value from it, and resets it whenever a new
-// mission/seed begins. `active` lets the caller suppress the input entirely
-// (for example after a crash) without changing the stored toggle state.
+// M05-R4-03 / M05-R5: reaction-wheel control state for the GUI/control
+// layer. The stored toggle is changed only by an unmodified, non-autorepeat
+// `E` press; a `Shift+E` press is reported but does not toggle it. The GUI
+// composes the stored toggle with the transient `Shift+E` hold, the
+// manual-rotation priority rule, and the active/crash context into the
+// per-frame `Input.reaction_wheels` bool, and resets the stored toggle
+// whenever a new mission/seed begins.
 class ReactionWheelToggle {
 public:
-    void press(bool repeat = false) {
-        if (!repeat) {
+    // Records one `E` key-down. A normal press toggles the stored state;
+    // autorepeat and Shift-qualified presses do not. Returns the stored
+    // state after the event.
+    bool press(bool repeat = false, bool shift = false) {
+        if (!repeat && !shift) {
             enabled_ = !enabled_;
         }
+        return enabled_;
     }
 
     void reset() { enabled_ = false; }
 
     bool enabled() const { return enabled_; }
 
-    bool input(bool manual_rotation, bool active = true) const {
-        return active && enabled_ && !manual_rotation;
+    // Composes the per-frame simulation input. `hold` is the transient
+    // `Shift+E` key state; it arms damping for this call only. Manual
+    // rotation takes priority, and `active == false` (for example after a
+    // crash) suppresses the input without changing stored state.
+    bool input(bool manual_rotation, bool active = true,
+               bool hold = false) const {
+        return active && (enabled_ || hold) && !manual_rotation;
     }
 
 private:

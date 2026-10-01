@@ -782,7 +782,7 @@ void draw_navigation_overlay(SDL_Renderer* renderer,
 
 void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
                std::uint64_t seed, double throttle,
-               bool reaction_wheels_enabled,
+               bool reaction_wheels_enabled, bool reaction_wheels_hold,
                const lander::Camera& cam,
                const std::string& tap_progress) {
     const lander::State& s = sim.state();
@@ -931,7 +931,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
               kWindowHeight - 72, 1, dim);
     draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  G NAV", 18,
               kWindowHeight - 56, 1, dim);
-    draw_text(renderer, "E RW TOGGLE  O X3 CIRC  SH+O X3 CCW", 18,
+    draw_text(renderer, "E RW TOG  SH+E RW HOLD  O X3 CIRC  SH+O X3 CCW", 18,
               kWindowHeight - 40, 1, dim);
     draw_text(renderer, "F FUEL  P PAUSE  N X3 SEED  R X3 RETRY", 18,
               kWindowHeight - 24, 1, dim);
@@ -954,12 +954,19 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
         kWindowWidth - 8 - static_cast<int>(cam_line.size()) * 6;
     draw_text(renderer, cam_line, cam_x, 16, 1, cam_color);
 
-    // M05-R4-03: compact reaction-wheel toggle state. The indicator reports
-    // the stored toggle, not the instantaneous input: manual rotation
-    // suppresses damping for that step but does not switch the toggle off.
+    // M05-R4-03 / M05-R5: compact reaction-wheel state. While `Shift+E` is
+    // held, the indicator reports the transient hold; otherwise it reports
+    // the stored `E` toggle. The indicator reports control state, not the
+    // instantaneous input: manual rotation suppresses damping for that step
+    // without changing either state.
     const std::string rw_line =
-        reaction_wheels_enabled ? "RW ON" : "RW OFF";
-    const Color rw_color = reaction_wheels_enabled ? green : dim;
+        reaction_wheels_hold
+            ? "RW HOLD"
+            : (reaction_wheels_enabled ? "RW ON" : "RW OFF");
+    const Color rw_color =
+        reaction_wheels_hold
+            ? amber
+            : (reaction_wheels_enabled ? green : dim);
     const int rw_x =
         kWindowWidth - 8 - static_cast<int>(rw_line.size()) * 6;
     draw_text(renderer, rw_line, rw_x, 32, 1, rw_color);
@@ -1131,7 +1138,8 @@ void print_usage() {
         "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual;\n"
         "from System enters Manual), V system view, mouse wheel zoom, O x3\n"
         "clockwise circularize around the reference body, Shift+O x3\n"
-        "counter-clockwise circularize, E toggle reaction-wheel damping, G\n"
+        "counter-clockwise circularize, E toggle reaction-wheel damping,\n"
+        "Shift+E hold reaction-wheel damping while pressed, G\n"
         "navigation/gravity overlay, F refill fuel (also on the ground), N x3\n"
         "new seed, P pause, Esc/Q quit.\n"
         "Developer controls (all triple-tap guarded, progress shown on the\n"
@@ -1338,10 +1346,14 @@ int main(int argc, char** argv) {
                         throttle = 0.0;
                         break;
                     case SDL_SCANCODE_E:
-                        // M05-R4-03: discrete reaction-wheel toggle. The
-                        // outer event filter already excludes autorepeat, and
-                        // the helper ignores repeats as well.
-                        reaction_wheels.press();
+                        // M05-R4-03 / M05-R5: an unmodified, non-repeat
+                        // `E` press toggles the stored reaction-wheel state.
+                        // A `Shift+E` press is intentionally ignored here;
+                        // the per-frame `Shift+E` hold below arms damping
+                        // only while the keys are physically held.
+                        reaction_wheels.press(
+                            false,
+                            (event.key.mod & SDL_KMOD_SHIFT) != 0);
                         break;
                     case SDL_SCANCODE_M:
                         // M05-R4-01: in a local view, M toggles AUTO and
@@ -1471,13 +1483,19 @@ int main(int argc, char** argv) {
         // the preserved physics.
         input.rotate_right = key(SDL_SCANCODE_LEFT) || key(SDL_SCANCODE_A);
         input.rotate_left = key(SDL_SCANCODE_RIGHT) || key(SDL_SCANCODE_D);
-        // M05-R4-03: the stored toggle remains ON while a manual rotation is
-        // commanded, but the simulation receives no damping input for that
-        // step. After a crash there is no active control effect even if the
-        // toggle happens to be ON.
+        // M05-R5: `Shift+E` is a transient hold-to-damp control. It is read
+        // from the polled keyboard state and the current modifier state each
+        // frame, so both "Shift then E" and "E then Shift" work and releasing
+        // either key ends the hold immediately.
+        const bool rw_hold =
+            (SDL_GetModState() & SDL_KMOD_SHIFT) != 0 && key(SDL_SCANCODE_E);
+        // M05-R4-03 / M05-R5: either the stored `E` toggle or the transient
+        // `Shift+E` hold arms damping, but a manual rotation command takes
+        // priority for that step. After a crash there is no active control
+        // effect even if either source is still armed.
         input.reaction_wheels = reaction_wheels.input(
-            input.rotate_left || input.rotate_right,
-            !sim.state().crashed);
+            input.rotate_left || input.rotate_right, !sim.state().crashed,
+            rw_hold);
 
         if (!paused) {
             sim.advance(dt, input);
@@ -1587,7 +1605,7 @@ int main(int argc, char** argv) {
             draw_navigation_overlay(renderer, sim, render_state, cam);
         }
         draw_hud(renderer, sim, seed, throttle,
-                  reaction_wheels.enabled(), cam,
+                  reaction_wheels.enabled(), rw_hold, cam,
                   tap_guard.progress_label(SDL_GetTicks()));
         draw_contract_banner(renderer, last_completed_seen,
                               contract_banner_time);

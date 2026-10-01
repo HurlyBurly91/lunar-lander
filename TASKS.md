@@ -1,7 +1,7 @@
 # Active Task
 
 Milestone: M05
-Request: M05-R1, M05-R2, M05-R3, M05-R4
+Request: M05-R1, M05-R2, M05-R3, M05-R4, M05-R5
 State: AWAITING HUMAN VERIFICATION
 
 ## Bootstrap note
@@ -2559,8 +2559,185 @@ Execution evidence for M05-R4-V01..V19 (2026-09-30, this session):
   Source: DERIVED
   Depends: M05-R4-D01, M05-R4-D02, M05-R4-D03, M05-R4-D04, M05-R4-D05,
   M05-R4-D06
-  Files: tests/test_camera.cpp, tests/test_render_geom.cpp, tests/test_sim.cpp
-  or the appropriate existing test targets
+   Files: tests/test_camera.cpp, tests/test_render_geom.cpp, tests/test_sim.cpp
+   or the appropriate existing test targets
+
+## Request M05-R5
+
+Status: AWAITING HUMAN VERIFICATION (automated work complete on 2026-09-30;
+M05-R5-H01..H02 open, and M05-R4-H01..H03 still open)
+
+The user requested: "make shift + e RW hold, maintain e as toggle".
+
+M05-R5 adds `Shift+E` as a transient hold-to-damp reaction-wheel control
+while preserving M05-R4's discrete `E` toggle.
+
+### User requirements
+
+- [x] M05-R5-01 `Shift+E` is a hold-to-damp reaction-wheel control
+  - While `Shift+E` is physically held, `Input.reaction_wheels` is armed for
+    that frame even when the stored `E` toggle is OFF.
+  - Releasing either `Shift` or `E` ends the hold; no reaction-wheel state
+    persists after release.
+  - The hold is a per-frame control-layer input, not a change to spacecraft
+    physics or a new simulation mode.
+  Evidence: `include/lander/guarded_actions.hpp::ReactionWheelToggle::input()`
+    accepts the transient hold, and `src/gui.cpp` computes it each frame from
+    `SDL_GetKeyboardState()` / `SDL_GetModState()`.
+  Source: USER
+
+- [x] M05-R5-02 `E` remains the discrete reaction-wheel toggle
+  - An unmodified, non-autorepeat `E` keydown still toggles the stored
+    reaction-wheel state OFF -> ON -> OFF.
+  - A `Shift+E` keydown does not toggle the stored state.
+  - Holding or autorepeating `E` does not rapidly toggle it.
+  - Retry/new mission/new seed still reset the stored toggle to OFF; a crash
+    produces no active control effect.
+  Evidence: `ReactionWheelToggle::press(false, shift)` ignores Shift and
+    autorepeat; `tests/test_sim.cpp::test_reaction_wheel_toggle` verifies the
+    toggle, Shift, autorepeat, active-context, and reset rules.
+  Source: USER
+
+- [x] M05-R5-03 Manual rotation and crash priority apply to both controls
+  - When A/D or LEFT/RIGHT manual rotation is commanded, the per-frame
+    `Input.reaction_wheels` value is false for that step whether the damping
+    is armed by the stored `E` toggle or by a `Shift+E` hold.
+  - Releasing manual rotation resumes the applicable damping source
+    automatically (toggle remains as stored; hold continues only while
+    still held).
+  - After a crash, neither the toggle nor the hold produces an active
+    control effect.
+  Evidence: `ReactionWheelToggle::input()` applies `!manual_rotation` and
+    `active` to both `enabled_` and `hold`; the extended
+    `test_reaction_wheel_toggle` covers both cases.
+  Source: USER
+
+- [x] M05-R5-04 The HUD and control documentation explain both controls
+  - The HUD shows the transient `Shift+E` hold distinctly from the stored
+    `E` toggle state (for example `RW HOLD`, otherwise `RW ON` / `RW OFF`).
+  - The bottom control legend and `--help` usage document `E` as the toggle
+    and `Shift+E` as the hold-to-damp control.
+  Evidence: `src/gui.cpp::draw_hud()` shows `RW HOLD` / `RW ON` / `RW OFF`
+    and the legend/usage now document both controls.
+  Source: USER
+
+### Preserve / constraints
+
+- [x] M05-R5-P01 Preserve all M05-R4 behavior: the discrete `E` toggle, the
+  existing finite reaction-wheel damping, manual-rotation priority, crash
+  suppression, reset semantics, camera behavior, SYSTEM marker plume, and all
+  already-verified M05 gameplay.
+  Source: USER (M05-R4)
+  Evidence: the full M05 test suite passed on the M05-R5 build, including
+    the pre-existing camera, starfield, guarded-action, render-geometry,
+    and reaction-wheel damping tests.
+- [x] M05-R5-P02 The `Shift+E` hold lives in the GUI/control layer and is
+  composed into the existing `Input.reaction_wheels` bool; the Simulation
+  layer does not learn about Shift, E, toggle state, or hold state.
+  Source: USER (control-architecture note)
+  Evidence: the hold is computed in `src/gui.cpp` and passed to
+    `ReactionWheelToggle::input()`; the simulation still receives only
+    `Input.reaction_wheels`.
+- [x] M05-R5-P03 Do not close M05, do not write the M05 completion record,
+  and do not start M06; M05-R4-H01..H03 and the new M05-R5 human items
+  remain open.
+  Source: USER
+  Evidence: no M05 completion record has been written, no M06 work has been
+    started, and the M05-R4/M05-R5 H-items remain `[ ]`.
+
+### Automated verification
+
+- [x] M05-R5-V01 Unmodified `E` presses still toggle the stored state
+  OFF -> ON -> OFF, while autorepeat does not.
+  Source: USER (M05-R5-02)
+- [x] M05-R5-V02 A `Shift+E` keydown event does not change the stored
+  toggle state.
+  Source: USER (M05-R5-02)
+- [x] M05-R5-V03 With the stored toggle OFF, an active `Shift+E` hold
+  produces `Input.reaction_wheels == true` when no manual rotation is
+  present.
+  Source: USER (M05-R5-01)
+- [x] M05-R5-V04 A `Shift+E` hold with manual rotation produces
+  `Input.reaction_wheels == false` for that step.
+  Source: USER (M05-R5-03)
+- [x] M05-R5-V05 Releasing the hold (hold == false) with the stored toggle
+  OFF produces no reaction-wheel input.
+  Source: USER (M05-R5-01)
+- [x] M05-R5-V06 The stored toggle still produces damping input when
+  `hold == false`.
+  Source: USER (M05-R5-02)
+- [x] M05-R5-V07 An inactive/crashed context disables both the stored-toggle
+  and hold inputs without clearing the stored toggle.
+  Source: USER (M05-R5-03)
+- [x] M05-R5-V08 Reset clears the stored toggle, and no hold state persists
+  after reset.
+  Source: USER (M05-R5-02)
+- [x] M05-R5-V09 Full verification: `cmake --build build`,
+  `ctest --test-dir build --output-on-failure`, `git diff --check`, and
+  headless `lander_gui` smokes.
+  Source: USER
+
+Execution evidence for M05-R5-V01..V09 (2026-09-30, this session):
+
+- V01/V02: `tests/test_sim.cpp::test_reaction_wheel_toggle` verifies that
+  unmodified non-repeat `E` presses toggle the stored state, autorepeat does
+  not toggle it, and `press(false, true)` / `press(true, true)` (Shift
+  present) leave the stored state unchanged.
+- V03/V04/V05/V06: the same test verifies `ReactionWheelToggle::input()` for
+  OFF-toggle + hold, manual-rotation suppression of the hold, hold release,
+  and the stored ON toggle without hold.
+- V07: the same test verifies that `active == false` disables both the
+  stored-toggle and hold inputs while leaving the stored state unchanged.
+- V08: the same test verifies that `reset()` clears the stored toggle and
+  that a hold after reset is transient (input true only while `hold == true`,
+  stored state still OFF afterwards).
+- V09: `cmake --build build` completed cleanly (exit 0);
+  `ctest --test-dir build --output-on-failure` passed 6/6 targets
+  (`lander_tests`, `lander_binary_tests`, `lander_camera_tests`,
+  `lander_starfield_tests`, `lander_guarded_actions_tests`,
+  `lander_render_geom_tests`); `git diff --check` reported no errors; and
+  headless GUI smokes (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`) ran
+  `--seed 7 --frames 3`, `--system-view --seed 7 --frames 3`, and
+  `--orbit-demo --system-view --seed 7 --frames 5` and all exited 0 with
+  sane final state. No image files were read (text-only constraint).
+
+### Human verification
+
+- [ ] M05-R5-H01 Holding `Shift+E` feels like a temporary reaction-wheel
+  damping input: it acts while held, stops when released, and does not change
+  the stored `E` toggle state.
+  Source: USER
+- [ ] M05-R5-H02 The on-screen control feedback is unambiguous: `E` toggles
+  the stored RW state, `Shift+E` visibly shows the hold state, and manual
+  rotation still takes priority.
+  Source: USER
+
+### Derived implementation tasks
+
+- [x] M05-R5-D01 Extend the reaction-wheel control helper so the pure
+  input-composition rule accepts a transient `hold` input and so a press can
+  be distinguished by a Shift flag (unmodified/non-repeat toggles; Shift or
+  repeat does not).
+  Source: DERIVED
+  Depends: M05-R5-01, M05-R5-02
+  Files: include/lander/guarded_actions.hpp
+- [x] M05-R5-D02 Wire the GUI `E` keydown to pass the Shift modifier and
+  compute the per-frame `Shift+E` hold from `SDL_GetKeyboardState()` and
+  `SDL_GetModState()`; compose the hold with the stored toggle into
+  `Input.reaction_wheels`.
+  Source: DERIVED
+  Depends: M05-R5-D01
+  Files: src/gui.cpp
+- [x] M05-R5-D03 Update the HUD indicator, bottom control legend, and
+  `--help` usage for both `E` toggle and `Shift+E` hold.
+  Source: DERIVED
+  Depends: M05-R5-04
+  Files: src/gui.cpp
+- [x] M05-R5-D04 Add/extend tests for the new pure toggle/hold composition
+  rules and Shift-press semantics.
+  Source: DERIVED
+  Depends: M05-R5-D01
+  Files: tests/test_sim.cpp
 
 ## Verification evidence
 
@@ -2755,7 +2932,15 @@ enters LOCAL MANUAL through `Camera::enter_manual()`, the minimum-size SYSTEM
 marker has a deterministic throttle-scaled thrust plume, and `E` is a
 discrete reaction-wheel toggle with manual-rotation priority, an `RW
 ON`/`RW OFF` HUD indicator, and reset on new mission/seed/retry. The M05-R4
-build passes the full test suite and headless GUI smokes. M05 is therefore
-back in AWAITING HUMAN VERIFICATION with only M05-R4-H01..H03 open. M05
-stays open, with no completion record, until those three human items are
-confirmed.
+build passed the full test suite and headless GUI smokes.
+
+A follow-up user request on 2026-09-30 created M05-R5: `Shift+E` is a
+transient hold-to-damp reaction-wheel control while `E` remains the discrete
+toggle. All M05-R5 automated work is complete as of 2026-09-30: the
+extended `ReactionWheelToggle` composes the stored toggle with the transient
+hold, manual-rotation priority and crash suppression apply to both, the GUI
+reads `Shift+E` from the polled keyboard/modifier state, and the
+HUD/legend/usage document both controls. The M05-R5 build passes the full
+test suite and headless GUI smokes. M05 is therefore back in AWAITING HUMAN
+VERIFICATION with M05-R4-H01..H03 and M05-R5-H01..H02 open. M05 stays open,
+with no completion record, until all five human items are confirmed.

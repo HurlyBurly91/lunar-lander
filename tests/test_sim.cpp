@@ -2034,15 +2034,28 @@ void test_rotating_determinism() {
           "the reset rotation phase is zero");
 }
 
-// M05-R4-03: the reaction-wheel damping control is a discrete GUI toggle
-// composed into the simulation input. The test covers the pure toggle rules
-// (discrete presses, no autorepeat, manual-rotation priority, inactive
+// M05-R4-03 / M05-R5: the reaction-wheel control is a discrete GUI toggle
+// plus an optional transient `Shift+E` hold, composed into the simulation
+// input. The test covers the pure rules (discrete presses, no autorepeat,
+// Shift-qualified presses, hold arming, manual-rotation priority, inactive
 // context, and reset) so the GUI can rely on one small helper rather than
 // duplicating the composition.
 void test_reaction_wheel_toggle() {
     lander::ReactionWheelToggle rw;
     check(!rw.enabled(), "the reaction-wheel toggle starts OFF");
     check(!rw.input(false), "an OFF reaction-wheel toggle produces no input");
+
+    check(!rw.press(false, true),
+          "a Shift+E press does not turn the stored reaction-wheel toggle ON");
+    check(!rw.enabled(), "a Shift+E press leaves the stored toggle OFF");
+    check(rw.input(false, true, true),
+          "a Shift+E hold arms reaction-wheel input while the toggle is OFF");
+    check(!rw.input(true, true, true),
+          "manual rotation suppresses the Shift+E hold input for that step");
+    check(!rw.enabled(),
+          "a Shift+E hold does not switch the stored reaction-wheel toggle ON");
+    check(!rw.input(false, true, false),
+          "releasing the Shift+E hold with the toggle OFF produces no input");
 
     rw.press();
     check(rw.enabled(), "a non-repeat E press turns the reaction wheels ON");
@@ -2056,10 +2069,19 @@ void test_reaction_wheel_toggle() {
     check(rw.input(false),
           "releasing manual rotation resumes damping automatically");
 
+    check(rw.input(false, true, true),
+          "the stored ON toggle and a Shift+E hold both arm the same input");
+    check(rw.enabled(),
+          "a Shift+E hold while the toggle is ON does not toggle it OFF");
+
     rw.press();
     check(!rw.enabled(), "a second non-repeat E press turns the wheels OFF");
     check(!rw.input(false),
           "an OFF reaction-wheel toggle produces no damping input again");
+
+    check(!rw.press(true, true),
+          "a Shift+E autorepeat does not toggle the reaction wheels");
+    check(!rw.enabled(), "a Shift+E autorepeat leaves the stored toggle OFF");
 
     rw.press();
     check(rw.input(false, true),
@@ -2067,6 +2089,9 @@ void test_reaction_wheel_toggle() {
     check(!rw.input(false, false),
           "an inactive context disables the reaction-wheel input without "
           "changing the stored toggle");
+    check(!rw.input(false, false, true),
+          "an inactive context disables a Shift+E hold without changing the "
+          "stored toggle");
     check(rw.enabled(),
           "an inactive context does not clear the stored reaction-wheel "
           "toggle");
@@ -2083,6 +2108,12 @@ void test_reaction_wheel_toggle() {
     check(!rw.enabled(), "resetting the reaction-wheel toggle turns it OFF");
     check(!rw.input(false),
           "a reset reaction-wheel toggle produces no damping input");
+    check(rw.input(false, true, true),
+          "after reset, a Shift+E hold arms input only transiently");
+    check(!rw.enabled(),
+          "the transient Shift+E hold does not persist in the stored toggle");
+    check(!rw.input(false, true, false),
+          "releasing the hold after reset produces no damping input");
 }
 
 int main() {

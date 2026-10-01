@@ -604,6 +604,21 @@ toggle that lives in the GUI/control layer:
 - The HUD shows a compact `RW ON` / `RW OFF` state indicator and the control
   legend documents `E` as the reaction-wheel toggle.
 
+M05-R5 adds `Shift+E` as a transient hold-to-damp control while preserving
+M05-R4's discrete `E` toggle:
+
+- While `Shift+E` is held, the per-frame `Input.reaction_wheels` value is
+  armed even if the stored `E` toggle is OFF; releasing either key ends the
+  hold and no state persists.
+- A `Shift+E` keydown does not toggle the stored reaction-wheel state; only
+  an unmodified, non-autorepeat `E` keydown does.
+- Manual A/D/LEFT/RIGHT rotation has priority over both the stored toggle and
+  the `Shift+E` hold for that step, and a crash disables both.
+- Retry/new mission/new seed reset only the stored `E` toggle.
+- The HUD distinguishes the transient hold (for example `RW HOLD`) from the
+  stored `RW ON` / `RW OFF` state, and the legend/usage document both
+  controls.
+
 ---
 
 ## Guarded dangerous/debug controls
