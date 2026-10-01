@@ -74,7 +74,7 @@ flight is useful within short mobile-game sessions.
 
 ### M05 — Binary moon and first contract loop
 
-Status: DEFINED, NOT ACTIVE until M04 closeout.
+Status: COMPLETE.
 
 Use the M04 primary moon as the canonical gravitational calibration body.
 
@@ -91,5 +91,36 @@ repeating contract loop between a base on each moon.
 Specification:
 
 milestones/M05-binary-moon-contract-loop.md
+
+Record:
+
+records/M05-binary-moon-contract-loop.md
+
+### M06 — Flight computer and maneuver planning
+
+Status: AWAITING HUMAN VERIFICATION.
+
+Add a compact KSP-style flight computer to the M05 binary game:
+
+- a deterministic zero-thrust ballistic predictor that shares the live
+  simulation's integration rule
+- one maneuver node with a prograde/radial editing frame
+- a visible pre-node / post-node trajectory
+- SAS-style attitude holds
+- a finite-burn node executor that uses ordinary thrust, fuel, rotation, and
+  gravity
+- three planner actions: circularize, transfer to the other moon, and match
+  destination-pad velocity
+
+The flight computer plans and assists; it does not replace the player, teleport
+the spacecraft, stabilize orbits, or introduce a second physics model.
+
+Specification:
+
+milestones/M06-flight-computer-and-maneuver-planning.md
+
+### M07 — ECS decomposition
+
+Status: later work, not active.
 
 ECS conversion and modular spacecraft remain later work.

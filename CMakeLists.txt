@@ -21,6 +21,9 @@ add_subdirectory(third_party/SDL)
 add_library(lander
     src/sim.cpp
     src/terrain.cpp
+    src/ballistic.cpp
+    src/flight_computer.cpp
+    src/autopilot.cpp
 )
 target_include_directories(lander PUBLIC include)
 target_compile_options(lander PRIVATE
@@ -109,4 +112,20 @@ target_compile_options(lander_render_geom_tests PRIVATE
 )
 
 add_test(NAME lander_render_geom_tests
-         COMMAND lander_render_geom_tests)
+          COMMAND lander_render_geom_tests)
+
+# M06: the deterministic flight computer (shared ballistic prediction, the
+# single maneuver node, planners, attitude controller, node executor), tested
+# headlessly with no SDL dependency.
+add_executable(lander_flight_computer_tests
+    tests/test_flight_computer.cpp
+)
+target_link_libraries(lander_flight_computer_tests PRIVATE lander)
+target_compile_options(lander_flight_computer_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_flight_computer_tests
+          COMMAND lander_flight_computer_tests)

@@ -188,6 +188,15 @@ public:
     // base, and the first contract targets the companion base.
     void reset(std::uint64_t seed);
     void advance(double elapsed, const Input& input);
+    // Run exactly one authoritative fixed step with `input`. The GUI uses
+    // this so a per-step autopilot can re-compose the input from the state
+    // produced by the previous step. Returns false when the step crashed.
+    bool step_once(const Input& input);
+    // Directly set the fixed-step accumulator (clamped to `[0, 10]`) for a
+    // GUI-owned fixed-step loop.
+    void set_accumulator(double value) {
+        accumulator_ = value < 0.0 ? 0.0 : (value > 10.0 ? 10.0 : value);
+    }
     const State& state() const noexcept { return state_; }
     const State& previous_state() const noexcept { return previous_; }
     const Config& config() const noexcept { return config_; }

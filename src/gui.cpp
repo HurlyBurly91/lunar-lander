@@ -20,8 +20,11 @@
 
 #include <SDL3/SDL.h>
 
+#include "lander/autopilot.hpp"
 #include "lander/binary.hpp"
+#include "lander/ballistic.hpp"
 #include "lander/camera.hpp"
+#include "lander/flight_computer.hpp"
 #include "lander/guarded_actions.hpp"
 #include "lander/render_geom.hpp"
 #include "lander/sim.hpp"
@@ -929,7 +932,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
     // R/B/T).
     draw_text(renderer, "UP/W INC  DN/S DEC  X CUT", 18,
               kWindowHeight - 72, 1, dim);
-    draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  G NAV", 18,
+    draw_text(renderer, "L/R ROT  M CAM  V SYSTEM  G NAV+PATH", 18,
               kWindowHeight - 56, 1, dim);
     draw_text(renderer, "E RW TOG  SH+E RW HOLD  O X3 CIRC  SH+O X3 CCW", 18,
               kWindowHeight - 40, 1, dim);
@@ -937,6 +940,12 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
               kWindowHeight - 24, 1, dim);
     draw_text(renderer, "B X3 SYNC ORBIT  T X3 TRANSFER  WHEEL ZOOM", 18,
               kWindowHeight - 8, 1, dim);
+    draw_text(renderer, "C NODE  SH+C OTHER  DEL RM  H/J TIME  K/L DV", 18,
+              kWindowHeight - 88, 1, dim);
+    draw_text(renderer, "U CIRC  I TRANSFER  Y MATCH  1-8 ATT", 18,
+              kWindowHeight - 104, 1, dim);
+    draw_text(renderer, "RET EXEC  SH+RET ABORT  X ABORT/CUT", 18,
+              kWindowHeight - 120, 1, dim);
 
     // Camera indicator, top-right.
     std::string cam_line;
@@ -1149,7 +1158,224 @@ void print_usage() {
         "        body when landed, else the reference body), on the side\n"
         "        opposite the other body\n"
         "  T x3  ballistic inter-body transfer to the other body; shows\n"
-        "        'TRANSFER: NO SOLUTION' if none exists for this phase\n");
+        "        'TRANSFER: NO SOLUTION' if none exists for this phase\n"
+        "Flight computer: C place a node 5 s ahead on the reference body,\n"
+        "Shift+C place it on the other body, Delete remove it, H/J move it\n"
+        "-/+ 1 s, K/Shift+K and L/Shift+L adjust prograde/radial DV by\n"
+        "+/- 0.1 m/s, U plan circularize, I plan transfer, Y plan velocity\n"
+        "match, 1-8 select OFF/PROGRADE/RETRO/RAD OUT/RAD IN/TARGET/ANTI-\n"
+        "TARGET/MANEUVER attitude, Return execute the node, Shift+Return\n"
+        "abort the executor, X aborts/cuts the engine, G shows the nav\n"
+        "overlay and the predicted pre/post-node path.\n");
+}
+
+void draw_line_simple(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
+                      Color color) {
+    if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) ||
+        !std::isfinite(b.y)) {
+        return;
+    }
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
+    SDL_RenderLine(renderer, static_cast<float>(a.x), static_cast<float>(a.y),
+                   static_cast<float>(b.x), static_cast<float>(b.y));
+}
+
+void draw_trajectory(SDL_Renderer* renderer,
+                     const lander::TrajectoryPrediction& prediction,
+                     const lander::Camera& cam, bool has_node) {
+    auto draw_path = [&](const std::vector<lander::Vec2>& points, Color color) {
+        for (size_t i = 0; i + 1 < points.size(); ++i) {
+            const Vec2 a = to_screen(points[i].x, points[i].y, cam);
+            const Vec2 b = to_screen(points[i + 1].x, points[i + 1].y, cam);
+            draw_line_simple(renderer, a, b, color);
+        }
+    };
+
+    draw_path(prediction.pre, make_color(185, 195, 215));
+    draw_path(prediction.post, make_color(120, 240, 160));
+
+    if (has_node) {
+        const Vec2 p =
+            to_screen(prediction.node_position.x, prediction.node_position.y,
+                      cam);
+        const Color node_color = make_color(230, 130, 255);
+        draw_thick_line(renderer, {p.x - 6, p.y}, {p.x + 6, p.y}, 1.5,
+                        node_color);
+        draw_thick_line(renderer, {p.x, p.y - 6}, {p.x, p.y + 6}, 1.5,
+                        node_color);
+    }
+
+    if (prediction.impact.valid) {
+        const Vec2 p = to_screen(prediction.impact.position.x,
+                                  prediction.impact.position.y, cam);
+        const Color red = make_color(255, 92, 80);
+        draw_thick_line(renderer, {p.x - 5, p.y - 5}, {p.x + 5, p.y + 5}, 1.5,
+                        red);
+        draw_thick_line(renderer, {p.x - 5, p.y + 5}, {p.x + 5, p.y - 5}, 1.5,
+                        red);
+    }
+
+    if (prediction.closest.valid) {
+        const Vec2 p = to_screen(prediction.closest.target_position.x,
+                                  prediction.closest.target_position.y, cam);
+        fill_rect(renderer, static_cast<int>(p.x) - 3,
+                  static_cast<int>(p.y) - 3, 6, 6, make_color(255, 196, 64));
+    }
+
+    if (prediction.peri.valid) {
+        const Vec2 p = to_screen(prediction.peri.position.x,
+                                  prediction.peri.position.y, cam);
+        fill_rect(renderer, static_cast<int>(p.x) - 2,
+                  static_cast<int>(p.y) - 2, 4, 4, make_color(235, 240, 250));
+    }
+
+    if (prediction.apo.valid) {
+        const Vec2 p =
+            to_screen(prediction.apo.position.x, prediction.apo.position.y,
+                      cam);
+        fill_rect(renderer, static_cast<int>(p.x) - 2,
+                  static_cast<int>(p.y) - 2, 4, 4, make_color(120, 220, 255));
+    }
+}
+
+void draw_flight_computer(
+    SDL_Renderer* renderer, const lander::Simulation& sim,
+    const std::optional<lander::ManeuverNode>& node,
+    const lander::NodeBasis& basis, bool basis_valid,
+    const lander::TrajectoryPrediction& prediction, bool prediction_valid,
+    const lander::NodeExecutor& executor, lander::AttitudeMode attitude_mode,
+    const std::string& message) {
+    const Color panel(12, 14, 26);
+    const Color white(228, 233, 244);
+    const Color dim(130, 138, 156);
+    const Color green(120, 240, 160);
+    const Color red(255, 92, 80);
+    const Color amber(255, 196, 64);
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    fill_rect(renderer, 832, 56, 440, 210, panel, 160);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+
+    const lander::State& s = sim.state();
+    const double t = sim.sim_time();
+    (void)s;
+    (void)basis_valid;
+    int row = 74;
+
+    auto line = [&](const std::string& text, Color color) {
+        draw_text(renderer, text, 842, row, 1, color);
+        row += 14;
+    };
+
+    line("FLIGHT COMPUTER", white);
+
+    if (node) {
+        char buffer[80];
+        std::snprintf(buffer, sizeof buffer, "NODE %s T%+.1f",
+                      body_name(node->frame_body), node->time - t);
+        line(buffer, white);
+        std::snprintf(buffer, sizeof buffer, "DPGR %+.1f  DRAD %+.1f",
+                      node->dv_prograde, node->dv_radial);
+        line(buffer, dim);
+
+        const lander::Vec2 dv =
+            prediction_valid && prediction.basis_valid
+                ? prediction.dv_world
+                : lander::node_world_dv(*node, basis);
+        const double total = std::hypot(dv.x, dv.y);
+        const double burn = sim.config().main_accel > 0.0
+                                ? total / sim.config().main_accel
+                                : 0.0;
+        std::snprintf(buffer, sizeof buffer, "TOT %.1f  BURN %.1f S", total,
+                      burn);
+        line(buffer, white);
+    } else {
+        line("NODE NONE", dim);
+        line("", dim);
+        line("", dim);
+    }
+
+    Color executor_color = dim;
+    if (executor.state() == lander::ExecutorState::Wait ||
+        executor.state() == lander::ExecutorState::Align) {
+        executor_color = amber;
+    } else if (executor.state() == lander::ExecutorState::Burn) {
+        executor_color = green;
+    } else if (executor.state() == lander::ExecutorState::Aborted ||
+               executor.state() == lander::ExecutorState::Incomplete) {
+        executor_color = red;
+    } else if (executor.state() == lander::ExecutorState::Complete) {
+        executor_color = green;
+    }
+    std::string executor_line =
+        std::string("EXEC ") + lander::executor_state_name(executor.state());
+    if (executor.active() && executor.late()) {
+        executor_line += " LATE";
+    }
+    line(executor_line, executor_color);
+
+    Color attitude_color =
+        attitude_mode == lander::AttitudeMode::Off ? dim : green;
+    line(std::string("ATT  ") + lander::attitude_mode_name(attitude_mode),
+         attitude_color);
+
+    if (executor.active()) {
+        char buffer[80];
+        const double remaining =
+            std::hypot(executor.dv_remaining().x, executor.dv_remaining().y);
+        std::snprintf(buffer, sizeof buffer, "IGN T%+.1f  REM %.1f",
+                      executor.ignite_time() - t, remaining);
+        line(buffer, green);
+    } else {
+        line("IGN  --", dim);
+    }
+
+    if (prediction_valid) {
+        char buffer[80];
+        if (prediction.closest.valid) {
+            std::snprintf(buffer, sizeof buffer, "CP  %.0f M T%+.1f",
+                          prediction.closest.distance,
+                          prediction.closest.time - t);
+        } else {
+            std::snprintf(buffer, sizeof buffer, "CP  --");
+        }
+        line(buffer, white);
+
+        if (prediction.peri.valid) {
+            std::snprintf(buffer, sizeof buffer, "PE  %.0f M",
+                          prediction.peri.distance);
+        } else {
+            std::snprintf(buffer, sizeof buffer, "PE  --");
+        }
+        line(buffer, white);
+
+        if (prediction.apo.valid) {
+            std::snprintf(buffer, sizeof buffer, "AP  %.0f M",
+                          prediction.apo.distance);
+        } else {
+            std::snprintf(buffer, sizeof buffer, "AP  --");
+        }
+        line(buffer, white);
+
+        if (prediction.impact.valid) {
+            std::snprintf(buffer, sizeof buffer, "IMPACT %s T%+.1f",
+                          body_name(prediction.impact.body < 0 ? 0
+                                                                : prediction.impact.body),
+                          prediction.impact.time - t);
+            line(buffer, red);
+        } else {
+            line("IMPACT --", dim);
+        }
+    } else {
+        line("CP  --", dim);
+        line("PE  --", dim);
+        line("AP  --", dim);
+        line("IMPACT --", dim);
+    }
+
+    if (!message.empty()) {
+        line(message, amber);
+    }
 }
 
 }  // namespace
@@ -1260,6 +1486,31 @@ int main(int argc, char** argv) {
     // manual-rotation priority rule.
     lander::ReactionWheelToggle reaction_wheels;
 
+    std::optional<lander::ManeuverNode> maneuver_node;
+    lander::NodeExecutor node_executor;
+    lander::AttitudeMode attitude_mode = lander::AttitudeMode::Off;
+    lander::TrajectoryPrediction prediction{};
+    bool prediction_valid = false;
+    std::string pc_message;
+
+    auto reset_flight_computer = [&]() {
+        maneuver_node.reset();
+        node_executor.clear();
+        attitude_mode = lander::AttitudeMode::Off;
+        prediction = {};
+        prediction_valid = false;
+        pc_message.clear();
+    };
+
+    auto destination_pad_at = [&](double t) {
+        const int dest = sim.contract().destination_body;
+        const lander::Terrain& terrain =
+            sim.binary().body(dest).terrain;
+        return sim.binary().surface_point(
+            dest, terrain.angle_at_arc(0.0),
+            terrain.surface_radius_at_arc(0.0), t);
+    };
+
     auto start_mission = [&]() {
         sim.reset(seed);
         throttle = 0.0;
@@ -1271,6 +1522,7 @@ int main(int argc, char** argv) {
         contract_banner_time = 0.0;
         debug_message.clear();
         debug_message_time = 0.0;
+        reset_flight_computer();
         if (orbit_demo) {
             // Developer mode: start in flight on a terrain-clearing
             // circular-ish orbit around the primary at t = 0 (primary
@@ -1341,10 +1593,6 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
-                    case SDL_SCANCODE_X:
-                        // Immediate main-engine cutoff.
-                        throttle = 0.0;
-                        break;
                     case SDL_SCANCODE_E:
                         // M05-R4-03 / M05-R5: an unmodified, non-repeat
                         // `E` press toggles the stored reaction-wheel state.
@@ -1424,6 +1672,178 @@ int main(int argc, char** argv) {
                             sim.refuel();
                         }
                         break;
+                    case SDL_SCANCODE_X:
+                        throttle = 0.0;
+                        if (node_executor.active()) {
+                            node_executor.abort();
+                            attitude_mode = lander::AttitudeMode::Off;
+                        }
+                        break;
+                    case SDL_SCANCODE_C: {
+                        if (!sim.state().crashed && !sim.state().landed &&
+                            !node_executor.active()) {
+                            const bool shift =
+                                (event.key.mod & SDL_KMOD_SHIFT) != 0;
+                            const int frame_body =
+                                shift ? 1 - sim.reference_body()
+                                      : sim.reference_body();
+                            maneuver_node = lander::default_node(
+                                sim.sim_time(), frame_body,
+                                sim.config().fixed_dt);
+                            node_executor.clear();
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_DELETE:
+                        if (!sim.state().crashed && !sim.state().landed) {
+                            maneuver_node.reset();
+                            node_executor.clear();
+                        }
+                        break;
+                    case SDL_SCANCODE_H:
+                    case SDL_SCANCODE_J: {
+                        if (maneuver_node && !sim.state().crashed &&
+                            !sim.state().landed && !node_executor.active()) {
+                            const double delta =
+                                event.key.scancode == SDL_SCANCODE_J ? 1.0
+                                                                     : -1.0;
+                            maneuver_node->time = lander::snap_time(
+                                maneuver_node->time + delta,
+                                sim.config().fixed_dt);
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_K:
+                    case SDL_SCANCODE_L: {
+                        if (maneuver_node && !sim.state().crashed &&
+                            !sim.state().landed && !node_executor.active()) {
+                            const bool shift =
+                                (event.key.mod & SDL_KMOD_SHIFT) != 0;
+                            const double delta = shift ? -0.1 : 0.1;
+                            if (event.key.scancode == SDL_SCANCODE_K) {
+                                maneuver_node->dv_prograde += delta;
+                            } else {
+                                maneuver_node->dv_radial += delta;
+                            }
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_U:
+                    case SDL_SCANCODE_I:
+                    case SDL_SCANCODE_Y: {
+                        if (!sim.state().crashed && !sim.state().landed &&
+                            !node_executor.active()) {
+                            const lander::State& st = sim.state();
+                            const double t0 = sim.sim_time();
+                            const lander::Config& cfg = sim.config();
+                            const int ref = sim.reference_body();
+                            const int dest = sim.contract().destination_body;
+                            std::optional<lander::ManeuverNode> planned;
+                            if (event.key.scancode == SDL_SCANCODE_U) {
+                                planned = lander::plan_circularize(
+                                    sim.binary(), cfg, st, t0, ref,
+                                    maneuver_node);
+                            } else if (event.key.scancode == SDL_SCANCODE_I) {
+                                planned = lander::plan_transfer(sim.binary(),
+                                                                cfg, st, t0,
+                                                                ref,
+                                                                maneuver_node);
+                            } else {
+                                planned = lander::plan_match_target(
+                                    sim.binary(), cfg, st, t0, ref, dest,
+                                    maneuver_node);
+                            }
+                            if (planned.has_value()) {
+                                maneuver_node = planned;
+                                node_executor.clear();
+                                debug_message.clear();
+                                debug_message_time = 0.0;
+                            } else {
+                                debug_message = "PLANNER: NO SOLUTION";
+                                debug_message_time = 3.0;
+                            }
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_RETURN: {
+                        const bool shift =
+                            (event.key.mod & SDL_KMOD_SHIFT) != 0;
+                        if (shift) {
+                            if (node_executor.active()) {
+                                node_executor.abort();
+                                attitude_mode = lander::AttitudeMode::Off;
+                            }
+                        } else if (maneuver_node && !sim.state().crashed &&
+                                   !sim.state().landed &&
+                                   !node_executor.active()) {
+                            const lander::State& st = sim.state();
+                            const double t0 = sim.sim_time();
+                            const lander::Config& cfg = sim.config();
+                            const double t = std::max(
+                                t0,
+                                lander::snap_time(maneuver_node->time,
+                                                  cfg.fixed_dt));
+                            const lander::BallisticState initial{
+                                {st.x, st.y}, {st.vx, st.vy}, t0};
+                            const int steps =
+                                lander::ballistic_steps(t0, t, cfg.fixed_dt);
+                            const lander::BallisticState pre =
+                                lander::propagate_ballistic(
+                                    sim.binary(), initial, steps,
+                                    cfg.fixed_dt);
+                            const lander::NodeBasis basis =
+                                lander::compute_node_basis(
+                                    sim.binary(), t, maneuver_node->frame_body,
+                                    pre.p, pre.v);
+                            node_executor.arm(*maneuver_node, basis, t0, cfg);
+                            attitude_mode = lander::AttitudeMode::Maneuver;
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_1:
+                    case SDL_SCANCODE_2:
+                    case SDL_SCANCODE_3:
+                    case SDL_SCANCODE_4:
+                    case SDL_SCANCODE_5:
+                    case SDL_SCANCODE_6:
+                    case SDL_SCANCODE_7:
+                    case SDL_SCANCODE_8:
+                        if (!node_executor.active()) {
+                            switch (event.key.scancode) {
+                                case SDL_SCANCODE_1:
+                                    attitude_mode = lander::AttitudeMode::Off;
+                                    break;
+                                case SDL_SCANCODE_2:
+                                    attitude_mode =
+                                        lander::AttitudeMode::Prograde;
+                                    break;
+                                case SDL_SCANCODE_3:
+                                    attitude_mode =
+                                        lander::AttitudeMode::Retrograde;
+                                    break;
+                                case SDL_SCANCODE_4:
+                                    attitude_mode =
+                                        lander::AttitudeMode::RadialOut;
+                                    break;
+                                case SDL_SCANCODE_5:
+                                    attitude_mode =
+                                        lander::AttitudeMode::RadialIn;
+                                    break;
+                                case SDL_SCANCODE_6:
+                                    attitude_mode =
+                                        lander::AttitudeMode::Target;
+                                    break;
+                                case SDL_SCANCODE_7:
+                                    attitude_mode =
+                                        lander::AttitudeMode::AntiTarget;
+                                    break;
+                                default:
+                                    attitude_mode =
+                                        lander::AttitudeMode::Maneuver;
+                                    break;
+                            }
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -1475,30 +1895,70 @@ int main(int argc, char** argv) {
             throttle = std::clamp(throttle, 0.0, 1.0);
         }
 
-        lander::Input input;
-        input.main_throttle = throttle;
-        // The simulation's rotate_left decreases the angle (a clockwise
-        // turn), so the visually-left keys drive rotate_right and vice
-        // versa. This keeps the on-screen feel natural without touching
-        // the preserved physics.
-        input.rotate_right = key(SDL_SCANCODE_LEFT) || key(SDL_SCANCODE_A);
-        input.rotate_left = key(SDL_SCANCODE_RIGHT) || key(SDL_SCANCODE_D);
-        // M05-R5: `Shift+E` is a transient hold-to-damp control. It is read
-        // from the polled keyboard state and the current modifier state each
-        // frame, so both "Shift then E" and "E then Shift" work and releasing
-        // either key ends the hold immediately.
         const bool rw_hold =
             (SDL_GetModState() & SDL_KMOD_SHIFT) != 0 && key(SDL_SCANCODE_E);
-        // M05-R4-03 / M05-R5: either the stored `E` toggle or the transient
-        // `Shift+E` hold arms damping, but a manual rotation command takes
-        // priority for that step. After a crash there is no active control
-        // effect even if either source is still armed.
-        input.reaction_wheels = reaction_wheels.input(
-            input.rotate_left || input.rotate_right, !sim.state().crashed,
-            rw_hold);
+        const bool manual_left = key(SDL_SCANCODE_RIGHT) || key(SDL_SCANCODE_D);
+        const bool manual_right = key(SDL_SCANCODE_LEFT) || key(SDL_SCANCODE_A);
 
-        if (!paused) {
-            sim.advance(dt, input);
+        if (!paused && node_executor.active() &&
+            (throttle_up || throttle_down)) {
+            node_executor.abort();
+        }
+
+        if (!paused && !sim.state().crashed) {
+            const double fixed_dt = sim.config().fixed_dt;
+            sim.set_accumulator(std::min(sim.accumulator() + dt, 10.0));
+            while (sim.accumulator() >= fixed_dt) {
+                sim.set_accumulator(sim.accumulator() - fixed_dt);
+
+                const lander::State before = sim.state();
+                const double now = sim.sim_time();
+                lander::Input step_input{};
+
+                if (node_executor.active()) {
+                    step_input = node_executor.make_input(
+                        before, now, sim.config(), manual_left, manual_right);
+                } else {
+                    const auto& bin = sim.binary();
+                    const int ref = sim.reference_body();
+                    const lander::NodeBasis current_basis =
+                        lander::compute_node_basis(
+                            bin, now, ref, {before.x, before.y},
+                            {before.vx, before.vy});
+                    const auto dest_pad = destination_pad_at(now);
+                    lander::Vec2 maneuver_dv{};
+                    if (attitude_mode == lander::AttitudeMode::Maneuver &&
+                        maneuver_node && prediction_valid &&
+                        prediction.basis_valid) {
+                        maneuver_dv = prediction.dv_world;
+                    }
+                    const auto direction = lander::attitude_target_direction(
+                        attitude_mode, current_basis, {before.x, before.y},
+                        dest_pad.position, maneuver_dv);
+                    step_input = lander::attitude_input(
+                        before, sim.config(), direction, manual_left,
+                        manual_right);
+                    step_input.main_throttle = throttle;
+                }
+
+                step_input.reaction_wheels = reaction_wheels.input(
+                    step_input.rotate_left || step_input.rotate_right,
+                    !before.crashed, rw_hold);
+
+                (void)sim.step_once(step_input);
+                const bool executor_was_active = node_executor.active();
+                node_executor.after_step(before, sim.state(), step_input,
+                                         sim.sim_time(), sim.config());
+                if (executor_was_active && !node_executor.active() &&
+                    !sim.state().crashed && !sim.state().landed) {
+                    attitude_mode = lander::AttitudeMode::Off;
+                }
+
+                if (sim.state().crashed || sim.state().landed) {
+                    reset_flight_computer();
+                    break;
+                }
+            }
         }
 
         const lander::State& s = sim.state();
@@ -1579,9 +2039,46 @@ int main(int argc, char** argv) {
         const auto& last_completed = sim.last_completed();
         if (last_completed.has_value() != last_completed_seen.has_value() ||
             (last_completed.has_value() &&
-             !(*last_completed == *last_completed_seen))) {
+              !(*last_completed == *last_completed_seen))) {
             last_completed_seen = last_completed;
             contract_banner_time = kContractBannerTime;
+            reset_flight_computer();
+        }
+
+        pc_message.clear();
+        if (!s.crashed && !s.landed) {
+            const double horizon = 2.0 * sim.binary().period();
+            prediction = lander::predict_trajectory(
+                sim.binary(), sim.config(), s, sim.sim_time(),
+                sim.reference_body(), sim.contract().destination_body,
+                maneuver_node, horizon, 512);
+            prediction_valid = true;
+
+            if (attitude_mode != lander::AttitudeMode::Off) {
+                const auto& bin = sim.binary();
+                const lander::NodeBasis current_basis =
+                    lander::compute_node_basis(
+                        bin, sim.sim_time(), sim.reference_body(), {s.x, s.y},
+                        {s.vx, s.vy});
+                lander::Vec2 maneuver_dv{};
+                if (attitude_mode == lander::AttitudeMode::Maneuver &&
+                    maneuver_node && prediction.basis_valid) {
+                    maneuver_dv = prediction.dv_world;
+                }
+                const auto direction = lander::attitude_target_direction(
+                    attitude_mode, current_basis, {s.x, s.y},
+                    destination_pad_at(sim.sim_time()).position,
+                    maneuver_dv);
+                if (!direction.has_value()) {
+                    pc_message = "ATT INVALID";
+                }
+            }
+
+            if (maneuver_node && !prediction.basis_valid) {
+                pc_message = "NODE BASIS INVALID";
+            }
+        } else {
+            reset_flight_computer();
         }
 
         // The backdrop rotates with the final presentation angle (M05-R3-12).
@@ -1602,11 +2099,19 @@ int main(int argc, char** argv) {
                                       sim.sim_time()));
         }
         if (nav_overlay && !s.crashed && !paused) {
+            if (prediction_valid && !s.landed) {
+                draw_trajectory(renderer, prediction, cam,
+                                maneuver_node.has_value());
+            }
             draw_navigation_overlay(renderer, sim, render_state, cam);
         }
         draw_hud(renderer, sim, seed, throttle,
                   reaction_wheels.enabled(), rw_hold, cam,
                   tap_guard.progress_label(SDL_GetTicks()));
+        draw_flight_computer(renderer, sim, maneuver_node, prediction.basis,
+                             prediction.basis_valid, prediction,
+                             prediction_valid, node_executor, attitude_mode,
+                             pc_message);
         draw_contract_banner(renderer, last_completed_seen,
                               contract_banner_time);
         draw_landed_banner(renderer, s);
