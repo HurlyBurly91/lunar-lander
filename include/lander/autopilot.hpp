@@ -97,4 +97,76 @@ private:
     Vec2 dv_remaining_{};
 };
 
+// M06-R5-05 / D05: two-level inter-moon transfer midcourse controller.
+//
+// Composes the fast velocity-to-be-gained NodeExecutor (HOT: every 1/120 s,
+// O(1) - it holds the ship on the planned arc and delivers each small
+// correction) with a slower, bounded-rate, warm-started replan (WARM). The
+// slow planner is plan_transfer itself: at most once per `replan_interval` it
+// re-aims the arc from the ship's current state (warm differential correction,
+// cold-fallback only if that fails) and, when the required correction exceeds
+// `miss_tolerance` (a miss beyond tolerance), re-targets the fast executor
+// with the corrected node. COLD never runs on every fixed step; the fast
+// executor keeps running at 120 Hz while the slow planner holds between
+// updates.
+class TransferMidcourse {
+public:
+    // Arm the two-level controller to hold the arc to `node` (the planned
+    // transfer departure). `solution` seeds the warm-start cache; `basis` is
+    // the node basis computed from the predicted pre-burn state;
+    // `reference_body` is the navigation frame the transfer was planned in.
+    // The fast executor is armed immediately with `node`.
+    void arm(const ManeuverNode& node, const TransferSolution& solution,
+             int reference_body, const NodeBasis& basis, double now,
+             const Config& config);
+
+    // The two-level controller is engaged in a transfer. True from `arm` until
+    // the ship lands / crashes / the controller is aborted; the fast executor
+    // may be idle (coasting) between corrections while this stays true.
+    bool active() const noexcept { return engaged_; }
+
+    // HOT (O(1), every 1/120 s): ordinary input for the fast VGO. Delegates to
+    // the NodeExecutor; it never triggers any transfer solver. Emits no thrust
+    // or rotation while the ship is coasting between corrections.
+    Input make_input(const State& state, double now, const Config& config,
+                     bool manual_left, bool manual_right) const;
+
+    // Advance the fast executor after one authoritative fixed step; disengage
+    // when the ship lands or crashes.
+    void after_step(const State& before, const State& after,
+                    const Input& input, double now, const Config& config);
+
+    // WARM (bounded rate): re-aim the arc from the current state via
+    // plan_transfer (warm-first / cold-fallback) at most once per
+    // `replan_interval`; never on every fixed step. When the re-aim reports a
+    // required correction larger than `miss_tolerance` (a miss beyond
+    // tolerance), the fast executor re-targets with the corrected node.
+    // Returns true when a slow solve ran on this call (callers use this to
+    // count bounded-rate replans, M06-R5-V05).
+    bool maybe_replan(const BinarySystem& bin, const Config& config,
+                      const State& state, double now,
+                      double replan_interval = 0.1,
+                      double miss_tolerance = 0.25);
+
+    // Abort the whole controller (fast executor and engaged state).
+    void abort();
+
+    // Telemetry for the rate-tier verification (M06-R5-V05 / V08).
+    int slow_plans() const noexcept { return slow_plans_; }
+    int retargets() const noexcept { return retargets_; }
+    const TransferSolution& cache() const noexcept { return cache_; }
+    const std::optional<ManeuverNode>& node() const noexcept { return node_; }
+    const NodeExecutor& fast() const noexcept { return fast_; }
+
+private:
+    NodeExecutor fast_{};
+    TransferSolution cache_{};
+    std::optional<ManeuverNode> node_{};
+    int reference_body_{0};
+    bool engaged_{false};
+    double last_replan_{0.0};
+    int slow_plans_{0};
+    int retargets_{0};
+};
+
 }  // namespace lander

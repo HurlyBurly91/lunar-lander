@@ -672,20 +672,136 @@ void test_node_executor() {
               "a completed executor leaves no latent output");
     }
 
-    // Arming well before ignition waits first.
+    // Arming well before ignition begins aligning immediately (ALIGN,
+    // throttle 0). Once aligned it holds in WAIT (throttle 0) until the
+    // ignition time, then ignites into BURN.
     {
         lander::ManeuverNode node{};
         node.time = 100.0;
-        node.dv_prograde = 4.0;
+        node.dv_prograde = 4.0;  // vgo (0,4) -> aligned nose angle 0
+        lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
         lander::NodeExecutor exec;
-        exec.arm(node, {{0.0, 1.0}, {1.0, 0.0}}, node.time - 10.0, cfg);
+        exec.arm(node, basis, node.time - 5.0, cfg);
+        check(exec.state() == lander::ExecutorState::Align,
+              "arming before ignition begins aligning (ALIGN)");
+
+        lander::State before{};
+        before.fuel = 1000.0;
+        before.angle = 0.0;  // already aligned with the VGO
+        before.omega = 0.0;
+
+        // First step: aligned while still pre-ignition -> hold in WAIT.
+        double now = node.time - 5.0;
+        {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            check(input.main_throttle == 0.0, "no thrust before ignition");
+            lander::State after = before;
+            now += dt;
+            exec.after_step(before, after, input, now, cfg);
+        }
         check(exec.state() == lander::ExecutorState::Wait,
-              "arming before ignition starts in WAIT");
-        lander::State s{};
-        s.fuel = 100.0;
-        const lander::Input in =
-            exec.make_input(s, node.time - 10.0, cfg, false, false);
-        check(in.main_throttle == 0.0, "WAIT emits no thrust");
+              "an aligned pre-ignition node holds in WAIT");
+
+        // Holds with no thrust until the ignition time, then ignites.
+        int thrust_steps = 0;
+        for (int i = 0; i < 1200 && exec.active(); ++i) {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            lander::State after = before;
+            after.fuel = std::max(
+                0.0, before.fuel - (input.main_throttle > 0.0
+                                       ? cfg.fuel_burn * dt
+                                       : 0.0));
+            now += dt;
+            if (input.main_throttle > 0.0) {
+                ++thrust_steps;
+            }
+            exec.after_step(before, after, input, now, cfg);
+            before = after;
+            if (exec.state() == lander::ExecutorState::Burn) {
+                break;
+            }
+        }
+        check(exec.state() == lander::ExecutorState::Burn,
+              "a held node ignites into BURN at the ignition time");
+        check(thrust_steps == 0, "no thrust is emitted while held in WAIT");
+    }
+
+    // A misaligned node never forces a burn at the node time: it stays in
+    // ALIGN (attitude only, no thrust) until the attitude actually lines up
+    // with the VGO direction, then burns the finite window to completion.
+    {
+        lander::ManeuverNode node{};
+        node.time = 100.0;
+        node.dv_radial = 4.0;  // world +x VGO -> aligned nose angle is -pi/2
+        lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, node.time - 0.5, cfg);
+        check(exec.state() == lander::ExecutorState::Align,
+              "arming at ignition starts a node in ALIGN");
+
+        lander::State before{};
+        before.fuel = 1000.0;
+        before.angle = 0.0;  // 90 deg off the VGO direction
+        before.omega = 0.0;
+
+        // Step well past the node time while misaligned: attitude only.
+        double now = node.time - 0.5;
+        int burn_steps = 0;
+        for (int i = 0; i < 480; ++i) {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            lander::State after = before;
+            after.fuel = std::max(
+                0.0, before.fuel - (input.main_throttle > 0.0
+                                       ? cfg.fuel_burn * dt
+                                       : 0.0));
+            now += dt;
+            if (input.main_throttle > 0.0) {
+                ++burn_steps;
+            }
+            exec.after_step(before, after, input, now, cfg);
+            before = after;
+            if (!exec.active()) {
+                break;
+            }
+        }
+        check(burn_steps == 0,
+              "a misaligned node emits no thrust past the node time");
+        check(exec.state() == lander::ExecutorState::Align,
+              "a misaligned node stays in ALIGN past the node time");
+        check_close(vec_length(exec.dv_remaining()), 4.0, 1.0e-9,
+                    "no delta-v is delivered while misaligned");
+
+        // Once the attitude is actually aligned, the burn starts and the node
+        // completes with the full delta-v delivered.
+        before.angle = -0.5 * lander::kPi;
+        before.omega = 0.0;
+        int aligned_burn_steps = 0;
+        for (int i = 0; i < 480 && exec.active(); ++i) {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            lander::State after = before;
+            after.fuel = std::max(
+                0.0, before.fuel - (input.main_throttle > 0.0
+                                       ? cfg.fuel_burn * dt
+                                       : 0.0));
+            now += dt;
+            if (input.main_throttle > 0.0) {
+                ++aligned_burn_steps;
+            }
+            exec.after_step(before, after, input, now, cfg);
+            before = after;
+        }
+        check(exec.state() == lander::ExecutorState::Complete,
+              "the node completes once aligned and burning");
+        check(aligned_burn_steps == 120,
+              "the aligned burn lasts exactly 120 fixed steps");
+        check_close(vec_length(exec.dv_remaining()), 0.0, 1.0e-9,
+                    "the aligned burn delivers the full node delta-v");
     }
 
     // Abort and fuel exhaustion leave no latent output.

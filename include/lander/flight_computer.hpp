@@ -112,13 +112,20 @@ std::optional<ManeuverNode> plan_circularize(
     double t0, int reference_body,
     const std::optional<ManeuverNode>& existing);
 
-// Reuses the M05 pure transfer solver from the predicted pre-burn state.
-// Returns the planned node on success, or `std::nullopt` when no valid
-// transfer exists (the caller then leaves any existing node unchanged).
+// Plans an inter-body transfer node from the predicted pre-burn state.
+// M06-R5 warm-first flow: when `cache` holds a valid transfer solution for the
+// same route, a bounded differential correction re-aims that cached solution at
+// the current node time; on any warm failure (or an empty / mismatched `cache`)
+// it falls back to the full coarse COLD search. A successful solve (warm or
+// cold) updates `*cache` for the next call. `cache` is optional, so call sites
+// that pass nothing keep the pure cold behaviour. Returns the planned node on
+// success, or `std::nullopt` when no valid transfer exists (the caller then
+// leaves any existing node unchanged).
 std::optional<ManeuverNode> plan_transfer(
     const BinarySystem& bin, const Config& config, const State& start,
     double t0, int reference_body,
-    const std::optional<ManeuverNode>& existing);
+    const std::optional<ManeuverNode>& existing,
+    TransferSolution* cache = nullptr);
 
 // Velocity-match the moving destination pad. If no node exists yet, the node
 // is placed near the predicted closest approach to that pad.

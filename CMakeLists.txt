@@ -24,6 +24,9 @@ add_library(lander
     src/ballistic.cpp
     src/flight_computer.cpp
     src/autopilot.cpp
+    src/predictor.cpp
+    src/landing.cpp
+    src/debug_subsystem.cpp
 )
 target_include_directories(lander PUBLIC include)
 target_compile_options(lander PRIVATE
@@ -129,3 +132,75 @@ target_compile_options(lander_flight_computer_tests PRIVATE
 
 add_test(NAME lander_flight_computer_tests
           COMMAND lander_flight_computer_tests)
+
+# M06-R3: the live-trajectory projection / shifted receding-horizon predictor,
+# tested headlessly with no SDL dependency.
+add_executable(lander_predictor_tests
+    tests/test_predictor.cpp
+)
+target_link_libraries(lander_predictor_tests PRIVATE lander)
+target_compile_options(lander_predictor_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_predictor_tests COMMAND lander_predictor_tests)
+
+# M06-R6: low-complexity powered-landing guidance (ZEM/ZEV from the
+# maintained zero-effort reference, bounded t_go scan, moving target state),
+# tested headlessly with no SDL dependency.
+add_executable(lander_landing_tests
+    tests/test_landing_zem_zev.cpp
+)
+target_link_libraries(lander_landing_tests PRIVATE lander)
+target_compile_options(lander_landing_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_landing_tests COMMAND lander_landing_tests)
+
+# M06-R5: the warm-started transfer replan (bounded differential correction,
+# bounded-failure fallback, bidirectional/multi-phase coverage, cold-vs-warm
+# benchmark). Tested headlessly with no SDL dependency.
+add_executable(lander_transfer_warm_tests
+    tests/test_transfer_warm.cpp
+)
+target_link_libraries(lander_transfer_warm_tests PRIVATE lander)
+target_compile_options(lander_transfer_warm_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_transfer_warm_tests COMMAND lander_transfer_warm_tests)
+
+# M06-R8: the subsystem-isolation debug harness (--debug-subsystem selector,
+# deterministic per-mode scenario fixtures, and the common minimum readout),
+# tested headlessly with no SDL dependency.
+add_executable(lander_debug_subsystem_tests
+    tests/test_debug_subsystem.cpp
+)
+target_link_libraries(lander_debug_subsystem_tests PRIVATE lander)
+target_compile_options(lander_debug_subsystem_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_debug_subsystem_tests COMMAND lander_debug_subsystem_tests)
+
+# M06-R2-11: predictor/planner microbenchmark. A measurement tool, not a
+# pass/fail test, so it is a plain executable (run explicitly) rather than a
+# ctest entry.
+add_executable(lander_bench
+    tests/bench_flight_computer.cpp
+)
+target_link_libraries(lander_bench PRIVATE lander)
+target_compile_options(lander_bench PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)

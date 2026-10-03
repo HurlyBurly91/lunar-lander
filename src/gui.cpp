@@ -24,13 +24,17 @@
 #include "lander/binary.hpp"
 #include "lander/ballistic.hpp"
 #include "lander/camera.hpp"
+#include "lander/debug_subsystem.hpp"
 #include "lander/flight_computer.hpp"
 #include "lander/guarded_actions.hpp"
+#include "lander/landing.hpp"
+#include "lander/predictor.hpp"
 #include "lander/render_geom.hpp"
 #include "lander/sim.hpp"
 #include "lander/starfield.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -53,6 +57,28 @@ constexpr double kThrottleRamp = 0.75;
 
 // How long (presentation seconds) the contract-completion banner stays up.
 constexpr double kContractBannerTime = 3.0;
+
+// M06-R2-11: the on-screen zero-thrust prediction is the expensive part of a
+// rendered frame (a full ~2-binary-period horizon is ~52k fixed steps, worth
+// ~18-24 ms in sustained orbit). We rebuild it only at this bounded cadence in
+// simulation time (12 Hz) and reuse the cached arc between rebuilds, so a
+// 60 fps frame spends ~12/60 of a frame on prediction on average instead of
+// every frame. It is rebuilt immediately whenever the inputs that define the
+// arc change (maneuver node, target body, or reference body).
+constexpr double kPredictRefreshSec = 1.0 / 12.0;
+
+// M06-R8 (R8-06): the per-frame rebuild cap for the low-rate predictor. File
+// scope so the expanded predictor panel (which reports the live cost against
+// this budget) can reference it alongside the main loop that uses it.
+constexpr int kPredictBudget = 240;
+
+// M06-R5 / D05: the two-level transfer midcourse runs a bounded-rate WARM
+// re-aim (warm differential correction via plan_transfer) at this cadence in
+// simulation time, driving a fast O(1) VGO. 10 Hz keeps each re-aim (~a few ms)
+// well within the per-frame budget; a re-aim only re-targets the VGO when the
+// required correction exceeds the miss tolerance below.
+constexpr double kMidcourseReplanSec = 0.1;
+constexpr double kMidcourseMissTolerance = 0.25;
 
 struct Vec2 {
     double x{};
@@ -944,7 +970,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
               kWindowHeight - 88, 1, dim);
     draw_text(renderer, "U CIRC  I TRANSFER  Y MATCH  1-8 ATT", 18,
               kWindowHeight - 104, 1, dim);
-    draw_text(renderer, "RET EXEC  SH+RET ABORT  X ABORT/CUT", 18,
+    draw_text(renderer, "RET EXEC  SH+RET ABORT  X ABORT/CUT  9 LAND", 18,
               kWindowHeight - 120, 1, dim);
 
     // Camera indicator, top-right.
@@ -1142,6 +1168,14 @@ void print_usage() {
         "                   the primary (developer mode)\n"
         "  --system-view    start in the inertial system-scale view of the whole\n"
         "                   binary (developer mode; the V key toggles it)\n"
+        "  --debug-subsystem NAME  isolate one M06 subsystem for inspection\n"
+        "                   (developer mode; a focused panel replaces the\n"
+        "                   flight-computer panel and a deterministic startup\n"
+        "                   fixture exercises that subsystem). Valid names:\n"
+        "                   none, manual, predictor, attitude, node-edit,\n"
+        "                   node-executor, transfer-cold, transfer-warm,\n"
+        "                   autoland-primary, autoland-companion,\n"
+        "                   autoland-cross, ui\n"
         "  --help           show this message\n"
         "Controls: Up/W increase throttle, Down/S decrease throttle, X\n"
         "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual;\n"
@@ -1165,8 +1199,9 @@ void print_usage() {
         "+/- 0.1 m/s, U plan circularize, I plan transfer, Y plan velocity\n"
         "match, 1-8 select OFF/PROGRADE/RETRO/RAD OUT/RAD IN/TARGET/ANTI-\n"
         "TARGET/MANEUVER attitude, Return execute the node, Shift+Return\n"
-        "abort the executor, X aborts/cuts the engine, G shows the nav\n"
-        "overlay and the predicted pre/post-node path.\n");
+        "abort the executor, 9 arm the target-pad autoland for the reference\n"
+        "body (manual throttle or X reclaims control), X aborts/cuts the\n"
+        "engine, G shows the nav overlay and the predicted pre/post-node path.\n");
 }
 
 void draw_line_simple(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
@@ -1238,13 +1273,81 @@ void draw_trajectory(SDL_Renderer* renderer,
     }
 }
 
+// M06-R3: render the LIVE trajectory projection (the powered forecast using
+// the current persistent controls, no further input) as a solid cyan polyline,
+// plus its authoritative predicted-contact marker (PRED LAND / PRED CRASH) with
+// a t-to-go readout. The system view decimates the polyline for clutter; the
+// local frame draws it at full resolution (M06-R3-05).
+void draw_live_prediction(SDL_Renderer* renderer,
+                          const lander::RecedingHorizonPredictor& predictor,
+                          const lander::Simulation& sim,
+                          const lander::Camera& cam) {
+    const auto& samples = predictor.samples();
+    if (samples.size() < 2) {
+        return;
+    }
+
+    const int decimate = cam.system_view() ? 4 : 1;
+    const Color live_color(96, 224, 255);  // cyan (LIVE)
+    for (size_t i = 0; i + decimate < samples.size(); i += decimate) {
+        const Vec2 a = to_screen(samples[i].state.x, samples[i].state.y, cam);
+        const Vec2 b = to_screen(samples[i + decimate].state.x,
+                                 samples[i + decimate].state.y, cam);
+        draw_line_simple(renderer, a, b, live_color);
+    }
+
+    const lander::PredictedContact& c = predictor.contact();
+    if (!c.valid) {
+        return;
+    }
+    const Vec2 p = to_screen(c.position.x, c.position.y, cam);
+    const Color col =
+        c.landed ? make_color(120, 240, 160) : make_color(255, 92, 80);
+    const double h = 7.0;
+    draw_thick_line(renderer, {p.x - h, p.y - h}, {p.x + h, p.y + h}, 2.0, col);
+    draw_thick_line(renderer, {p.x - h, p.y + h}, {p.x + h, p.y - h}, 2.0, col);
+
+    const double t_go = c.time - sim.sim_time();
+    char label[32];
+    std::snprintf(label, sizeof label, "%s %+.1fs",
+                  c.landed ? "PRED LAND" : "PRED CRASH", t_go);
+    draw_text(renderer, label, static_cast<int>(p.x) + 12,
+              static_cast<int>(p.y) - 8, 1, col);
+}
+
+// M06-R3: a compact legend (bottom-left, clear of the HUD) distinguishing the
+// three prediction kinds drawn in the scene: the zero-thrust COAST arc, the
+// powered LIVE projection, and the planned-node PLAN arc.
+void draw_prediction_legend(SDL_Renderer* renderer) {
+    const int x = 18;
+    int y = 384;
+    const Color dim(150, 158, 172);
+    draw_text(renderer, "PREDICTION", x, y, 2, dim);
+    y += 24;
+    const struct {
+        const char* label;
+        Color col;
+    } rows[] = {
+        {"COAST  no thrust", make_color(185, 195, 215)},
+        {"LIVE   current controls", make_color(96, 224, 255)},
+        {"PLAN   planned node", make_color(120, 240, 160)},
+    };
+    for (const auto& r : rows) {
+        draw_thick_line(renderer, {x, y + 6}, {x + 18, y + 6}, 2.0, r.col);
+        draw_text(renderer, r.label, x + 26, y, 1, dim);
+        y += 20;
+    }
+}
+
 void draw_flight_computer(
     SDL_Renderer* renderer, const lander::Simulation& sim,
     const std::optional<lander::ManeuverNode>& node,
     const lander::NodeBasis& basis, bool basis_valid,
     const lander::TrajectoryPrediction& prediction, bool prediction_valid,
     const lander::NodeExecutor& executor, lander::AttitudeMode attitude_mode,
-    const std::string& message) {
+    const std::string& message,
+    const lander::TransferMidcourse* midcourse = nullptr,
+    const lander::LandingAutopilot* landing = nullptr) {
     const Color panel(12, 14, 26);
     const Color white(228, 233, 244);
     const Color dim(130, 138, 156);
@@ -1253,7 +1356,7 @@ void draw_flight_computer(
     const Color amber(255, 196, 64);
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    fill_rect(renderer, 832, 56, 440, 210, panel, 160);
+    fill_rect(renderer, 832, 56, 440, 232, panel, 160);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
     const lander::State& s = sim.state();
@@ -1268,6 +1371,34 @@ void draw_flight_computer(
     };
 
     line("FLIGHT COMPUTER", white);
+
+    if (midcourse != nullptr) {
+        char buffer[80];
+        if (midcourse->active()) {
+            std::snprintf(
+                buffer, sizeof buffer, "MIDCOURSE  RE-AIM %d  VTG %d  %s",
+                midcourse->slow_plans(), midcourse->retargets(),
+                lander::executor_state_name(midcourse->fast().state()));
+            line(buffer, green);
+        } else {
+            line("MIDCOURSE  --  [Z] to engage", dim);
+        }
+    }
+
+    if (landing != nullptr) {
+        if (landing->armed()) {
+            char buffer[80];
+            const auto& st = landing->status();
+            std::snprintf(
+                buffer, sizeof buffer,
+                "AUTOLAND   %-9s  TG %4.1f  AC %4.1f",
+                lander::landing_phase_name(st.phase), st.t_go,
+                st.command_accel);
+            line(buffer, st.terminal ? green : amber);
+        } else {
+            line("AUTOLAND   --  [9] to engage", dim);
+        }
+    }
 
     if (node) {
         char buffer[80];
@@ -1378,6 +1509,687 @@ void draw_flight_computer(
     }
 }
 
+// M06-R6: O(1) zero-effort lookup for the landing autopilot, backed by a
+// maintained zero-thrust (Coast) receding-horizon predictor. Mirrors the
+// headless test: index the sample ring at the requested t_go, and continue a
+// pure ballistic coast from the last non-terminal cached sample when the
+// requested time lies beyond the cached horizon (or in a terminal tail).
+// The autopilot never mutates the live sim; it only reads this predictor and
+// emits ordinary input.
+lander::BallisticState zero_from_predictor(
+    const lander::BinarySystem& bin,
+    const lander::RecedingHorizonPredictor& pred, double t_go, double dt) {
+    const auto& s = pred.samples();
+    if (s.empty()) {
+        return {{0.0, 0.0}, {0.0, 0.0}, 0.0};
+    }
+    int req = (int)std::lround(t_go / dt);
+    if (req < 0) {
+        req = 0;
+    }
+    const int idx = std::min(req, (int)s.size() - 1);
+    const auto& sample = s[idx];
+    if (req < (int)s.size() && !sample.state.crashed &&
+        !sample.state.landed) {
+        return {{sample.state.x, sample.state.y},
+                {sample.state.vx, sample.state.vy}, sample.time};
+    }
+    int last = idx;
+    while (last > 0 && (s[last].state.crashed || s[last].state.landed)) {
+        --last;
+    }
+    const lander::BallisticState start{{s[last].state.x, s[last].state.y},
+                                       {s[last].state.vx, s[last].state.vy},
+                                       s[last].time};
+    const int extra = req - last;
+    return lander::propagate_ballistic(bin, start, extra, dt);
+}
+
+// M06-R8 (expanded per R8-05..R8-15): gui-local observation context for the
+// subsystem-isolation debug panels. It is pure debug-layer state: it records
+// values the normal loop already computes (the last composed per-step input,
+// the cached navigation prediction, low-rate predictor cost, the predictor's
+// current prediction kind and policy signature) so the expanded per-mode
+// panels can display them without any subsystem change. It never feeds back
+// into the simulation or any controller.
+struct DebugPanelCtx {
+    double throttle{0.0};
+    bool rw_enabled{false};
+    bool rw_hold{false};
+    bool rotate_left{false};
+    bool rotate_right{false};
+    lander::PredictionKind predictor_kind{lander::PredictionKind::Live};
+    lander::PolicySignature predictor_signature{};
+    bool predictor_signature_changed{false};
+    double predictor_ms_ema{0.0};
+    lander::Input last_step_input{};
+    const lander::TrajectoryPrediction* prediction{nullptr};
+    bool prediction_valid{false};
+};
+
+static double wrap_angle(double a) {
+    while (a > M_PI) {
+        a -= 2.0 * M_PI;
+    }
+    while (a < -M_PI) {
+        a += 2.0 * M_PI;
+    }
+    return a;
+}
+
+static const char* prediction_kind_name(lander::PredictionKind k) {
+    switch (k) {
+        case lander::PredictionKind::Coast:
+            return "COAST";
+        case lander::PredictionKind::Live:
+            return "LIVE";
+        case lander::PredictionKind::Plan:
+            return "PLAN";
+    }
+    return "LIVE";
+}
+
+// The nose angle whose thrust axis points along world direction `d`
+// (thrust_hat(theta) = {-sin(theta), cos(theta)}), matching the bang-bang
+// attitude controller's convention.
+static double nose_angle_for(const lander::Vec2& d) {
+    return std::atan2(-d.x, d.y);
+}
+
+// M06-R8: the subsystem-isolation debug panel. Shown in place of the normal
+// flight-computer / nav / prediction / banner surfaces when a
+// --debug-subsystem selector is active (the `ui` mode keeps the normal
+// surfaces and shows only a minimal header). It always shows the common
+// minimum readout (subsystem name, sim time, body / target, flight state,
+// position / altitude, velocity / relative velocity) and then the full
+// mode-specific detail section for the isolated subsystem (R8-05..R8-15).
+// Read-only: it never drives or mutates the simulation; it only reads the
+// live subsystems, the common readout, and the debug-layer context.
+void draw_debug_subsystem_panel(
+    SDL_Renderer* renderer, lander::DebugSubsystem mode,
+    const lander::DebugCommonReadout& common, const lander::Simulation& sim,
+    const lander::NodeExecutor& node_executor,
+    const lander::TransferMidcourse& transfer_mc,
+    const lander::LandingAutopilot& landing_ap,
+    const lander::RecedingHorizonPredictor& live_predictor,
+    const std::optional<lander::ManeuverNode>& maneuver_node,
+    const lander::TransferDebugResult& transfer_debug,
+    lander::AttitudeMode attitude_mode, const DebugPanelCtx& ctx) {
+    const Color panel(12, 14, 26);
+    const Color white(228, 233, 244);
+    const Color dim(130, 138, 156);
+    const Color green(120, 240, 160);
+    const Color red(255, 92, 80);
+    const Color amber(255, 196, 64);
+    const Color cyan(96, 224, 255);
+
+    // R8-15: the `ui` isolation keeps every normal player-facing surface
+    // (flight computer, HUD, contract banner, nav overlay); only a minimal
+    // debug header identifies the scenario. No internal solver dumps.
+    if (mode == lander::DebugSubsystem::Ui) {
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        fill_rect(renderer, 8, 664, 470, 48, panel, 160);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+        const lander::State& us = sim.state();
+        const std::string ustate =
+            us.crashed ? "CRASHED" : (us.landed ? "LANDED" : "FLIGHT");
+        char buffer[96];
+        std::snprintf(buffer, sizeof buffer,
+                      "DEBUG: ui  (T %8.2f  state %-6s  ref %d)",
+                      common.sim_time, ustate.c_str(), common.reference_body);
+        draw_text(renderer, buffer, 18, 672, 1, cyan);
+        draw_text(
+            renderer,
+            "camera / contract / HUD / banner isolation - normal "
+            "flight computer active, no solver dumps",
+            18, 688, 1, dim);
+        return;
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    fill_rect(renderer, 832, 56, 440, 540, panel, 160);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+
+    int row = 70;
+    auto line = [&](const std::string& text, Color color) {
+        draw_text(renderer, text, 842, row, 1, color);
+        row += 13;
+    };
+    auto blank = [&]() { row += 3; };
+
+    char buffer[160];
+
+    // --- Common readout (always shown, every mode). ---
+    line(std::string("DEBUG: ") + lander::debug_subsystem_name(mode), white);
+    line(lander::debug_subsystem_description(mode), dim);
+    std::snprintf(buffer, sizeof buffer, "T %8.2f s", common.sim_time);
+    line(buffer, white);
+    std::snprintf(buffer, sizeof buffer, "BODY %-2d   TARGET %-2d",
+                  common.reference_body, common.target_body);
+    line(buffer, white);
+    const std::string state =
+        common.crashed ? "CRASHED" : (common.landed ? "LANDED" : "FLIGHT");
+    std::snprintf(buffer, sizeof buffer, "STATE %-7s  X %8.1f  Y %8.1f",
+                  state.c_str(), common.x, common.y);
+    line(buffer, common.crashed ? red : white);
+    std::snprintf(buffer, sizeof buffer, "ALT %7.1f m   VR %6.2f  VT %6.2f",
+                  common.altitude, common.radial_velocity,
+                  common.tangential_velocity);
+    line(buffer, dim);
+    std::snprintf(buffer, sizeof buffer, "V-REL %8.2f m/s (vs target)",
+                  common.relative_speed);
+    line(buffer, dim);
+    blank();
+
+    // --- Mode-specific detail section for the isolated subsystem. ---
+    const lander::State& st = sim.state();
+    const double t = sim.sim_time();
+    const auto& bin = sim.binary();
+    const int ref = common.reference_body >= 0 ? common.reference_body : 0;
+
+    line(std::string("  [ ") + lander::debug_subsystem_name(mode) + " ]", cyan);
+    switch (mode) {
+        case lander::DebugSubsystem::Manual: {
+            // R8-05: the controls that exist (throttle, reaction wheels,
+            // rotation), the surface-relative velocity, and the attitude
+            // angle / spin rate.
+            std::snprintf(buffer, sizeof buffer,
+                          "  THR   %4.2f    [Up/Down ramp, X cut]",
+                          ctx.throttle);
+            line(buffer, white);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  RW    %-3s  hold %-3s   [E toggle, Shift+E damp]",
+                ctx.rw_enabled ? "on" : "off", ctx.rw_hold ? "on" : "off");
+            line(buffer, ctx.rw_enabled ? green : dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  ROT   %-4s            [A/D or L/R]",
+                (ctx.rotate_left && ctx.rotate_right)
+                    ? "BOTH"
+                    : (ctx.rotate_left ? "L" : (ctx.rotate_right ? "R" : "--")));
+            line(buffer, white);
+            const lander::LocalVelocity lv =
+                lander::local_velocity(st, bin.position(ref, t),
+                                       bin.velocity(ref, t));
+            std::snprintf(buffer, sizeof buffer,
+                          "  SURF  VR %+7.2f   VT %+7.2f  (ref body)",
+                          lv.radial, lv.tangential);
+            line(buffer, dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  ANG   %7.1f deg   W %+7.2f deg/s",
+                          st.angle * 57.29578, lander::spin_deg_per_s(st));
+            line(buffer, white);
+            const std::string mstate =
+                st.crashed ? "CRASHED" : (st.landed ? "LANDED" : "FLIGHT");
+            std::snprintf(buffer, sizeof buffer, "  CLEAR %8.1f m   state %s",
+                          common.altitude, mstate.c_str());
+            line(buffer, st.crashed ? red : dim);
+            break;
+        }
+        case lander::DebugSubsystem::Predictor: {
+            // R8-06: the prediction policy, cache behaviour (shift vs cold
+            // rebuild), horizon / sample count, predicted contact, PE / AP /
+            // closest approach, and the low-rate cost of the advance.
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  MODE  %-5s   [F2]COAST  [F3]LIVE  [F4]PLAN",
+                prediction_kind_name(ctx.predictor_kind));
+            line(buffer, white);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  CACHE last: %s   rebuild %d  shift %d  invalidate %d",
+                live_predictor.cache_hit_last() ? "SHIFT" : "COLD REBUILD",
+                live_predictor.cold_rebuilds(), live_predictor.shifts(),
+                live_predictor.invalidations());
+            line(buffer, live_predictor.cache_hit_last() ? green : amber);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  HORIZON %4d  SAMPLES %4d  primed %s  terminal %s",
+                live_predictor.horizon_steps(),
+                (int)live_predictor.samples().size(),
+                live_predictor.primed() ? "yes" : "no",
+                live_predictor.terminal() ? "yes" : "no");
+            line(buffer, white);
+            const auto& sig = ctx.predictor_signature;
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  SIG   %s thr %.2f att %s rw %s%s node %s ref %d tgt %d",
+                prediction_kind_name(sig.kind), sig.throttle,
+                lander::attitude_mode_name(sig.attitude_mode),
+                sig.rw_enabled ? "on" : "off", sig.rw_hold ? "+hold" : "",
+                sig.node_present ? "yes" : "no", sig.reference_body,
+                sig.target_body);
+            line(buffer, dim);
+            if (ctx.predictor_signature_changed) {
+                line("  SIG   CHANGED this frame (rebuild)", amber);
+            }
+            const auto& contact = live_predictor.contact();
+            if (contact.valid) {
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  PRED  %s  body %d  T+%6.1f s  (%5.0f,%5.0f)",
+                    contact.landed ? "LAND" : "CRASH",
+                    contact.landed ? contact.body : contact.crash_body,
+                    contact.time, contact.position.x, contact.position.y);
+                line(buffer, contact.landed ? green : red);
+            } else {
+                line("  PRED  -- no contact in horizon", dim);
+            }
+            // PE / AP and terrain clearance: a cheap O(samples) scan of the
+            // projection ring against both bodies' predicted positions.
+            double pe = 1e300, ap = -1e300, clr = 1e300;
+            const int dest = sim.contract().destination_body;
+            for (const auto& smp : live_predictor.samples()) {
+                for (int b = 0; b < 2; b++) {
+                    const lander::Vec2 bp = bin.position(b, smp.time);
+                    const double r =
+                        std::hypot(smp.state.x - bp.x, smp.state.y - bp.y);
+                    if (b == ref) {
+                        pe = std::min(pe, r);
+                        ap = std::max(ap, r);
+                    }
+                    clr = std::min(
+                        clr, r - bin.body(b).reference_radius);
+                }
+            }
+            std::snprintf(buffer, sizeof buffer,
+                          "  PE  %7.1f m   AP  %7.1f m  (ref body)", pe, ap);
+            line(buffer, dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  CLEAR %7.1f m  (min to terrain, both bodies)", clr);
+            line(buffer, clr < 15.0 ? red : dim);
+            // Closest approach to the destination pad point over the ring.
+            const auto& dterrain = bin.body(dest).terrain;
+            double pad_closest = 1e300;
+            for (const auto& smp : live_predictor.samples()) {
+                const lander::Vec2 pad = bin.surface_point(
+                    dest, dterrain.angle_at_arc(0.0),
+                    dterrain.surface_radius_at_arc(0.0), smp.time)
+                    .position;
+                pad_closest = std::min(
+                    pad_closest,
+                    std::hypot(smp.state.x - pad.x, smp.state.y - pad.y));
+            }
+            std::snprintf(buffer, sizeof buffer,
+                          "  PAD   %7.1f m  (closest to %s pad)", pad_closest,
+                          body_name(dest));
+            line(buffer, pad_closest < 20.0 ? amber : dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  COST  %6.3f ms/step avg  (budget %d steps/frame)",
+                          ctx.predictor_ms_ema, kPredictBudget);
+            line(buffer, ctx.predictor_ms_ema > 0.0 ? dim : white);
+            break;
+        }
+        case lander::DebugSubsystem::Attitude: {
+            // R8-07: the requested mode, target vs actual angle, angular
+            // error / spin, the stop angle, the commanded wheel direction,
+            // and alignment.
+            const int dest = sim.contract().destination_body;
+            const lander::NodeBasis basis = lander::compute_node_basis(
+                bin, t, ref, {st.x, st.y}, {st.vx, st.vy});
+            const lander::Vec2 pad = bin.surface_point(
+                dest, bin.body(dest).terrain.angle_at_arc(0.0),
+                bin.body(dest).terrain.surface_radius_at_arc(0.0), t)
+                .position;
+            lander::Vec2 maneuver_dv{};
+            if (attitude_mode == lander::AttitudeMode::Maneuver &&
+                maneuver_node && ctx.prediction_valid && ctx.prediction &&
+                ctx.prediction->basis_valid) {
+                maneuver_dv = ctx.prediction->dv_world;
+            }
+            const auto dir = lander::attitude_target_direction(
+                attitude_mode, basis, {st.x, st.y}, pad, maneuver_dv);
+            std::snprintf(buffer, sizeof buffer,
+                          "  MODE  %-10s   [1-8 select]",
+                          lander::attitude_mode_name(attitude_mode));
+            line(buffer, white);
+            if (dir.has_value()) {
+                const double target_angle = nose_angle_for(*dir);
+                const double err = wrap_angle(target_angle - st.angle);
+                const bool aligned =
+                    std::fabs(err) <= 0.01 && std::fabs(st.omega) <= 0.02;
+                std::snprintf(buffer, sizeof buffer,
+                              "  TGT   %7.1f deg   ACT %7.1f deg",
+                              target_angle * 57.29578,
+                              st.angle * 57.29578);
+                line(buffer, white);
+                std::snprintf(buffer, sizeof buffer,
+                              "  ERR   %+7.1f deg   W %+7.2f deg/s",
+                              err * 57.29578, lander::spin_deg_per_s(st));
+                line(buffer, std::fabs(err) > 0.01 ? amber : green);
+                std::snprintf(buffer, sizeof buffer,
+                              "  STOP  0.57 deg (0.01 rad)   aligned %s",
+                              aligned ? "YES" : "no");
+                line(buffer, aligned ? green : dim);
+            } else {
+                line("  TGT   n/a (mode off or degenerate target)", dim);
+                std::snprintf(buffer, sizeof buffer,
+                              "  W     %+7.2f deg/s", lander::spin_deg_per_s(st));
+                line(buffer, white);
+            }
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  RW cmd: %s   (last step input)",
+                (ctx.last_step_input.rotate_left &&
+                 ctx.last_step_input.rotate_right)
+                    ? "BOTH"
+                    : (ctx.last_step_input.rotate_left
+                           ? "L"
+                           : (ctx.last_step_input.rotate_right ? "R" : "--")));
+            line(buffer, dim);
+            line("  1 OFF  2 PRO  3 RETRO  4 RDO  5 RDI  6 TGT  7 ANTI  8 MAN",
+                 dim);
+            break;
+        }
+        case lander::DebugSubsystem::NodeEdit: {
+            // R8-08: the node's time / frame / delta-v, its world position,
+            // the predicted pre/post arcs, and the plan kind.
+            if (maneuver_node) {
+                const double total =
+                    std::hypot(maneuver_node->dv_prograde,
+                               maneuver_node->dv_radial);
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  NODE  %s   T+%6.1f s   dPGR %+.2f   dRAD %+.2f",
+                    body_name(maneuver_node->frame_body),
+                    maneuver_node->time - t, maneuver_node->dv_prograde,
+                    maneuver_node->dv_radial);
+                line(buffer, white);
+                std::snprintf(buffer, sizeof buffer,
+                              "  TOTAL %6.2f m/s", total);
+                line(buffer, white);
+                if (ctx.prediction_valid && ctx.prediction) {
+                    const auto& p = *ctx.prediction;
+                    std::snprintf(buffer, sizeof buffer,
+                                  "  POS   (%8.1f, %8.1f)", p.node_position.x,
+                                  p.node_position.y);
+                    line(buffer, dim);
+                    if (p.pre.size() >= 2) {
+                        const auto& a = p.pre.front();
+                        const auto& b = p.pre.back();
+                        std::snprintf(
+                            buffer, sizeof buffer,
+                            "  PRE   %3d pts  (%6.0f,%6.0f)->(%6.0f,%6.0f)",
+                            (int)p.pre.size(), a.x, a.y, b.x, b.y);
+                        line(buffer, dim);
+                    }
+                    if (p.post.size() >= 2) {
+                        const auto& a = p.post.front();
+                        const auto& b = p.post.back();
+                        std::snprintf(
+                            buffer, sizeof buffer,
+                            "  POST  %3d pts  (%6.0f,%6.0f)->(%6.0f,%6.0f)",
+                            (int)p.post.size(), a.x, a.y, b.x, b.y);
+                        line(buffer, dim);
+                        std::snprintf(buffer, sizeof buffer,
+                                      "  PE  %7.1f m   AP  %7.1f m",
+                                      p.peri.valid ? p.peri.distance : -1.0,
+                                      p.apo.valid ? p.apo.distance : -1.0);
+                        line(buffer, dim);
+                    }
+                    line("  PLAN  n/a (plan kind not stored on the node)",
+                         dim);
+                } else {
+                    line("  PRED  (recomputing at bounded cadence)", dim);
+                }
+            } else {
+                line("  no node  -  [C] create  [H/J] time  [K/L] dv", dim);
+            }
+            line("  [U/I/Y] plan  [Return] exec  [Del] clear", dim);
+            break;
+        }
+        case lander::DebugSubsystem::NodeExecutor: {
+            // R8-09: executor state, ignition / burn estimates, remaining /
+            // delivered VGO, throttle, alignment, fuel, and the outcome.
+            const auto es = node_executor.state();
+            std::snprintf(buffer, sizeof buffer, "  STATE  %s",
+                          lander::executor_state_name(es));
+            line(buffer, node_executor.active() ? green : dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  NODE  %s   ignite T+%7.1f s   burn ~%5.1f s%s",
+                body_name(node_executor.frame_body()),
+                node_executor.ignite_time() - t, node_executor.burn_time(),
+                node_executor.late() ? "   LATE" : "");
+            line(buffer, white);
+            const lander::Vec2 dv_rem = node_executor.dv_remaining();
+            const lander::Vec2 dv_tot = node_executor.dv_total();
+            const double rem_n = std::hypot(dv_rem.x, dv_rem.y);
+            const double tot_n = std::hypot(dv_tot.x, dv_tot.y);
+            std::snprintf(buffer, sizeof buffer,
+                          "  VGO   remaining %6.2f  of %6.2f  (delivered %5.2f)",
+                          rem_n, tot_n, std::max(0.0, tot_n - rem_n));
+            line(buffer, white);
+            std::snprintf(buffer, sizeof buffer,
+                          "  THR   %4.2f   (held during burn)",
+                          ctx.last_step_input.main_throttle);
+            line(buffer, dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  FUEL  %7.1f kg", st.fuel);
+            line(buffer, st.fuel < 100.0 ? amber : dim);
+            if (es == lander::ExecutorState::Complete) {
+                line("  RESULT  COMPLETE", green);
+            } else if (es == lander::ExecutorState::Aborted) {
+                line("  RESULT  ABORTED", red);
+            } else if (es == lander::ExecutorState::Incomplete) {
+                line("  RESULT  INCOMPLETE (fuel exhausted)", red);
+            }
+            line("  [Return] exec  [Shift+Return | X] abort", dim);
+            break;
+        }
+        case lander::DebugSubsystem::TransferCold: {
+            // R8-10: the one-shot COLD solve: result, flight time, departure
+            // delta-v, miss, arrival speed, terrain-clear validation,
+            // propagation count, and solve wall time.
+            const auto& c = transfer_debug.cold;
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  COLD  one-shot @ startup (T0)   %s -> %s",
+                body_name(transfer_debug.source),
+                body_name(transfer_debug.target));
+            line(buffer, dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  RESULT  %s   miss %8.3f m   TOF %7.1f s",
+                !transfer_debug.computed ? "NOT RUN"
+                                         : (c.valid ? "SOLVED"
+                                                    : "NO SOLUTION"),
+                c.achieved_miss, c.time_of_flight);
+            line(buffer, c.valid ? green : red);
+            if (transfer_debug.computed) {
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  DEP   (%7.2f,%7.2f) -> (%7.2f,%7.2f)",
+                    c.departure_state.x, c.departure_state.y,
+                    c.departure_velocity.x, c.departure_velocity.y);
+                line(buffer, dim);
+                std::snprintf(buffer, sizeof buffer,
+                              "  ARR   %6.2f m/s  target-relative",
+                              c.arrival_rel_speed);
+                line(buffer, dim);
+                line("  TERRAIN  validated (solver gate, full arc)", green);
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  PROP  %5d (bounded coarse grid)   wall %6.2f ms",
+                    transfer_debug.cold_propagations,
+                    transfer_debug.cold_solve_ms);
+                line(buffer, dim);
+            }
+            line("  TFD-1/TFD-2 surface raw here; this mode does not fix them",
+                 dim);
+            break;
+        }
+        case lander::DebugSubsystem::TransferWarm: {
+            // R8-11: the WARM midcourse: cache validity, last correction
+            // iterations, propagation count, miss before/after, fallback,
+            // and the bounded re-plan cadence.
+            const auto& c = transfer_debug.cold;
+            const auto& w = transfer_mc.cache();
+            std::snprintf(buffer, sizeof buffer,
+                          "  WARM  active %s   [Z engage]  [X abort]",
+                          transfer_mc.active() ? "yes" : "no");
+            line(buffer, transfer_mc.active() ? green : dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  COLD  seed %s   TOF %6.1f s   miss %7.3f m",
+                          c.valid ? "SOLVED" : "NO SOLUTION",
+                          c.time_of_flight, c.achieved_miss);
+            line(buffer, c.valid ? green : red);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  CACHE  %-7s   TOF %6.1f s   dep v (%6.2f,%6.2f)",
+                w.valid ? "valid" : "invalid", w.time_of_flight,
+                w.departure_velocity.x, w.departure_velocity.y);
+            line(buffer, w.valid ? green : dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  NEWTON  %2d iters   fallback COLD: %s",
+                          w.newton_iterations,
+                          transfer_debug.warm_fallback_last ? "yes" : "no");
+            line(buffer, transfer_debug.warm_fallback_last ? amber : dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  PROP  last %5d   total %6d   (0 = warm path only)",
+                transfer_debug.warm_propagations_last,
+                transfer_debug.warm_propagations_total);
+            line(buffer, dim);
+            std::snprintf(buffer, sizeof buffer,
+                          "  MISS  %7.3f -> %7.3f m   (tol %4.2f)",
+                          transfer_debug.warm_miss_before,
+                          transfer_debug.warm_miss_after,
+                          kMidcourseMissTolerance);
+            line(buffer,
+                 transfer_debug.warm_miss_after > kMidcourseMissTolerance
+                     ? amber
+                     : dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  REPLAN  %4d   RETARGET %4d   cadence %.1f s",
+                transfer_mc.slow_plans(), transfer_mc.retargets(),
+                kMidcourseReplanSec);
+            line(buffer, dim);
+            line("  [manual throttle reclaims control]", dim);
+            line("  TFD-1/TFD-2 surface raw here; this mode does not fix them",
+                 dim);
+            break;
+        }
+        case lander::DebugSubsystem::AutolandPrimary:
+        case lander::DebugSubsystem::AutolandCompanion:
+        case lander::DebugSubsystem::AutolandCross: {
+            // R8-12..14: the landing autopilot: target pad, phase,
+            // target-relative velocity, commanded acceleration / attitude /
+            // throttle, t_go, the active guidance path, and the touchdown
+            // result. Cross adds the handoff gate; companion adds the
+            // terminal-law path.
+            if (landing_ap.armed()) {
+                const auto& status = landing_ap.status();
+                const int tgt = landing_ap.target_body();
+                const int src = landing_ap.source_body();
+                const lander::Vec2 tgt_pos = bin.position(tgt, t);
+                const lander::Vec2 tgt_vel = bin.velocity(tgt, t);
+                const lander::LocalVelocity tlv =
+                    lander::local_velocity(st, tgt_pos, tgt_vel);
+                const double trel =
+                    std::hypot(st.vx - tgt_vel.x, st.vy - tgt_vel.y);
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  TARGET  %s pad   source %s   [9] arms ref body",
+                    body_name(tgt), src >= 0 ? body_name(src) : "-");
+                line(buffer, white);
+                if (mode == lander::DebugSubsystem::AutolandCross) {
+                    static const char* kShort[] = {
+                        "ASC",  "XFER", "CAP",  "DEO", "BRK",  "APP",
+                        "DESC", "TD"};
+                    const int idx = (int)status.phase;
+                    std::string seq;
+                    for (int i = 0; i < 8; i++) {
+                        if (i > 0) {
+                            seq += " > ";
+                        }
+                        seq += (i == idx) ? ("[" + std::string(kShort[i]) + "]")
+                                          : std::string(kShort[i]);
+                    }
+                    line("  SEQ   " + seq, white);
+                } else {
+                    std::snprintf(buffer, sizeof buffer, "  PHASE  %s",
+                                  lander::landing_phase_name(status.phase));
+                    line(buffer, white);
+                }
+                std::snprintf(buffer, sizeof buffer,
+                              "  T-REL %6.2f m/s   VR %+6.2f   VT %+6.2f",
+                              trel, tlv.radial, tlv.tangential);
+                line(buffer, dim);
+                const auto& cmd = landing_ap.command();
+                if (cmd.valid) {
+                    std::snprintf(buffer, sizeof buffer,
+                                  "  CMD   %5.2f m/s^2  @ %6.1f deg",
+                                  std::hypot(cmd.acceleration.x,
+                                             cmd.acceleration.y),
+                                  nose_angle_for(cmd.acceleration) *
+                                      57.29578);
+                    line(buffer, white);
+                    std::snprintf(buffer, sizeof buffer,
+                                  "  THR   %4.2f   t_go %6.1f s",
+                                  cmd.throttle, cmd.t_go);
+                    line(buffer, dim);
+                    const double att_err = wrap_angle(
+                        nose_angle_for(cmd.acceleration) - st.angle);
+                    std::snprintf(buffer, sizeof buffer,
+                                  "  ATT   want %6.1f  act %6.1f  err %+6.1f deg",
+                                  nose_angle_for(cmd.acceleration) * 57.29578,
+                                  st.angle * 57.29578,
+                                  att_err * 57.29578);
+                    line(buffer, std::fabs(att_err) > 0.15 ? amber : green);
+                } else {
+                    line("  CMD   n/a (no feasible candidate this update)",
+                         amber);
+                }
+                const auto& pv = landing_ap.terminal_preview();
+                const std::string path =
+                    landing_ap.high_energy()
+                        ? "high-energy VGO (CAP/DEO/BRK)"
+                        : (landing_ap.target_disturbed()
+                               ? "gentle gravity-feedforward (disturbed)"
+                               : "ZEM/ZEV terminal (clean target)");
+                std::snprintf(buffer, sizeof buffer, "  PATH  %s", path.c_str());
+                line(buffer, dim);
+                if (mode == lander::DebugSubsystem::AutolandCross) {
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  GATE  handoff %s  (t_go %5.1f / peak %4.2f / r0 %+5.2f)",
+                        pv.feasible ? "feasible" : "blocked", pv.t_go,
+                        pv.peak_accel, pv.initial_radial);
+                    line(buffer, pv.feasible ? green : red);
+                } else {
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  TERM  %s   t_go %5.1f s",
+                        status.terminal ? "ZEM/ZEV active" : "held command",
+                        status.t_go);
+                    line(buffer, status.terminal ? green : dim);
+                }
+                if (status.phase == lander::LandingPhase::Touchdown) {
+                    line("  RESULT  TOUCHDOWN", green);
+                } else if (st.crashed) {
+                    line("  RESULT  CRASHED (autopilot aborted)", red);
+                } else {
+                    std::snprintf(buffer, sizeof buffer,
+                                  "  RESULT  in flight (phase %s)",
+                                  lander::landing_phase_name(status.phase));
+                    line(buffer, dim);
+                }
+            } else {
+                line("  not armed  -  [9] arm the ref-body autopilot", dim);
+                line("  [X abort]  [manual throttle reclaims control]", dim);
+            }
+            break;
+        }
+        case lander::DebugSubsystem::Ui:
+        case lander::DebugSubsystem::None:
+        default:
+            break;  // `ui` early-returned above; `none` never reaches here.
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1388,6 +2200,7 @@ int main(int argc, char** argv) {
     std::string screenshot_path;
     bool orbit_demo = false;
     bool system_view = false;
+    std::string debug_subsystem_arg;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -1407,6 +2220,8 @@ int main(int argc, char** argv) {
             orbit_demo = true;
         } else if (arg == "--system-view") {
             system_view = true;
+        } else if (arg == "--debug-subsystem" && i + 1 < argc) {
+            debug_subsystem_arg = argv[++i];
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", arg.c_str());
             print_usage();
@@ -1415,6 +2230,23 @@ int main(int argc, char** argv) {
     }
     if (!have_seed) {
         seed = random_seed();
+    }
+
+    // M06-R8: resolve the subsystem-isolation debug selector. An absent or
+    // "none" selector runs ordinary gameplay with no debug surface; an
+    // unrecognized name is a hard error reported before any window is created.
+    lander::DebugSubsystem debug_mode = lander::DebugSubsystem::None;
+    if (!debug_subsystem_arg.empty()) {
+        const auto parsed =
+            lander::parse_debug_subsystem(debug_subsystem_arg);
+        if (!parsed) {
+            std::fprintf(stderr,
+                         "Unknown debug subsystem: %s\n",
+                         debug_subsystem_arg.c_str());
+            print_usage();
+            return 2;
+        }
+        debug_mode = *parsed;
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -1477,6 +2309,32 @@ int main(int argc, char** argv) {
     // refresh rate.
     double flame_clock = 0.0;
 
+    // M06-R2-11: opt-in per-frame development diagnostic (set the
+    // LL_FRAME_DEBUG environment variable to a non-"0" value). Prints frame
+    // wall dt, the prediction rebuild cost, and the number of fixed physics
+    // steps drained this rendered frame, which is what the launch-hitch
+    // investigation needs to verify the prediction stays bounded.
+    const bool frame_debug = [] {
+        const char* e = std::getenv("LL_FRAME_DEBUG");
+        return e != nullptr && e[0] != '\0' && e[0] != '0';
+    }();
+    int ticks_before_frame = 0;
+
+    // M06-R2-13: smoothed frames-per-second for the on-screen counter. An
+    // exponential moving average of the instantaneous 1/dt keeps the number
+    // stable instead of flickering with every frame's jitter.
+    double fps_ema = 0.0;
+
+    // M06-R3: the LIVE trajectory projection. A receding-horizon predictor that
+    // rolls a powered forecast using the current persistent controls (throttle,
+    // attitude, reaction wheels, and the active maneuver node) through the same
+    // Simulation-stepping core as live flight, so its contact outcome is
+    // authoritative. The existing flight-computer arc already renders the
+    // zero-thrust COAST (`pre`) and the planned-node PLAN (`post`).
+    lander::RecedingHorizonPredictor live_predictor;
+    constexpr int kPredictHorizon = 1200;  // ~10 s at the fixed step
+    live_predictor.configure(kPredictHorizon);
+
     // M05-R3-07: triple-tap guard for the dangerous controls (new seed,
     // circularize CW/CCW).
     lander::TripleTapGuard tap_guard;
@@ -1488,18 +2346,98 @@ int main(int argc, char** argv) {
 
     std::optional<lander::ManeuverNode> maneuver_node;
     lander::NodeExecutor node_executor;
+    // M06-R5 / D05: two-level transfer midcourse controller (fast O(1) VGO +
+    // bounded-rate WARM re-aim). Distinct from the one-shot R4 node_executor;
+    // engaged with Z from a valid transfer plan and disengaged on abort /
+    // land / crash.
+    lander::TransferMidcourse transfer_mc;
+
+    // M06-R6: target-pad powered-landing autopilot (ZEM/ZEV terminal law with
+    // an Apollo-polynomial held command over a bounded t_go scan). It emits
+    // only ordinary input (attitude + main throttle) and disengages on abort /
+    // land / crash. The maintained zero-thrust Coast predictor below is its
+    // O(1) zero-effort source (R6-03 / R6-09).
+    lander::LandingAutopilot landing_ap;
+    lander::LandingConfig landing_cfg{};
+    lander::RecedingHorizonPredictor landing_coast;
+    int landing_horizon = 0;
+
+    // M06-R8: subsystem-isolation debug harness state. `debug_mode` (resolved
+    // from --debug-subsystem before the window opens) selects which subsystem
+    // the startup fixture arms and which focused panel is shown. For
+    // transfer-cold / transfer-warm the fixture stores a one-shot COLD solve
+    // here for the panel to display alongside the live WARM midcourse cache.
+    lander::TransferDebugResult transfer_debug{};
+    // M06-R8 (R8-05..R8-15): the expanded panel's gui-local observation
+    // context. It records values the normal loop already computes (the last
+    // composed per-step input, the prediction cache, the predictor's current
+    // kind / policy signature / cost, and the WARM re-plan observations stored
+    // on transfer_debug above). It never feeds back into the simulation or
+    // any subsystem; without a selector it stays at its defaults.
+    DebugPanelCtx panel_ctx{};
+
     lander::AttitudeMode attitude_mode = lander::AttitudeMode::Off;
+    // M06-R5: last inter-body transfer solution, used to warm-start the next
+    // transfer plan (bounded differential correction) instead of a full coarse
+    // search. Route- and crash-scoped: reset with the flight computer.
+    lander::TransferSolution transfer_cache{};
     lander::TrajectoryPrediction prediction{};
     bool prediction_valid = false;
     std::string pc_message;
+    // Bounded-cadence prediction cache (M06-R2-11 / M06-R2-D06). Tracks the
+    // simulation time and inputs at which the current `prediction` was built,
+    // so the ~52k-step arc is only rebuilt at kPredictRefreshSec cadence or
+    // when those inputs actually change.
+    double predict_last_sim_time = 0.0;
+    int predict_ref_body = -1;
+    int predict_dest_body = -1;
+    bool predict_node_present = false;
+    double predict_node_time = 0.0;
+    int predict_node_frame_body = -1;
+    double predict_node_prograde = 0.0;
+    double predict_node_radial = 0.0;
 
     auto reset_flight_computer = [&]() {
         maneuver_node.reset();
         node_executor.clear();
+        transfer_mc.abort();
+        landing_ap.abort();
+        landing_coast.reset();
         attitude_mode = lander::AttitudeMode::Off;
+        transfer_cache = {};
         prediction = {};
         prediction_valid = false;
         pc_message.clear();
+        predict_last_sim_time = 0.0;
+        predict_ref_body = -1;
+        predict_dest_body = -1;
+        predict_node_present = false;
+        predict_node_time = 0.0;
+        predict_node_frame_body = -1;
+        predict_node_prograde = 0.0;
+        predict_node_radial = 0.0;
+    };
+
+    // True when the inputs that define the predicted arc (reference body,
+    // target body, or the maneuver node) differ from the ones the cached
+    // `prediction` was built from, meaning it must be rebuilt right away
+    // rather than waiting for the next cadence tick.
+    auto prediction_inputs_changed = [&]() {
+        if (sim.reference_body() != predict_ref_body) return true;
+        if (sim.contract().destination_body != predict_dest_body) return true;
+        if (maneuver_node.has_value() != predict_node_present) return true;
+        if (maneuver_node.has_value()) {
+            if (std::abs(maneuver_node->time - predict_node_time) > 1e-9)
+                return true;
+            if (maneuver_node->frame_body != predict_node_frame_body)
+                return true;
+            if (std::abs(maneuver_node->dv_prograde - predict_node_prograde) >
+                1e-9)
+                return true;
+            if (std::abs(maneuver_node->dv_radial - predict_node_radial) > 1e-9)
+                return true;
+        }
+        return false;
     };
 
     auto destination_pad_at = [&](double t) {
@@ -1522,6 +2460,7 @@ int main(int argc, char** argv) {
         contract_banner_time = 0.0;
         debug_message.clear();
         debug_message_time = 0.0;
+        panel_ctx = {};
         reset_flight_computer();
         if (orbit_demo) {
             // Developer mode: start in flight on a terrain-clearing
@@ -1541,6 +2480,25 @@ int main(int argc, char** argv) {
             orbit.angle = 0.0;
             orbit.fuel = sim.config().fuel;
             sim.set_state(orbit);
+        }
+        if (debug_mode != lander::DebugSubsystem::None) {
+            // M06-R8: build the deterministic startup-only fixture for the
+            // selected subsystem. It re-seeds with the per-mode seed, places the
+            // ship, and arms exactly the one subsystem under test; from here on
+            // the armed subsystem runs through the normal simulation / control
+            // paths (no hidden forces). The maintained Coast predictor is the
+            // landing autopilot's O(1) zero-effort source, looked up through the
+            // gui-local helper.
+            lander::ZeroEffortQuery zero_effort = [&](double t_go) {
+                return zero_from_predictor(sim.binary(), landing_coast, t_go,
+                                           sim.config().fixed_dt);
+            };
+            lander::DebugSubsystems subs{
+                sim, node_executor, transfer_mc, landing_ap, live_predictor,
+                landing_coast, landing_cfg, maneuver_node, attitude_mode,
+                &transfer_debug, zero_effort,
+            };
+            lander::setup_debug_scenario(debug_mode, subs);
         }
         const lander::State& state = sim.state();
         const lander::Vec2 ref_pos =
@@ -1674,11 +2632,84 @@ int main(int argc, char** argv) {
                         break;
                     case SDL_SCANCODE_X:
                         throttle = 0.0;
+                        if (transfer_mc.active()) {
+                            transfer_mc.abort();
+                            attitude_mode = lander::AttitudeMode::Off;
+                            debug_message = "MIDCOURSE: ABORTED";
+                            debug_message_time = 3.0;
+                        }
                         if (node_executor.active()) {
                             node_executor.abort();
                             attitude_mode = lander::AttitudeMode::Off;
                         }
+                        if (landing_ap.armed()) {
+                            landing_ap.abort();
+                            attitude_mode = lander::AttitudeMode::Off;
+                            debug_message = "AUTOLAND: ABORTED";
+                            debug_message_time = 3.0;
+                        }
                         break;
+                    case SDL_SCANCODE_F2:
+                    case SDL_SCANCODE_F3:
+                    case SDL_SCANCODE_F4: {
+                        // M06-R8 (R8-06): in predictor isolation, explicitly
+                        // switch the projection's prediction policy (COAST /
+                        // LIVE / PLAN). Only the projected arc's policy
+                        // changes; the live ship, its controls, and every
+                        // other subsystem are untouched, and the predictor
+                        // rebuilds through its normal invalidation path.
+                        if (debug_mode == lander::DebugSubsystem::Predictor) {
+                            panel_ctx.predictor_kind =
+                                event.key.scancode == SDL_SCANCODE_F2
+                                    ? lander::PredictionKind::Coast
+                                    : (event.key.scancode == SDL_SCANCODE_F3
+                                           ? lander::PredictionKind::Live
+                                           : lander::PredictionKind::Plan);
+                            debug_message = std::string("PREDICTOR: ") +
+                                            prediction_kind_name(
+                                                panel_ctx.predictor_kind);
+                            debug_message_time = 2.0;
+                        }
+                        break;
+                    }
+                    case SDL_SCANCODE_9: {
+                        // M06-R6: arm the target-pad powered-landing autopilot
+                        // for the body the ship is currently flying around (the
+                        // gravitational reference body), aiming at that body's
+                        // base pad. The terminal ZEM/ZEV / Apollo-polynomial
+                        // guidance converges over its bounded t_go scan; the
+                        // maintained zero-thrust Coast predictor below is the
+                        // O(1) zero-effort source (R6-03 / R6-09). Manual
+                        // throttle or X reclaims control (aborts the autopilot).
+                        if (!sim.state().crashed && !sim.state().landed) {
+                            const int target = sim.reference_body();
+                            const lander::Config& cfg = sim.config();
+                            landing_horizon =
+                                (int)std::lround(landing_cfg.t_go_max /
+                                                 cfg.fixed_dt) +
+                                50;
+                            landing_coast.configure(landing_horizon, 1e-9);
+                            lander::FlightPolicy coast_policy{};
+                            coast_policy.kind = lander::PredictionKind::Coast;
+                            lander::NodeExecutor coast_exec{};
+                            landing_coast.cold_rebuild(sim, coast_policy,
+                                                       coast_exec,
+                                                       landing_horizon);
+                            landing_ap.arm(
+                                target, landing_cfg,
+                                [&](double t_go) {
+                                    return zero_from_predictor(
+                                        sim.binary(), landing_coast, t_go,
+                                        cfg.fixed_dt);
+                                });
+                            node_executor.clear();
+                            transfer_mc.abort();
+                            attitude_mode = lander::AttitudeMode::Off;
+                            debug_message = "AUTOLAND: ENGAGED [9]";
+                            debug_message_time = 3.0;
+                        }
+                        break;
+                    }
                     case SDL_SCANCODE_C: {
                         if (!sim.state().crashed && !sim.state().landed &&
                             !node_executor.active()) {
@@ -1747,7 +2778,8 @@ int main(int argc, char** argv) {
                                 planned = lander::plan_transfer(sim.binary(),
                                                                 cfg, st, t0,
                                                                 ref,
-                                                                maneuver_node);
+                                                                maneuver_node,
+                                                                &transfer_cache);
                             } else {
                                 planned = lander::plan_match_target(
                                     sim.binary(), cfg, st, t0, ref, dest,
@@ -1765,10 +2797,52 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
+                    case SDL_SCANCODE_Z: {
+                        // M06-R5 / D05: engage the two-level transfer midcourse
+                        // from a valid transfer plan (planned with I). The fast
+                        // VGO arms coasting on the solved arc; bounded-rate
+                        // warm re-aims (maybe_replan) re-target it as the ship
+                        // flies. Distinct from the one-shot R4 node executor.
+                        if (!sim.state().crashed && !sim.state().landed &&
+                            !node_executor.active()) {
+                            if (transfer_cache.valid) {
+                                const lander::State& st = sim.state();
+                                const double t0 = sim.sim_time();
+                                const lander::Config& cfg = sim.config();
+                                const int source =
+                                    transfer_cache.source >= 0
+                                        ? transfer_cache.source
+                                        : sim.reference_body();
+                                const lander::NodeBasis basis =
+                                    lander::compute_node_basis(
+                                        sim.binary(), t0, source,
+                                        {st.x, st.y}, {st.vx, st.vy});
+                                lander::ManeuverNode arm_node{};
+                                arm_node.time = t0;
+                                arm_node.frame_body = source;
+                                transfer_mc.arm(arm_node, transfer_cache,
+                                                source, basis, t0, cfg);
+                                node_executor.clear();
+                                landing_ap.abort();
+                                attitude_mode = lander::AttitudeMode::Off;
+                                debug_message = "MIDCOURSE: ENGAGED [Z]";
+                                debug_message_time = 3.0;
+                            } else {
+                                debug_message =
+                                    "MIDCOURSE: PLAN A TRANSFER FIRST [I]";
+                                debug_message_time = 3.0;
+                            }
+                        }
+                        break;
+                    }
                     case SDL_SCANCODE_RETURN: {
                         const bool shift =
                             (event.key.mod & SDL_KMOD_SHIFT) != 0;
                         if (shift) {
+                            if (transfer_mc.active()) {
+                                transfer_mc.abort();
+                                attitude_mode = lander::AttitudeMode::Off;
+                            }
                             if (node_executor.active()) {
                                 node_executor.abort();
                                 attitude_mode = lander::AttitudeMode::Off;
@@ -1796,6 +2870,7 @@ int main(int argc, char** argv) {
                                     sim.binary(), t, maneuver_node->frame_body,
                                     pre.p, pre.v);
                             node_executor.arm(*maneuver_node, basis, t0, cfg);
+                            landing_ap.abort();
                             attitude_mode = lander::AttitudeMode::Maneuver;
                         }
                         break;
@@ -1856,9 +2931,18 @@ int main(int argc, char** argv) {
         }
 
         const Uint64 now_ns = SDL_GetTicksNS();
-        const double dt = std::min(
-            0.25, static_cast<double>(now_ns - prev_ns) * 1.0e-9);
+        // M06-R2-13: measure FPS from the unclamped real frame interval so the
+        // counter reflects the true render rate; `dt` stays clamped for sim
+        // stability.
+        const double raw_dt = static_cast<double>(now_ns - prev_ns) * 1.0e-9;
+        const double dt = std::min(0.25, raw_dt);
         prev_ns = now_ns;
+        ticks_before_frame = sim.state().ticks;
+        if (raw_dt > 0.0) {
+            const double inst_fps = 1.0 / raw_dt;
+            fps_ema = (fps_ema <= 0.0) ? inst_fps
+                                       : (0.9 * fps_ema + 0.1 * inst_fps);
+        }
 
         // Advance the continuous flame clock with real frame time. Frozen
         // while paused so the flame holds still with the rest of the scene.
@@ -1904,6 +2988,18 @@ int main(int argc, char** argv) {
             (throttle_up || throttle_down)) {
             node_executor.abort();
         }
+        // Manual throttle reclaims control from the two-level midcourse too.
+        if (!paused && transfer_mc.active() &&
+            (throttle_up || throttle_down)) {
+            transfer_mc.abort();
+            attitude_mode = lander::AttitudeMode::Off;
+        }
+        // Manual throttle reclaims control from the landing autopilot too.
+        if (!paused && landing_ap.armed() &&
+            (throttle_up || throttle_down)) {
+            landing_ap.abort();
+            attitude_mode = lander::AttitudeMode::Off;
+        }
 
         if (!paused && !sim.state().crashed) {
             const double fixed_dt = sim.config().fixed_dt;
@@ -1915,7 +3011,52 @@ int main(int argc, char** argv) {
                 const double now = sim.sim_time();
                 lander::Input step_input{};
 
-                if (node_executor.active()) {
+                const bool landing_active = landing_ap.armed();
+                const bool mc_active = transfer_mc.active();
+                const bool executor_active = node_executor.active();
+
+                if (landing_active) {
+                    // M06-R6: terminal ZEM/ZEV / Apollo-polynomial command,
+                    // held and re-emitted at the 120 Hz control rate. It routes
+                    // the commanded direction through the ordinary bang-bang
+                    // attitude controller and gates the main throttle on nose
+                    // alignment (R6-04). It never touches the live sim directly.
+                    step_input =
+                        landing_ap.make_input(before, sim.config(), now);
+                } else if (mc_active) {
+                    // WARM (bounded rate): re-aim the arc at most once per
+                    // interval; never on every 1/120 s fixed step.
+                    const bool warm_dbg =
+                        debug_mode == lander::DebugSubsystem::TransferWarm;
+                    const int prop_before =
+                        warm_dbg ? lander::ballistic_propagation_count() : 0;
+                    const double miss_before =
+                        warm_dbg ? transfer_mc.cache().achieved_miss : 0.0;
+                    const bool replanned = transfer_mc.maybe_replan(
+                        sim.binary(), sim.config(), before, now,
+                        kMidcourseReplanSec, kMidcourseMissTolerance);
+                    if (warm_dbg && replanned) {
+                        // Debug observation only (R8-11): the last re-plan's
+                        // miss / correction count / propagation cost / cold
+                        // fallback, stored on the panel context. It never
+                        // feeds back into the midcourse (P07).
+                        transfer_debug.warm_miss_before = miss_before;
+                        transfer_debug.warm_miss_after =
+                            transfer_mc.cache().achieved_miss;
+                        transfer_debug.warm_propagations_last =
+                            lander::ballistic_propagation_count() -
+                            prop_before;
+                        transfer_debug.warm_propagations_total +=
+                            transfer_debug.warm_propagations_last;
+                        transfer_debug.warm_fallback_last =
+                            transfer_mc.cache().valid &&
+                            transfer_mc.cache().newton_iterations == 0;
+                    }
+                    // HOT (O(1), every fixed step): the fast VGO drives
+                    // attitude and the finite correction burn.
+                    step_input = transfer_mc.make_input(
+                        before, now, sim.config(), manual_left, manual_right);
+                } else if (executor_active) {
                     step_input = node_executor.make_input(
                         before, now, sim.config(), manual_left, manual_right);
                 } else {
@@ -1945,18 +3086,114 @@ int main(int argc, char** argv) {
                     step_input.rotate_left || step_input.rotate_right,
                     !before.crashed, rw_hold);
 
+                // M06-R8 (R8-05..R8-15): remember the last composed per-step
+                // input for the debug panels (display only).
+                panel_ctx.last_step_input = step_input;
+
                 (void)sim.step_once(step_input);
-                const bool executor_was_active = node_executor.active();
-                node_executor.after_step(before, sim.state(), step_input,
-                                         sim.sim_time(), sim.config());
-                if (executor_was_active && !node_executor.active() &&
+
+                if (landing_active) {
+                    // Advance the zero-thrust Coast predictor (the autopilot's
+                    // O(1) zero-effort source). Under thrust the live state
+                    // never matches the coast, so this rebuilds from the
+                    // current state each step (cheap); the ring is always
+                    // projected forward from the latest actual state.
+                    if (!sim.state().crashed && !sim.state().landed) {
+                        lander::FlightPolicy coast_policy{};
+                        coast_policy.kind = lander::PredictionKind::Coast;
+                        lander::NodeExecutor coast_exec{};
+                        landing_coast.advance(sim, sim.state(), coast_policy,
+                                              coast_exec, landing_horizon);
+                    }
+                    // Recompute the guidance at its own cadence and advance the
+                    // phase machine; the command is held for the next ticks.
+                    landing_ap.after_step(before, sim.state(), sim.binary(),
+                                          sim.config(), sim.sim_time());
+                } else if (mc_active) {
+                    transfer_mc.after_step(before, sim.state(), step_input,
+                                           sim.sim_time(), sim.config());
+                } else {
+                    node_executor.after_step(before, sim.state(), step_input,
+                                             sim.sim_time(), sim.config());
+                }
+                if (executor_active && !node_executor.active() &&
                     !sim.state().crashed && !sim.state().landed) {
                     attitude_mode = lander::AttitudeMode::Off;
                 }
 
-                if (sim.state().crashed || sim.state().landed) {
+                // M06-R3: roll the live-trajectory projection one fixed step
+                // using the current persistent controls (the "no further input"
+                // powered forecast). In steady state this is a single
+                // shift+append; a control change triggers a bounded cold
+                // rebuild. The predictor reuses the live Simulation-stepping
+                // core, so its contact outcome is authoritative.
+                if (!sim.state().crashed && !sim.state().landed) {
+                    lander::FlightPolicy live_policy{};
+                    // M06-R8 (R8-06): in predictor isolation the user can
+                    // explicitly switch the projection's policy (F2 COAST /
+                    // F3 LIVE / F4 PLAN). Outside that mode the policy is
+                    // always LIVE, exactly as before the harness existed.
+                    live_policy.kind =
+                        (debug_mode == lander::DebugSubsystem::Predictor)
+                            ? panel_ctx.predictor_kind
+                            : lander::PredictionKind::Live;
+                    live_policy.throttle = throttle;
+                    live_policy.attitude_mode = attitude_mode;
+                    live_policy.rw_enabled = reaction_wheels.enabled();
+                    live_policy.rw_hold = rw_hold;
+                    if (maneuver_node.has_value()) {
+                        live_policy.node = maneuver_node;
+                    }
+                    live_policy.reference_body = sim.reference_body();
+                    live_policy.target_body = sim.contract().destination_body;
+                    const bool pred_dbg =
+                        debug_mode == lander::DebugSubsystem::Predictor;
+                    const auto pred_clock0 =
+                        pred_dbg ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
+                    live_predictor.advance(sim, sim.state(), live_policy,
+                                           node_executor, kPredictBudget);
+                    if (pred_dbg) {
+                        // Debug observation only (R8-06): the low-rate cost of
+                        // the advance and the policy signature (and whether it
+                        // changed, which forces a cold rebuild). Display only.
+                        const double pred_ms =
+                            std::chrono::duration_cast<std::chrono::duration<
+                                double, std::milli>>(
+                                std::chrono::steady_clock::now() - pred_clock0)
+                                .count();
+                        panel_ctx.predictor_ms_ema =
+                            (panel_ctx.predictor_ms_ema <= 0.0)
+                                ? pred_ms
+                                : (0.9 * panel_ctx.predictor_ms_ema +
+                                   0.1 * pred_ms);
+                        const lander::PolicySignature sig =
+                            lander::make_policy_signature(live_policy,
+                                                          node_executor);
+                        panel_ctx.predictor_signature_changed =
+                            (sig != panel_ctx.predictor_signature);
+                        panel_ctx.predictor_signature = sig;
+                    }
+                }
+
+                if (sim.state().crashed) {
+                    // A crash ends the run: clear the flight computer and stop
+                    // draining this frame's remaining fixed steps (the
+                    // simulation does not advance after a crash).
                     reset_flight_computer();
                     break;
+                }
+                if (sim.state().landed && !before.landed) {
+                    // Just landed from flight: the flight plan is over, so
+                    // clear it -- but do NOT break. The ship stays attached to
+                    // its moving body and system time keeps advancing, so this
+                    // frame's remaining fixed steps must still drain, exactly
+                    // as M05's Simulation::advance always did. Breaking here
+                    // (the old `crashed || landed` test) let the accumulator
+                    // backlog grow unbounded while on the ground and be flushed
+                    // all at once on the next takeoff, launching the ship
+                    // abruptly into space.
+                    reset_flight_computer();
                 }
             }
         }
@@ -2047,12 +3284,52 @@ int main(int argc, char** argv) {
 
         pc_message.clear();
         if (!s.crashed && !s.landed) {
-            const double horizon = 2.0 * sim.binary().period();
-            prediction = lander::predict_trajectory(
-                sim.binary(), sim.config(), s, sim.sim_time(),
-                sim.reference_body(), sim.contract().destination_body,
-                maneuver_node, horizon, 512);
-            prediction_valid = true;
+            const double sim_now = sim.sim_time();
+            const bool cadence_due =
+                !prediction_valid ||
+                (sim_now - predict_last_sim_time) >= kPredictRefreshSec;
+            const bool inputs_changed = prediction_inputs_changed();
+
+            const auto pred_t0 = std::chrono::steady_clock::now();
+            if (cadence_due || inputs_changed) {
+                const double horizon = 2.0 * sim.binary().period();
+                prediction = lander::predict_trajectory(
+                    sim.binary(), sim.config(), s, sim.sim_time(),
+                    sim.reference_body(), sim.contract().destination_body,
+                    maneuver_node, horizon, 512);
+                prediction_valid = true;
+                predict_last_sim_time = sim_now;
+                predict_ref_body = sim.reference_body();
+                predict_dest_body = sim.contract().destination_body;
+                predict_node_present = maneuver_node.has_value();
+                if (maneuver_node.has_value()) {
+                    predict_node_time = maneuver_node->time;
+                    predict_node_frame_body = maneuver_node->frame_body;
+                    predict_node_prograde = maneuver_node->dv_prograde;
+                    predict_node_radial = maneuver_node->dv_radial;
+                } else {
+                    predict_node_time = 0.0;
+                    predict_node_frame_body = -1;
+                    predict_node_prograde = 0.0;
+                    predict_node_radial = 0.0;
+                }
+            }
+            // When the cadence tick has not arrived and nothing invalidated the
+            // cache, `prediction` is reused as-is: the ~52k-step arc is not
+            // rebuilt this frame (M06-R2-11 / M06-R2-D06).
+            const double predict_ms =
+                std::chrono::duration_cast<
+                    std::chrono::duration<double, std::milli>>(
+                    std::chrono::steady_clock::now() - pred_t0)
+                    .count();
+            if (frame_debug) {
+                std::printf(
+                    "frame=%d dt=%.4fs pred=%.2fms steps=%d sim_t=%.3f "
+                    "landed=%d crashed=%d\n",
+                    frame, dt, predict_ms,
+                    sim.state().ticks - ticks_before_frame, sim.sim_time(),
+                    (int)sim.state().landed, (int)sim.state().crashed);
+            }
 
             if (attitude_mode != lander::AttitudeMode::Off) {
                 const auto& bin = sim.binary();
@@ -2098,23 +3375,112 @@ int main(int argc, char** argv) {
                          bin.position(s.crash_body < 0 ? 0 : s.crash_body,
                                       sim.sim_time()));
         }
-        if (nav_overlay && !s.crashed && !paused) {
+        // M06-R8: subsystem-isolation debug harness. When a --debug-subsystem
+        // selector is active, hide the unrelated nav / prediction /
+        // flight-computer / contract surfaces and show the isolated
+        // subsystem's expanded panel (common minimum readout plus the full
+        // mode-specific detail). The `ui` isolation is the exception: it keeps
+        // every normal player-facing surface and adds only a minimal debug
+        // header. `node-edit` keeps the planned-arc overlay so the edited node
+        // and its pre/post branches stay visible while editing. With no
+        // selector (or `none`) the rendering path is unchanged, so normal
+        // gameplay is untouched.
+        const bool debug_active = debug_mode != lander::DebugSubsystem::None;
+        const bool debug_ui = debug_mode == lander::DebugSubsystem::Ui;
+        // M06-R8 (follow-up): the predictor isolation keeps its primary
+        // graphical observable -- the predicted-trajectory overlay -- visible
+        // by default (not gated on the G toggle) so the projected path can be
+        // read alongside the predictor-specific debug numbers. It reuses the
+        // exact normal-gameplay drawing calls (no new rendering); the gravity
+        // / orbit nav field is left out to keep the view on the trajectory.
+        const bool predictor_keeps_overlay =
+            lander::keeps_prediction_overlay(debug_mode);
+        if (debug_active) {
+            // M06-R8 (R8-05..R8-15): refresh the panel context from values the
+            // frame already has (display only; it never feeds back in).
+            panel_ctx.throttle = throttle;
+            panel_ctx.rw_enabled = reaction_wheels.enabled();
+            panel_ctx.rw_hold = rw_hold;
+            panel_ctx.rotate_left = manual_left;
+            panel_ctx.rotate_right = manual_right;
+            panel_ctx.prediction = &prediction;
+            panel_ctx.prediction_valid = prediction_valid;
+        }
+        if (predictor_keeps_overlay && !s.crashed && !paused) {
+            // M06-R8 (follow-up): the predictor's predicted-trajectory overlay,
+            // kept visible. The same calls normal gameplay uses, so the
+            // projected path is the mode's visible observable: the COAST / PLAN
+            // arc (with its PE / AP / closest-approach / impact markers), the
+            // powered LIVE projection, and the three-kind legend. F2 / F3 / F4
+            // re-point the live predictor's policy, so the visible projection
+            // follows the selected kind.
             if (prediction_valid && !s.landed) {
                 draw_trajectory(renderer, prediction, cam,
                                 maneuver_node.has_value());
             }
+            if (!s.landed) {
+                draw_live_prediction(renderer, live_predictor, sim, cam);
+            }
+            draw_prediction_legend(renderer);
+        } else if ((!debug_active || debug_ui) && nav_overlay && !s.crashed &&
+                   !paused) {
+            if (prediction_valid && !s.landed) {
+                draw_trajectory(renderer, prediction, cam,
+                                maneuver_node.has_value());
+            }
+            if (!s.landed) {
+                // M06-R3: the powered LIVE projection and its predicted-contact
+                // marker, plus the legend distinguishing the three kinds.
+                draw_live_prediction(renderer, live_predictor, sim, cam);
+            }
             draw_navigation_overlay(renderer, sim, render_state, cam);
+            draw_prediction_legend(renderer);
+        } else if (debug_mode == lander::DebugSubsystem::NodeEdit && nav_overlay &&
+                   !s.crashed && !s.landed && !paused && prediction_valid) {
+            // R8-08: keep the pre/post prediction arc visible while editing.
+            draw_trajectory(renderer, prediction, cam,
+                            maneuver_node.has_value());
         }
-        draw_hud(renderer, sim, seed, throttle,
-                  reaction_wheels.enabled(), rw_hold, cam,
-                  tap_guard.progress_label(SDL_GetTicks()));
-        draw_flight_computer(renderer, sim, maneuver_node, prediction.basis,
-                             prediction.basis_valid, prediction,
-                             prediction_valid, node_executor, attitude_mode,
-                             pc_message);
-        draw_contract_banner(renderer, last_completed_seen,
-                              contract_banner_time);
+        lander::DebugCommonReadout debug_common{};
+        if (debug_active) {
+            debug_common = lander::make_common_readout(sim);
+        }
+        if (debug_active && !debug_ui) {
+            draw_debug_subsystem_panel(
+                renderer, debug_mode, debug_common, sim, node_executor,
+                transfer_mc, landing_ap, live_predictor, maneuver_node,
+                transfer_debug, attitude_mode, panel_ctx);
+        } else {
+            draw_hud(renderer, sim, seed, throttle,
+                     reaction_wheels.enabled(), rw_hold, cam,
+                     tap_guard.progress_label(SDL_GetTicks()));
+        }
+        // M06-R2-13: on-screen frames-per-second counter, top-right corner
+        // (above the flight-computer panel, clear of the left HUD).
+        {
+            const Color dim(130, 138, 156);
+            char fps_line[24];
+            std::snprintf(fps_line, sizeof fps_line, "FPS %.0f", fps_ema);
+            draw_text(renderer, fps_line,
+                      kWindowWidth - 8 - text_width(fps_line, 2), 16, 2, dim);
+        }
+        if (!debug_active || debug_ui) {
+            draw_flight_computer(renderer, sim, maneuver_node, prediction.basis,
+                                  prediction.basis_valid, prediction,
+                                  prediction_valid, node_executor, attitude_mode,
+                                  pc_message, &transfer_mc, &landing_ap);
+            draw_contract_banner(renderer, last_completed_seen,
+                                  contract_banner_time);
+        }
         draw_landed_banner(renderer, s);
+        if (debug_ui) {
+            // R8-15: the ui isolation keeps all normal surfaces; the panel
+            // call here only adds the minimal debug header.
+            draw_debug_subsystem_panel(
+                renderer, debug_mode, debug_common, sim, node_executor,
+                transfer_mc, landing_ap, live_predictor, maneuver_node,
+                transfer_debug, attitude_mode, panel_ctx);
+        }
         if (debug_message_time > 0.0 && !debug_message.empty()) {
             const Color amber(255, 196, 64);
             draw_center_text(renderer, debug_message,

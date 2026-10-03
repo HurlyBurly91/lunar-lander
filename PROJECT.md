@@ -98,7 +98,7 @@ records/M05-binary-moon-contract-loop.md
 
 ### M06 — Flight computer and maneuver planning
 
-Status: AWAITING HUMAN VERIFICATION.
+Status: ACTIVE.
 
 Add a compact KSP-style flight computer to the M05 binary game:
 
@@ -111,6 +111,8 @@ Add a compact KSP-style flight computer to the M05 binary game:
   gravity
 - three planner actions: circularize, transfer to the other moon, and match
   destination-pad velocity
+- target-pad landing autopilot as an explicit `M06-R2` extension, superseding
+  the earlier "no landing autopilot" boundary
 
 The flight computer plans and assists; it does not replace the player, teleport
 the spacecraft, stabilize orbits, or introduce a second physics model.

@@ -530,11 +530,49 @@ the earlier requirement.
 ## Canonical domain rules
 
 Stable cross-milestone game/system rules may live under `docs/`; `docs/` is an
-active project path. Read the relevant canonical document whenever current work
-touches its domain, but do not load all of `docs/` automatically.
+active project path.
+
+Canonical documents are loaded on demand. Do not load all of `docs/`
+automatically.
+
+When current work touches a domain with a known canonical document, read that
+document before modifying the domain.
+
+Source code may also identify its applicable canonical document directly using
+a delimited implementation region:
+
+    // BEGIN CANONICAL ALGORITHM: <descriptive name>
+    // Reference: docs/<document>.md
+
+    ... implementation ...
+
+    // END CANONICAL ALGORITHM: <descriptive name>
+
+When inspecting, modifying, moving, or refactoring code inside such a marked
+region:
+
+1. read the document named by `Reference:` before changing the marked code
+2. preserve the documented algorithm and invariants unless the current
+   requirement explicitly changes them
+3. move the BEGIN / Reference / END markers with the implementation if the code
+   is relocated or decomposed
+4. if an explicit requirement changes the canonical algorithm, update the
+   referenced document in the same work
+5. do not load unrelated canonical documents merely because other documents
+   exist under `docs/`
+6. do not remove or weaken the reference merely because the surrounding
+   architecture changes
+
+This mechanism is specifically intended to keep canonical knowledge available
+without placing every domain document into normal session context.
 
 For gravity, body scaling, orbital mechanics, ephemerides, or trajectory
 physics, the canonical reference is `docs/physics-model-gravity.md`.
+
+For the flight computer's computational rate budget (HOT / WARM / COLD) and its
+attitude/VGO, inter-moon transfer, and powered-landing guidance laws, the
+canonical references are `docs/flight-guidance-computational-rate-tiers.md` and
+the `docs/flight-guidance-*.md` documents.
 
 Authority for current work is: latest user instruction -> TASKS.md -> active
 milestone -> applicable `docs/` rules -> PROJECT.md. If a requirement changes a

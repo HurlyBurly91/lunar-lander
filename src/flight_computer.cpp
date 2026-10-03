@@ -348,7 +348,7 @@ std::optional<ManeuverNode> plan_circularize(
 std::optional<ManeuverNode> plan_transfer(
     const BinarySystem& bin, const Config& config, const State& start,
     double t0, int reference_body,
-    const std::optional<ManeuverNode>& existing) {
+    const std::optional<ManeuverNode>& existing, TransferSolution* cache) {
     const int source = start.landed ? start.landed_body : reference_body;
     const int safe_source =
         source < 0 ? 0 : (source > 1 ? 1 : source);
@@ -367,10 +367,30 @@ std::optional<ManeuverNode> plan_transfer(
     const BallisticState pre = propagate_ballistic(bin, initial, steps,
                                                    config.fixed_dt);
 
+    // M06-R5: warm-first, cold-fallback transfer targeting from the predicted
+    // pre-burn state. A valid cached solution for this route is re-aimed with
+    // a bounded differential correction; any warm failure (or an empty /
+    // mismatched cache) drops to the full coarse search, which reseeds the
+    // cache. When no cache pointer is supplied this is exactly the original
+    // pure-cold behaviour.
     Vec2 departure{};
-    if (!solve_transfer_velocity(bin, config.fixed_dt, pre.p, safe_source,
-                                 target, t, departure)) {
-        return std::nullopt;
+    bool solved = false;
+    if (cache && cache->valid && cache->source == safe_source &&
+        cache->target == target) {
+        const TransferSolution warm =
+            solve_transfer_warm(bin, config.fixed_dt, pre.p, safe_source,
+                                target, t, *cache);
+        if (warm.valid) {
+            *cache = warm;
+            departure = warm.departure_velocity;
+            solved = true;
+        }
+    }
+    if (!solved) {
+        if (!solve_transfer_velocity(bin, config.fixed_dt, pre.p, safe_source,
+                                     target, t, departure, cache)) {
+            return std::nullopt;
+        }
     }
 
     const Vec2 dv_world = departure - pre.v;
