@@ -1,20 +1,26 @@
 # Tasks
 
 Milestone: M06 — Flight computer and maneuver planning
-State: ACTIVE
-Active request group: M06-R10 (predictor human inspection — record / defer / stop)
-Current phase: M06-R10 (M06 DEBUG PHASE) — record-only task COMPLETE; M06 stays
-ACTIVE, still awaiting human playtest (M06-R7-H01). The M06 **predictor
-subsystem is NOT accepted**: the human predictor inspection found PRED-01..08 and
-SIM-COLL-01 (recorded in `docs/m06-predictor-physics-issues.md`); diagnosis and
-any fix are **deferred to a bounded post-M06 predictor/physics hardening pass**
-(not M07, not an M06 scope expansion). The `manual` mode is a provisional pass
-(harness functionality only; SIM-COLL-01 supersedes any collision/contact
-acceptance). The remaining debug subsystems may be inspected independently; the
-two transfer modes remain subject to the known TFD-1/TFD-2. No defect was fixed
-in this pass; the automated baseline is 9/11 (only the known TFD-1/TFD-2 fail).
-Detail and stable IDs live in "## M06-R10" (then "## M06-R9", "## M06-R8") at
-the end of this ledger.
+State: AWAITING HUMAN VERIFICATION
+Active request group: M06-R11 (M06 HARDENING — Pass 1: trustworthy diagnostics) — awaiting the human visual pass (M06-R11-H01); M06-R12 (prediction reference-frame architecture) is registered as the next queued bounded group (not yet started)
+Current phase: M06-R11 (M06 HARDENING, Pass 1) — IMPLEMENTATION + AUTOMATED
+VERIFICATION COMPLETE; awaiting the human visual pass (M06-R11-H01). A bounded
+diagnostic / readout / fixture correction pass. It makes the debug text actually
+render (lowercase and `[`/`]` were silently dropped), corrects the common
+body-relative altitude (was the primary terrain + `local_up_angle` instead of
+the selected reference body + its tidal rotation; now signed), fixes the
+diagnostic meanings/units (clearance vs altitude, PE/AP vs min/max body-centre
+radius relabelled MIN R / MAX R, contact "T+" as ETA, horizon seconds, reference
+identity, frame label, amber closest-square body + ETA), and corrects the debug
+orbit fixture (was the primary terrain + `cfg.mu` instead of the selected body's
+terrain + `mu` for a companion orbit). This is **Pass 1** of the bounded
+post-M06 hardening: it changed NO predictor/controller physics (PRED-01..08,
+SIM-COLL-01 stay OPEN), added NO frozen-COAST validator, changed NO guidance /
+transfer / collision / canonical physics, and made NO commit. Automated:
+`lander_debug_subsystem_tests` all pass (4 new cases); full build OK; ctest
+9/11 with only the known TFD-1/TFD-2 failing. The M06-R10 record-only pass (the
+predecessor) is COMPLETE. Detail and stable IDs live in "## M06-R11" (then
+"## M06-R10" and the earlier M06 sections) at the end of this ledger. M06-R12 (prediction reference-frame architecture: AUTO / WORLD / PRIMARY / COMPANION display frames + a pure orbit-reference classifier with hysteresis; NO physics / propagation change) is registered in "## M06-R12" below and is NOT yet started. This durable state (R11 complete + R12 registered) is committed and pushed to origin at the human-verification blocker at the user's request (2026-10-04) so the game can be shown; M06 is NOT closed / accepted.
 
 Historical phase record below (M06-R6, now code-complete; see "## M06-R6"):
 low-complexity powered-landing guidance that refines the M06-R2 target-pad
@@ -3798,3 +3804,388 @@ change, no new test, no new scenario, and no commit.**
 - [x] M06-R10-P07 No M06 scope expansion; no M07 start; no frozen-COAST validator
   added; no new predictor scenarios added (both deferred to the hardening pass)
 - [x] M06-R10-P08 No commit
+
+## M06-R11 — M06 HARDENING — Pass 1: trustworthy diagnostics
+
+Source: USER (2026-10-03, "M06 HARDENING — PASS 1: TRUSTWORTHY DIAGNOSTICS")
+State: AWAITING HUMAN VERIFICATION — implementation + automated verification
+COMPLETE (2026-10-03); awaiting the human visual pass (M06-R11-H01). This is
+the first of a bounded post-M06 diagnostic-hardening pass. It corrects only
+diagnostic / readout / debug-fixture behaviour so the debug panels tell the
+truth. It fixed NO predictor / controller physics: PRED-01..08 and SIM-COLL-01
+stay OPEN; the predictor subsystem is NOT accepted; no frozen-COAST validator;
+no guidance / transfer / collision / canonical-physics change; no commit / push.
+
+Scope boundary (preserve, do not cross): the production flight computer and
+guidance laws, the real `Simulation` contact / crash checker, the M06-R5
+transfer midcourse and its canonical planner, and the M06-R3 predictor cache /
+rebuild / policy / signature behaviour are all out of scope and unchanged.
+
+### M06-R11-01 — Debug text actually renders
+
+- [x] M06-R11-01-01 `glyph()` maps lowercase ASCII a-z to uppercase and renders
+  `[`/`]` (and the already-supported ` - + . : / = % ! ( ) , 0-9 space`), so
+  lowercased / bracketed diagnostic labels no longer silently become spaces.
+  Files: src/gui.cpp, include/lander/debug_font.hpp (new).
+  Evidence: debug_font.hpp normalize/visible; gui.cpp:1956 glyph() delegates to
+  them and draws `[`/`]`; test_debug_subsystem.cpp::test_debug_font_coverage
+  asserts normalization + visibility.
+- [x] M06-R11-01-02 Headless char-coverage helpers live in a library-linked
+  header so the glyph coverage is testable without SDL; `glyph()` delegates to
+  them. (Implemented as `lander::debug_font::normalize` /
+  `lander::debug_font::visible` in `include/lander/debug_font.hpp`.)
+  Files: include/lander/debug_font.hpp, src/gui.cpp.
+  Evidence: test_debug_subsystem.cpp::test_debug_font_coverage (SDL-free).
+- [x] M06-R11-01-03 The manual panel's `T+<absolute sim time>` line renders the
+  lowercase 't' correctly (e.g. `t=342.72 s`) after normalization.
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2440 `t=%.2f s` line now passes through glyph()
+  normalization (lowercase t -> T); covered by the 01-01/01-02 tests.
+
+### M06-R11-02 — Body-relative altitude in the common readout
+
+- [x] M06-R11-02-01 `make_common_readout` uses the SELECTED reference body's
+  terrain (`bin.body(ref).terrain`) and its tidal rotation (`bin.body_rotation`)
+  for the signed altitude — not the primary terrain / `local_up_angle`. The
+  signed value is preserved (no clamping); zero/blank means invalid, not a
+  clamped altitude.
+  Files: src/debug_subsystem.cpp, include/lander/debug_subsystem.hpp.
+  Evidence: debug_subsystem.cpp:53 make_common_readout uses
+  `altitude_at(bin.body(ref).terrain, state, bin.position(ref,0),
+  bin.body_rotation(t))`; test_debug_subsystem.cpp::test_body_relative_altitude
+  asserts equality with an independent altitude_at and the signed-negative
+  sub-surface case.
+- [x] M06-R11-02-02 The common readout exposes the reference body explicitly as
+  `PRIMARY` / `COMPANION` + index (new `reference_label`), so the altitude is
+  never silently attributed to the wrong body.
+  Files: include/lander/debug_subsystem.hpp, src/debug_subsystem.cpp, src/gui.cpp.
+  Evidence: DebugCommonReadout.reference_label/target_label
+  (debug_subsystem.hpp:208-215); gui.cpp:2590-2592 `REF <label>(#n)`;
+  test_orbit_fixture_primary/companion set both labels.
+
+### M06-R11-03 — Diagnostic meanings and units
+
+- [x] M06-R11-03-01 Manual "SURF VR/VT (ref body)" relabelled to make clear it is
+  body-CENTRE-relative velocity (not surface-relative).
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2434 `B VR/VT` + `REF FRAME = ref-body-centre (WORLD/
+  INERTIAL; NOT surface-relative)` + `SURFACE = <terrain>` line.
+- [x] M06-R11-03-02 Common "V-REL (vs target)" clarified as target-BODY-centre
+  relative (not pad-relative).
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2613 `B V-REL (vs target body centre) <...> m/s (WORLD/
+  INERTIAL)`.
+- [x] M06-R11-03-03 Common / predictor PE / AP (min/max body-centre distance)
+  relabelled `MIN R` / `MAX R` (reference body, over the horizon); no new
+  apsis-finding algorithm. (The node-edit / flight-computer `PE/AP` are a
+  genuine local-extremum and were intentionally left as `PE/AP`.)
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2694-2701 predictor `MIN R` / `MAX R` computed from
+  `state.position.distance(bin.position(b,0))` over the ring; labelled
+  `(ref body, W)`.
+- [x] M06-R11-03-04 Clearance relabelled as reference-POINT clearance and
+  computed with `altitude_at` per sample for both bodies (not
+  `r - reference_radius`).
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2703-2730 `CLR-PT` = min `altitude_at(terrain, pos,
+  bpos, rot)` over both bodies, labelled `(ref-pt clearance, both bodies)`.
+- [x] M06-R11-03-05 Contact "T+" shown as an ETA (`contact.time - sim_time`)
+  with the absolute time labelled separately; the amber closest-approach square
+  is labelled with its target body and ETA.
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2732-2749 `PRED ... ETA <t> s (t=<abs>)` + named contact
+  body + `W(...)`; draw_trajectory:1296-1304 amber `CP <body> T<+eta>s`
+  (label added via a new `const lander::Simulation&` parameter to
+  `draw_trajectory`).
+- [x] M06-R11-03-06 Horizon shown as STEPS + SECONDS (`horizon_steps *
+  fixed_dt`) and the available forecast duration when the ring is partly
+  filled; an empty ring is explicit, not "0 / blank".
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2652-2677 `HORIZON <steps> x <dt> = <sec> s | avail <n>
+  samples / <sec> s`; `NO ROLLING FORECAST YET (empty ring)` when empty.
+- [x] M06-R11-03-07 Rolling-predictor readouts and long COAST/PLAN markers are
+  visually distinct.
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2647-2650 `MODE ... = ROLLING HORIZON PREDICTOR readouts
+  (NOT the long COAST / PLAN arc)`.
+- [x] M06-R11-03-08 A `WORLD/INERTIAL` frame label is shown for every
+  world-frame position / velocity / distance.
+  Files: src/gui.cpp.
+  Evidence: common readout frame legend gui.cpp:2618-2619; every W position /
+  velocity / distance line (B VR/VT, B V-REL, REF POS, W x/y, ETA W, CP W,
+  MIN R / MAX R, CLR-PT) carries an explicit `W` / `(WORLD/INERTIAL)` tag.
+- [x] M06-R11-03-09 Unavailable / invalid values show an explicit state (not
+  zero or blank); no extra simulation rollout is performed to populate them.
+  Files: src/gui.cpp.
+  Evidence: gui.cpp:2732 `NO ROLLING FORECAST YET` (empty ring) and
+  `NO PREDICTED CONTACT YET (ring empty)`; altitude 0.0 == invalid in
+  make_common_readout.
+
+### M06-R11-04 — Debug orbit fixture uses the selected body
+
+- [x] M06-R11-04-01 `place_in_orbit(body)` uses the selected body's
+  `terrain`/`max_surface_radius`, `mu`, `position(body,0)`, and
+  `velocity(body,0)` (previously the primary terrain + `cfg.mu`). Direction
+  convention and the existing clearance (+20) are preserved.
+  Files: src/debug_subsystem.cpp.
+  Evidence: debug_subsystem.cpp:268-294 place_in_orbit uses `const Body& b =
+  bin.body(body)` and `b.terrain.max_surface_radius()`, `b.mu`,
+  `bin.position(body,0)`, `bin.velocity(body,0)`; test_orbit_fixture_primary +
+  test_orbit_fixture_companion assert radius / speed / position / velocity /
+  clear-surface for both bodies.
+- [x] M06-R11-04-02 Diagnostic reference identity is kept consistent with the
+  initialized state WITHOUT altering the production gravitational-reference
+  selection algorithm (`reference_body_for`); where the production algorithm
+  keeps the reference on the primary for a small-body near orbit, the readout
+  labels that honestly rather than implying the orbit body.
+  Files: src/debug_subsystem.cpp, src/gui.cpp.
+  Evidence: place_in_orbit does not modify sim/reference; gui.cpp REF/TGT
+  labels read the production `sim.reference_body()` /
+  `sim.contract().destination_body`; test_orbit_fixture_companion confirms the
+  orbit is placed on the companion while the readout reports the (unchanged)
+  production reference honestly.
+- [x] M06-R11-04-03 Document (ledger) which autoland debug scenarios differ
+  from the passing V14 test fixtures (near-surface +20 m live-stepped
+  scenario that arms the full `LandingAutopilot` vs the V14 high +900 m
+  analytic, never-stepped, primary-only test orbit), and that B x3 /
+  `sync_orbit` is a developer initializer, NOT a validated stationary
+  companion-orbit fixture (left unchanged).
+  Files: docs/m06-predictor-physics-issues.md, tests/test_debug_subsystem.cpp.
+  Evidence: docs/m06-predictor-physics-issues.md "Debug autoland scenario vs
+  the passing V14 fixtures (delta, left unchanged)"; test_orbit_fixture_companion
+  encodes the near-surface companion fixture.
+
+### M06-R11-05 — Focused automated verification
+
+- [x] M06-R11-05-01 Glyph coverage: every diagnostic label's characters are
+  visible (lowercase + brackets map to drawn glyphs, not spaces).
+  Files: tests/test_debug_subsystem.cpp.
+  Evidence: test_debug_subsystem.cpp::test_debug_font_coverage (PASS).
+- [x] M06-R11-05-02 Body-relative altitude: signed, and correct for a primary
+  and a companion orbit (uses the selected body's terrain + tidal rotation).
+  Files: tests/test_debug_subsystem.cpp.
+  Evidence: test_debug_subsystem.cpp::test_body_relative_altitude (PASS).
+- [x] M06-R11-05-03 Debug orbit fixture: correct radius / speed / position /
+  velocity for both the primary and the companion body.
+  Files: tests/test_debug_subsystem.cpp.
+  Evidence: test_orbit_fixture_primary + test_orbit_fixture_companion (PASS).
+- [x] M06-R11-05-04 Readout identities: `reference_label` and `target_label`
+  are correct for the relevant scenarios.
+  Files: tests/test_debug_subsystem.cpp.
+  Evidence: both orbit-fixture tests assert reference_label == PRIMARY and
+  target_label == COMPANION / the destination (PASS).
+- [x] M06-R11-05-05 The unchanged V14 / landing / predictor / binary tests still
+  pass; the full `ctest` baseline is preserved (9/11; only the known
+  TFD-1/TFD-2 fail); no new failure.
+  Evidence: `cmake --build build` OK (100%); `build/lander_debug_subsystem_tests`
+  "All ... passed"; `build/lander_landing_tests` "ALL TESTS PASSED" (exit 0);
+  ctest suite = 9/11 pass with only TFD-1 (lander_tests: "FAIL: the
+  primary-source transfer found a plausible arc") and TFD-2
+  (lander_transfer_warm_tests: "2 transfer-warm test(s) failed") failing — both
+  the pre-existing known baseline failures, no new failures.
+- [x] M06-R11-05-06 No-selector normal GUI smoke: no diagnostic text is drawn.
+  Evidence (code-level): gui.cpp:2319 `debug_mode` starts `None`; it is set
+  only from a parsed `--debug-subsystem` selector (gui.cpp:2330);
+  gui.cpp:3469 `debug_active = debug_mode != None` and gui.cpp:3470
+  `debug_ui = debug_mode == Ui`. With no selector both are false, so
+  `draw_debug_subsystem_panel` (gui.cpp:3529,3557) is never called and only the
+  normal HUD + flight computer render. (Human re-confirms visually in H01.)
+- [x] M06-R11-05-07 No predictor / controller physics change: PRED-01..08 and
+  SIM-COLL-01 remain OPEN; no frozen-COAST validator added.
+  Evidence: `git diff --stat` confined to debug/readout/font files
+  (gui.cpp, debug_subsystem.cpp/hpp, debug_font.hpp, test_debug_subsystem.cpp,
+  docs/m06-predictor-physics-issues.md); no change to sim.cpp / predictor.cpp /
+  flight_computer.cpp / ballistic.cpp / guidance / collision; PRED-01..08 +
+  SIM-COLL-01 all remain OPEN in the ledger.
+
+### M06-R11-P — Preservation constraints
+
+- [x] M06-R11-P01 No COAST/LIVE/PLAN behaviour fix (evidence: P07 diff scope)
+- [x] M06-R11-P02 No predictor cache invalidation or terminal-forecast reuse
+  (evidence: P07 diff scope — predictor.cpp unchanged)
+- [x] M06-R11-P03 No frozen-COAST contact validator added (evidence: no new
+  validator in predictor.cpp / sim.cpp)
+- [x] M06-R11-P04 No guidance / transfer / collision / canonical-physics change
+  (evidence: P07 diff scope)
+- [x] M06-R11-P05 No hidden stabilization (evidence: P07 diff scope)
+- [x] M06-R11-P06 No Pass 2 / other subsystem / M07 (evidence: only Pass 1
+  diagnostic files touched)
+- [x] M06-R11-P07 No commit / push (evidence: no commit made this session;
+  worktree left uncommitted)
+
+### M06-R11-H — Human verification (closeout)
+
+- [ ] M06-R11-H01 Human: run each corrected debug mode and confirm the labels /
+  units now read correctly (see the launch + visual checklist reported at
+  closeout). PRED-01..08 / SIM-COLL-01 are NOT closed by this pass.
+  (Awaiting user confirmation; keeps M06 AWAITING HUMAN VERIFICATION.)
+
+## M06-R12 — M06 HARDENING — Prediction reference-frame architecture
+
+Source: USER (2026-10-04, "M06 HARDENING — PREDICTION REFERENCE-FRAME
+ARCHITECTURE")
+State: NOT STARTED (registered 2026-10-04). A bounded post-M06 diagnostic /
+presentation hardening pass: it adds reference-FRAME display / analysis of the
+already-computed INERTIAL prediction and must NOT change any physics,
+propagation, gravity, collision, transfer, landing, guidance, contract, or
+binary-ephemeris behaviour. It begins after the M06-R11 human visual pass.
+NO commit / push of R12 work until its own build + tests + human verification
+pass (the 2026-10-04 commit / push in this ledger covers only the M06-R11
+durable snapshot + this R12 registration, per the user's request).
+
+Scope boundary (preserve, do not cross): the full two-body inverse-square
+gravity model and the `BinarySystem` closed-form ephemeris (both bodies always
+active; no SOI, no patched conics, no gravity switch, no orbit stabilization);
+the `RecedingHorizonPredictor` cache / rebuild / policy / signature behaviour;
+the `Simulation` contact / crash checker; the M06-R5 transfer solver +
+midcourse; the M06-R6/R7 landing guidance; `sync_orbit` / `B x3`; the
+`fixed_dt`; the known open TFD-1 / TFD-2 (deferred post-M06); and the M07
+boundary (not started).
+
+### M06-R12-01 — Frame model and transform (inertial only)
+
+- [ ] M06-R12-01-01 Three display reference frames, inertial only: WORLD (the
+  existing barycentric / inertial frame — the current output, unchanged and
+  still available), PRIMARY (body-0 centred), COMPANION (body-1 centred). No
+  rotating / body-fixed frame. Frame selection is presentation / analysis state
+  only; it must never mutate `Simulation` or the stored inertial prediction
+  samples.
+- [ ] M06-R12-01-02 Transform: `PRIMARY = ship - position(primary) -
+  velocity(primary)`; `COMPANION = ship - position(companion) -
+  velocity(companion)`. Body position / velocity come from the shared
+  `BinarySystem` ephemeris at the SAMPLE time. Velocity is a correct inertial-
+  frame subtraction (no rotation).
+- [ ] M06-R12-01-03 All prediction propagation stays in the inertial / world
+  frame; stored samples keep `position_world`, `velocity_world`,
+  `simulation_time`. The rounded-square / rosette WORLD visualization remains
+  available (WORLD mode).
+
+### M06-R12-02 — Timed trajectory sample data
+
+- [ ] M06-R12-02-01 Add explicit `position_world`, `velocity_world`,
+  `simulation_time` to the display-capable trajectory data (e.g. a
+  `TimedTrajectorySample { Vec2 position_world; Vec2 velocity_world; double
+  time; }`). Do not remove / corrupt the existing world-space data.
+- [ ] M06-R12-02-02 The long COAST/PLAN `TrajectoryPrediction` stores only
+  decimated world-space positions (`pre` / `post` are `std::vector<Vec2>`);
+  each decimated sample already has a `BallisticState` (`p`, `v`, `t`) at the
+  stride — capture `v` and `t` alongside `p` via parallel timed storage (do not
+  break existing consumers). Reuse the rolling `RecedingHorizonPredictor`
+  sample time / state where practical.
+
+### M06-R12-03 — AUTO orbit-reference classifier (pure analysis)
+
+- [ ] M06-R12-03-01 Pure analysis over the inertial samples + ephemeris. For
+  each sample and each body i: `v_i = v_ship - v_body_i`; `rho_i = |p_ship -
+  p_body_i|`; `epsilon_i = 0.5*|v_i|^2 - mu_i/rho_i`; `a_self_i =
+  mu_i/rho_i^2`; `g_other_ship = gravity from the other body to the ship`;
+  `g_other_body = gravity from the other body to body i`; `a_tidal_i =
+  |g_other_ship - g_other_body|`; `dominance_i = a_self_i /
+  max(a_tidal_i, 1e-9)`.
+- [ ] M06-R12-03-02 E1 window: use the existing samples in `[t, t+W]` with
+  `W = clamp(0.25*T_local, 2.0, 8.0)` (a few seconds; not a full orbit). If
+  fewer than 75% of W is available, do not start a new capture.
+- [ ] M06-R12-03-03 E2 window metrics: unwrap `theta_i = atan2` around body i;
+  compute total `delta_theta`, `rho_min`, `rho_max`, `rho_mean`,
+  `radial_ratio = rho_max/rho_min`, and `angular_consistency` over the window.
+- [ ] M06-R12-03-04 E3 raw candidate for body i requires ALL: `epsilon_i < 0`
+  (bound), `dominance_i >= 1.25`, `|delta_theta_i| >= 0.349 rad (20°)`,
+  `angular_consistency_i >= 0.75`, `radial_ratio_i <= 4.0`.
+- [ ] M06-R12-03-05 E4 tie-break: if both bodies qualify, the larger
+  `dominance` wins; then the larger `|delta_theta|`; then the previous segment;
+  then body 0.
+- [ ] M06-R12-03-06 E5 hysteresis: states Primary / WorldTransfer / Companion.
+  Entering a new body-capture state requires 3 consecutive qualifying samples
+  AND 0.5 s elapsed; releasing the current capture requires 3 consecutive
+  failing samples AND 0.5 s. Never transition directly Primary -> Companion or
+  Companion -> Primary; both go through World.
+- [ ] M06-R12-03-07 Centralize all classifier thresholds as named constants
+  (the values above); do not scatter them through the code.
+
+### M06-R12-04 — AUTO segmented rendering
+
+- [ ] M06-R12-04-01 When AUTO crosses a frame boundary, segment the path: draw
+  each frame's segment as a separate polyline; do NOT connect different-frame
+  segments with a continuous line.
+- [ ] M06-R12-04-02 At each boundary draw a visible transition marker / label:
+  `REF -> WORLD`, `WORLD -> PRIMARY`, `PRIMARY -> WORLD`, `WORLD -> COMPANION`,
+  `COMPANION -> WORLD`.
+- [ ] M06-R12-04-03 Periapsis, apoapsis, impact, closest-approach, and
+  maneuver-node markers are each drawn in the same display frame as the segment
+  that found them.
+
+### M06-R12-05 — Fixed frame modes
+
+- [ ] M06-R12-05-01 PRIMARY / COMPANION fixed modes apply NO auto hysteresis:
+  every sample is transformed into that single body-centred inertial frame.
+
+### M06-R12-06 — Debug panel + keyboard
+
+- [ ] M06-R12-06-01 Compact debug-section display: `PRED FRAME` =
+  AUTO / WORLD / PRIMARY / COMPANION; current `REF SEGMENT` when AUTO;
+  `EPS` / `DOM` / `WIND` / `RATIO` / `CONFIRM` diagnostics for AUTO; and a
+  permanent, unambiguous `PHYSICS = WORLD / INERTIAL` line.
+- [ ] M06-R12-06-02 Keys: F5 = AUTO, F6 = PRIMARY, F7 = COMPANION, F8 = WORLD
+  (default). F2 / F3 / F4 (the existing COAST / LIVE / PLAN policy) remain.
+  Keep consistent with how debug / harness keys are currently gated.
+
+### M06-R12-V — Automated verification (14 tests + no-regression)
+
+- [ ] M06-R12-V01 World transform identity (WORLD == inertial samples, unchanged).
+- [ ] M06-R12-V02 Moving-body translation removal (a body-centred frame removes
+  the body's ephemeris translation over time).
+- [ ] M06-R12-V03 Body-centred circular-orbit stability (a circular orbit stays
+  bounded / circular in the body-centred inertial frame).
+- [ ] M06-R12-V04 Primary classification (a bounded primary orbit -> AUTO PRIMARY).
+- [ ] M06-R12-V05 Companion classification (a bounded companion orbit -> AUTO
+  COMPANION). If it does not classify COMPANION, STOP and report the actual
+  EPS / DOM / WIND / RATIO / consistency metrics; do NOT tune thresholds until
+  the failure is understood.
+- [ ] M06-R12-V06 World / transfer detection (a fast inter-body arc -> WORLD,
+  not captured to either body).
+- [ ] M06-R12-V07 Primary -> World -> Companion transition (segmented correctly).
+- [ ] M06-R12-V08 Companion -> World -> Primary transition (segmented correctly).
+- [ ] M06-R12-V09 Hysteresis (3 samples AND 0.5 s to enter and to release; no
+  direct Primary <-> Companion).
+- [ ] M06-R12-V10 Incomplete-horizon tail (fewer than 75% of W -> no new capture).
+- [ ] M06-R12-V11 Frame selection never mutates `Simulation` or the stored
+  inertial samples (state / sample identity preserved across a frame switch).
+- [ ] M06-R12-V12 Companion-orbit fixture end-to-end: the M06-R11 debug
+  companion-orbit fixture, run headlessly, yields AUTO == COMPANION (and WORLD
+  keeps the rosette; PRIMARY / COMPANION frames are correct). Same STOP-and-
+  report gate as V05 if it does not.
+- [ ] M06-R12-V13 Primary-orbit fixture end-to-end: AUTO == PRIMARY.
+- [ ] M06-R12-V14 Render segment boundaries (no cross-frame connector; a
+  boundary marker is emitted at each transition).
+- [ ] M06-R12-V15 Existing tests all still pass; full `ctest` baseline preserved
+  (only the known TFD-1 / TFD-2 fail); no new failure; no test weakened.
+
+### M06-R12-P — Preservation constraints
+
+- [ ] M06-R12-P01 No COAST / LIVE / PLAN behaviour fix (known predictor issues
+  stay open; this pass only re-frames the display / analysis).
+- [ ] M06-R12-P02 No terminal-cache reuse.
+- [ ] M06-R12-P03 No frozen-COAST contact validator added.
+- [ ] M06-R12-P04 No SIM-COLL-01 change.
+- [ ] M06-R12-P05 No TFD-1 / TFD-2 fix (remain deferred post-M06).
+- [ ] M06-R12-P06 No autoland change.
+- [ ] M06-R12-P07 No `sync_orbit` / `B x3` change.
+- [ ] M06-R12-P08 No M07 start; no test weakening / deletion; no commit / push
+  of R12 work until its own verification passes.
+- [ ] M06-R12-P09 No SOI physics, no patched conics, no gravity-model switch,
+  no orbit stabilization, no binary-ephemeris change, no `Simulation` state
+  mutation, no collision / transfer / landing / guidance change; physics stays
+  `WORLD / INERTIAL`.
+
+### M06-R12-H — Human verification (closeout)
+
+- [ ] M06-R12-H01 Human: with the ship in a bounded companion orbit, confirm
+  AUTO shows COMPANION (clean near-circular trace), WORLD still shows the
+  rounded-square / rosette, and the PRIMARY / COMPANION fixed modes show the
+  same underlying physics in their respective frames; confirm the debug panel's
+  `PRED FRAME` / `REF SEGMENT` / `EPS` / `DOM` / `WIND` / `RATIO` / `CONFIRM`
+  read sensibly and `PHYSICS = WORLD / INERTIAL` is always shown.
+- [ ] M06-R12-H02 Human: confirm F5 / F6 / F7 / F8 switch the display frame,
+  F2 / F3 / F4 still switch the prediction policy, and no cross-frame
+  connecting line is drawn across an AUTO segment boundary (the transition
+  marker is visible instead).

@@ -113,6 +113,26 @@ attitude state is inside the existing descent gates. Otherwise it remains in
 canonical terminal algorithm is not modified; the gate must reuse the same
 terminal machinery so the two cannot diverge.
 
+`M06-R12` is a bounded post-M06 diagnostic / presentation hardening pass: it
+adds a prediction REFERENCE-FRAME architecture. All prediction propagation
+stays in the inertial / world frame; R12 only adds a display / analysis layer
+with three inertial frames (WORLD = the existing barycentric frame, unchanged
+and still available; PRIMARY = body-0 centred; COMPANION = body-1 centred) plus
+an AUTO mode that runs a pure orbit-reference classifier (specific-energy,
+self-vs-tidal acceleration dominance, unwrapped angular sweep, radial ratio,
+and angular consistency over a short bounded window, with enter/release
+hysteresis) over the already-computed inertial samples to pick the most
+meaningful reference frame per segment. The frame transform is inertial
+subtraction only (`ship - body position - body velocity`; no rotation; no
+body-fixed / rotating frame; no SOI / patched conics / gravity switch / orbit
+stabilization; `Simulation` is never mutated). AUTO segments the displayed path
+per frame with visible transition markers (no cross-frame connector). This is
+the pass following the bounded post-M06 hardening (R8 harness, R9 predictor
+overlay, R10 record-only, R11 diagnostics); it changes no physics and defers
+all known predictor / transfer defects (PRED-01..08, SIM-COLL-01,
+TFD-1 / TFD-2). Full atomic requirements, thresholds, and the 14-test
+verification live in `TASKS.md` (## M06-R12).
+
 All M06 flight-computer additions follow the canonical HOT / WARM / COLD
 computational rate tiers:
 
@@ -122,9 +142,11 @@ computational rate tiers:
 fixed small bounds; COLD = bounded numerical planning, warm-started when
 practical, never blocking or advancing simulation time.)
 
-`M06` remains open while `M06-R3`, `M06-R4`, `M06-R5`, `M06-R6`, and `M06-R7`
-are implemented, the remaining `M06-R2` feature set, and the unresolved human
-verification items are pending.
+`M06` remains open while the bounded post-M06 hardening passes complete —
+`M06-R8` (subsystem-isolation harness), `M06-R9` (predictor overlay), `M06-R10`
+(record-only), `M06-R11` (diagnostics), and `M06-R12` (prediction reference-
+frame architecture) — and the unresolved human verification items resolve;
+`M06-R2`..`M06-R7` are code-complete (see `TASKS.md`).
 
 `M07` is not active.
 

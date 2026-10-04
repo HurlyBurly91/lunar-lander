@@ -75,14 +75,26 @@ struct DebugCommonReadout {
     double y{};
     int reference_body{};
     int target_body{};
+    std::string reference_label;  // "PRIMARY" / "COMPANION" / "BODY<n>" / "NONE"
+    std::string target_label;
     bool landed{false};
     bool crashed{false};
-    double altitude{};         // m, above the reference body's terrain
-    double radial_velocity{};  // m/s, + away from the reference body
-    double tangential_velocity{};  // m/s, local frame
-    double relative_speed{};   // m/s, vs the contract-destination pad
+    double altitude{};         // signed m, above the reference body's terrain
+    double radial_velocity{};  // m/s, + away from the reference body centre
+    double tangential_velocity{};  // m/s, body-centre frame
+    double relative_speed{};   // m/s, vs the contract-destination body centre
 };
 DebugCommonReadout make_common_readout(const Simulation& sim);
+
+// Make a readout's reference / target body identity explicit instead of a bare
+// index: "PRIMARY" for 0, "COMPANION" for 1, "BODY<n>" otherwise, "NONE" for an
+// unset (-1) slot. Header-only so the headless tests can assert on it directly.
+inline std::string debug_body_label(int index) {
+    if (index == 0) return "PRIMARY";
+    if (index == 1) return "COMPANION";
+    if (index < 0) return "NONE";
+    return "BODY" + std::to_string(index);
+}
 
 // A fixed, per-mode scenario seed so each mode's startup fixture is fully
 // reproducible and independent of `--seed` (M06-R8-04 / D04). `None` returns 0

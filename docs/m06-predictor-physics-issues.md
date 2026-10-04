@@ -6,6 +6,18 @@ Diagnosis and any fix belong to a **bounded post-M06 predictor/physics
 hardening pass** (scoped separately; *not* M07, and *not* an expansion of M06's
 accepted scope). The M06 **predictor subsystem is NOT accepted** on this basis.
 
+**M06-R11 Pass 1 (2026-10-03) — diagnostics only.** A first bounded pass of the
+hardening effort corrected the *diagnostic readouts* so the debug panels tell
+the truth (see the "M06-R11 — Pass 1 outcome" section at the end): the debug
+font now renders every diagnostic character, the common readout's altitude is
+body-relative and signed, the PE/AP / clearance / contact / horizon / frame
+readouts are relabelled with explicit bodies + units, and the debug orbit
+fixture uses the selected body's own terrain/mu. **No issue in this file was
+fixed by Pass 1**: every PRED / SIM-COLL issue below remains **OPEN**. Two
+symptoms were *partially* improved (PRED-01's marker now carries an in-scene
+label; PRED-06's predictor readout is relabelled MIN R / MAX R) but their
+underlying quantitative verification is still deferred to a later pass.
+
 This is a *record of symptoms + code-grounded observations + candidate causes*.
 Where a root cause is not proven it is explicitly marked **UNPROVEN** and must
 be resolved by the quantitative test specified for that issue. Do **not** read a
@@ -395,3 +407,92 @@ When this is picked up:
 - The frozen-COAST validator (PRED-05) and the companion scenarios (PRED-08)
   are the entry points; the remaining issues (PRED-01 / 02 / 03 / 04 / 06 / 07,
   SIM-COLL-01) should be resolved *using* those, not by ad-hoc visual checks.
+
+---
+
+## M06-R11 — Pass 1 outcome (diagnostics-only; all issues remain OPEN)
+
+Pass 1 made the debug **readouts** trustworthy. It deliberately changed **no**
+predictor / controller physics, so **none** of the issues above is closed.
+
+### Confirmed and corrected in Pass 1 (readouts / debug fixture only)
+
+- **Debug font actually renders.** `src/gui.cpp` `glyph()` (now delegating to
+  the headless helpers in `include/lander/debug_font.hpp`,
+  `debug_font::normalize` / `debug_font::visible`) maps lowercase ASCII to
+  uppercase and draws `[` / `]`; the supported set is space, `A-Z`, `0-9`,
+  `- + . : / = % ! ( ) , [ ]`. Diagnostic labels that were silently blanking
+  (lowercase, brackets) now render.
+- **Body-relative, signed altitude.** `make_common_readout`
+  (`src/debug_subsystem.cpp`) computes the common `R-ALT` from the **selected
+  reference body's** terrain (`bin.body(ref).terrain`) and its tidal rotation
+  (`bin.body_rotation`) via `altitude_at`, no longer the primary terrain +
+  `local_up_angle`. The value is **signed** (negative below the surface); zero
+  means invalid, not a clamped altitude.
+- **Reference identity made explicit.** The common readout now shows
+  `REF <PRIMARY|COMPANION>(#n)` and `TGT <...>(#n)` so the altitude / V-REL are
+  never attributed to an unnamed body. The production gravitational-reference
+  selection (`reference_body_for`) was **not** altered; where it keeps the
+  reference on the primary for a small-body near orbit, the readout says so
+  rather than implying the orbit body.
+- **Meaning / units relabelled:** manual `SURF VR/VT` → body-centre-relative
+  (not surface-relative); common `V-REL` → target **body-centre** relative (not
+  pad-relative); predictor `PE/AP` (min/max body-centre radius) → `MIN R` /
+  `MAX R` (this is *not* the flight-computer / node-edit apsis, which is a
+  genuine local-extremum and stays `PE/AP`); clearance → `CLR-PT`
+  reference-**point** clearance computed with `altitude_at` per sample for both
+  bodies; contact `T+` → `ETA` (`contact.time − sim_time`) with the absolute
+  `t=` shown separately; horizon → steps **+ seconds** and the available
+  forecast duration when partly filled; rolling-predictor readouts are visually
+  distinct from long COAST/PLAN; every world-frame position/velocity/distance is
+  labelled `W` (world/inertial); unavailable values show an explicit state.
+- **Closest-approach marker labelled.** The amber CP square in the scene
+  (`draw_trajectory`, `src/gui.cpp`) is now labelled with its **destination
+  body** and ETA (`CP <body> T<+eta>s`). This addresses PRED-01's *label* part
+  only; the quantitative rendered-vs-numeric position-agreement check and the
+  destination-pad reference explanation remain OPEN in PRED-01 / PRED-07.
+- **Debug orbit fixture uses the selected body.** `place_in_orbit(body)`
+  (`src/debug_subsystem.cpp`) now uses the selected body's
+  `terrain`/`max_surface_radius`, `mu`, `position(body,0)` and
+  `velocity(body,0)` (previously the primary terrain + `cfg.mu`). Direction
+  convention and the +20 m clearance are preserved.
+
+### Debug autoland scenario vs the passing V14 fixtures (delta, left unchanged)
+
+- The live debug autoland scenario (autoland-companion / primary / cross) is a
+  **near-surface (+20 m above the selected body's terrain), live-stepped,
+  full-`LandingAutopilot`-armed** fixture that runs through the normal
+  simulation / control loop.
+- The passing V14 test fixtures
+  (`tests/test_landing_zem_zev.cpp`, `make_flying_sim`) are **high (~+900 m,
+  primary-only), analytic, never-stepped** orbits with a *constant* gravity
+  field used to validate the terminal-velocity guidance *algorithm* in
+  isolation, not a live landing campaign.
+- The two therefore differ in altitude, body count, stepping, and arm state;
+  the debug scenario is a developer **initializer** (also the B×3 /
+  `sync_orbit` developer command), **not** a validated stationary
+  companion-orbit fixture, and was **left unchanged** by Pass 1.
+
+### What must remain OPEN after Pass 1
+
+- **PRED-01** — marker now labelled, but the rendered-position-vs-numeric and
+  destination-pad-reference verification is still owed. **OPEN.**
+- **SIM-COLL-01** — no contact-detection / sub-step-localisation change was
+  made (out of Pass 1 scope). **OPEN.**
+- **PRED-02** — predicted-contact below-surface localisation / surface-mismatch
+  unchanged. **OPEN.**
+- **PRED-03** — gravity-model primary-centricity unchanged (the code already
+  sums both fields; quantification still owed). **OPEN.**
+- **PRED-04** — both-body companion-collision behaviour unchanged. **OPEN.**
+- **PRED-05** — frozen-COAST quantitative truth comparison does not exist yet.
+  **OPEN.**
+- **PRED-06** — predictor `MIN R` / `MAX R` now labelled with the reference
+  body, but reference-selection / switch behaviour in a companion-bound orbit
+  is still unverified. **OPEN.**
+- **PRED-07** — CP marker now shows body + ETA, but a frozen-coast CP accuracy
+  comparison is still owed. **OPEN.**
+- **PRED-08** — no deterministic companion-specific scenarios added yet.
+  **OPEN.**
+
+The frozen-COAST validator (PRED-05) and the companion scenarios (PRED-08)
+remain the entry points for Pass 2 and beyond.

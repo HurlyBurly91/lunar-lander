@@ -19,14 +19,22 @@ namespace {
 // centre, with tangential velocity equal to the circular-orbit speed plus the
 // body's own barycentric velocity. Pure with respect to the binary (it only
 // sets the ship state).
+//
+// M06-R11: the orbit radius and speed now come from the SELECTED body's own
+// terrain and gravitational parameter (b.terrain, b.mu), not from the primary
+// terrain and cfg.mu (the primary's mu). The previous code produced a wrong
+// (too large) radius and wrong (too slow) circular speed for a companion
+// orbit, because the companion is ~1/9 the primary's radius with ~1/81 its mu.
+// The direction convention (due north, tangential = circular speed + body
+// barycentric velocity) and the +20 m clearance are preserved.
 void place_in_orbit(Simulation& sim, int body) {
     const Config& cfg = sim.config();
     const BinarySystem& bin = sim.binary();
-    const Terrain& terrain = sim.terrain();
-    const double r = terrain.max_surface_radius() + 20.0;
+    const Body& b = bin.body(body);
+    const double r = b.terrain.max_surface_radius() + 20.0;
     const Vec2 p0 = bin.position(body, 0.0);
     const Vec2 v0 = bin.velocity(body, 0.0);
-    const double speed = std::sqrt(cfg.mu / r);
+    const double speed = std::sqrt(b.mu / r);
     State orbit{};
     orbit.x = p0.x;
     orbit.y = p0.y + r;
@@ -152,27 +160,35 @@ bool keeps_prediction_overlay(DebugSubsystem mode) {
 DebugCommonReadout make_common_readout(const Simulation& sim) {
     DebugCommonReadout r;
     const State& st = sim.state();
-    r.sim_time = sim.sim_time();
+    const double t = sim.sim_time();
+    r.sim_time = t;
     r.x = st.x;
     r.y = st.y;
     r.reference_body = sim.reference_body();
     r.target_body = sim.contract().destination_body;
+    r.reference_label = debug_body_label(r.reference_body);
+    r.target_label = debug_body_label(r.target_body);
     r.landed = st.landed;
     r.crashed = st.crashed;
 
     const BinarySystem& bin = sim.binary();
-    const Terrain& terrain = sim.terrain();
-    const Vec2 ref_pos = bin.position(r.reference_body, sim.sim_time());
-    const Vec2 ref_vel = bin.velocity(r.reference_body, sim.sim_time());
-    const double rot = local_up_angle(st, ref_pos);
-    r.altitude = altitude_at(terrain, st, ref_pos, rot);
+    const Vec2 ref_pos = bin.position(r.reference_body, t);
+    const Vec2 ref_vel = bin.velocity(r.reference_body, t);
+    // M06-R11: altitude is measured against the SELECTED reference body's own
+    // terrain, using that body's tidal rotation at time t -- not the primary
+    // terrain and not local_up_angle (a per-point world up that is not the
+    // tidal-frame rotation altitude_at expects). The value stays signed so a
+    // sub-surface reading is not silently clamped to zero or blanked.
+    const Terrain& ref_terrain = bin.body(r.reference_body).terrain;
+    const double rot = bin.body_rotation(t);
+    r.altitude = altitude_at(ref_terrain, st, ref_pos, rot);
     const LocalVelocity lv = local_velocity(st, ref_pos, ref_vel);
     r.radial_velocity = lv.radial;
     r.tangential_velocity = lv.tangential;
 
     // Relative speed of the ship with respect to the contract-destination
-    // body's inertial velocity.
-    const Vec2 dest_vel = bin.velocity(r.target_body, sim.sim_time());
+    // body's centre (inertial) velocity -- body-centre, not the pad.
+    const Vec2 dest_vel = bin.velocity(r.target_body, t);
     const double rvx = st.vx - dest_vel.x;
     const double rvy = st.vy - dest_vel.y;
     r.relative_speed = std::hypot(rvx, rvy);

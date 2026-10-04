@@ -13,6 +13,7 @@
 //
 // No SDL dependency; everything runs from the library.
 #include "lander/debug_subsystem.hpp"
+#include "lander/debug_font.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -36,6 +37,8 @@ using lander::Simulation;
 using lander::State;
 using lander::TransferDebugResult;
 using lander::TransferMidcourse;
+using lander::Vec2;
+using lander::altitude_at;
 using lander::ZeroEffortQuery;
 using lander::debug_scenario_seed;
 using lander::debug_subsystem_description;
@@ -341,6 +344,177 @@ void test_predictor_keeps_prediction_overlay() {
     }
 }
 
+// M06-R11 (FIX 1): the embedded 5x7 debug font's character coverage.
+// glyph() in gui.cpp delegates to lander::debug_font, so proving that every
+// character the diagnostic panels print is "visible" proves those strings
+// actually render (lowercase and square brackets no longer silently fall
+// through to blank space). Runs headless: no SDL, no GUI build.
+void test_debug_font_coverage() {
+    // normalize(): lowercase -> uppercase; everything else passes through.
+    check(lander::debug_font::normalize('a') == 'A', "normalize a->A");
+    check(lander::debug_font::normalize('z') == 'Z', "normalize z->Z");
+    check(lander::debug_font::normalize('A') == 'A', "normalize A->A");
+    check(lander::debug_font::normalize('5') == '5', "normalize digit");
+    check(lander::debug_font::normalize('-') == '-', "normalize punct");
+
+    // visible(): every supported character (including lowercase via
+    // normalize) renders; every clearly-unsupported one does not (the old
+    // silent-blank failure mode).
+    const char supported[] = {' ', 'A', 'Z', '0', '9', '-', '+', '.', ':',
+                              '/', '=', '%', '!', '(', ')', ',', '[', ']',
+                              'a', 'z'};
+    for (const char c : supported) {
+        check(lander::debug_font::visible(c), "visible: supported char");
+    }
+    const char unsupported[] = {'#', '{', '}', '@', '?', '<', '>', '\\',
+                                '|', '~', '^', '"', '\'', '`'};
+    for (const char c : unsupported) {
+        check(!lander::debug_font::visible(c), "not visible: unsupported");
+    }
+
+    // The exact label strings the debug panels print (M06-R11 FIX 3) must
+    // consist entirely of renderable characters, or a human reading the
+    // panel would see missing glyphs.
+    const char* labels[] = {
+        "frames: W=inertial(world) R=ref-surface B=body-centre(rot)",
+        "B VR/VT (body-centre frame)",
+        "B V-REL (vs target body centre)",
+        "R-ALT", "B V-REL", "MIN R", "MAX R", "CLR-PT",
+        "(ref body, W)", "(ref-pt clearance, both bodies)", "(no forecast)",
+        "ETA", "(not primed)", "primed", "avail", "SAMPLES", "HORIZON",
+        "CP %s T%+.0fs", "ROLLING MODE", "PRED", "LAND", "CRASH"};
+    for (const char* s : labels) {
+        for (const char* p = s; *p; ++p) {
+            check(lander::debug_font::visible(*p), "label char is renderable");
+        }
+    }
+}
+
+// M06-R11 (FIX 2): the common readout's altitude is measured against the
+// SELECTED reference body's own terrain and tidal rotation, matches an
+// independent altitude_at call, and stays signed (a sub-surface reading is
+// negative, never clamped to zero or blanked).
+void test_body_relative_altitude() {
+    // In flight near the primary (unstepped): the reference body stays 0, so
+    // the readout's altitude must equal an independent altitude_at against
+    // body 0's terrain + rotation at t=0, and be positive (orbit above the
+    // surface).
+    {
+        Simulation sim;
+        sim.reset(777);
+        const auto& bin = sim.binary();
+        const lander::Body& b = bin.body(0);
+        const double r = b.terrain.max_surface_radius() + 20.0;
+        const Vec2 p0 = bin.position(0, 0.0);
+        const Vec2 v0 = bin.velocity(0, 0.0);
+        const double speed = std::sqrt(b.mu / r);
+        State st{};
+        st.x = p0.x;
+        st.y = p0.y + r;
+        st.vx = v0.x + speed;
+        st.vy = v0.y;
+        st.fuel = sim.config().fuel;
+        sim.set_state(st);
+
+        const auto c = make_common_readout(sim);
+        check(c.reference_body == 0, "readout reference body is the primary");
+        check(c.reference_label == "PRIMARY", "reference_label is PRIMARY");
+        const double independent =
+            altitude_at(b.terrain, sim.state(), p0, bin.body_rotation(0.0));
+        check_close(c.altitude, independent, 1e-9, "altitude == independent");
+        check(c.altitude >= 20.0 - 1e-6, "orbit clears the surface by ~20 m");
+        check(std::isfinite(c.radial_velocity) &&
+                  std::isfinite(c.tangential_velocity),
+              "finite body-centre velocities");
+    }
+
+    // Deep inside the primary body: the altitude must be NEGATIVE (signed),
+    // proving the sub-surface case is not clamped to zero or blanked.
+    {
+        Simulation sim;
+        sim.reset(888);
+        const auto& bin = sim.binary();
+        const Vec2 p0 = bin.position(0, 0.0);
+        State st{};
+        st.x = p0.x;
+        st.y = p0.y + 1.0;  // 1 m from the centre: deep inside the terrain
+        sim.set_state(st);
+
+        const auto c = make_common_readout(sim);
+        const double independent =
+            altitude_at(bin.body(0).terrain, sim.state(), p0,
+                        bin.body_rotation(0.0));
+        check_close(c.altitude, independent, 1e-9, "sub-surface altitude ==");
+        check(c.altitude < 0.0, "sub-surface altitude is negative (signed)");
+        check(c.reference_body == 0, "primary reference when not stepped");
+    }
+}
+
+// A minimal owner of the live subsystems so a fixture's effect can be
+// inspected against the simulation's binary (kept alive for each test).
+struct Harness {
+    Simulation sim{};
+    RecedingHorizonPredictor live{};
+    RecedingHorizonPredictor coast{};
+    NodeExecutor exec{};
+    TransferMidcourse mc{};
+    LandingAutopilot ap{};
+    AttitudeMode att = AttitudeMode::Off;
+    TransferDebugResult tdbg{};
+    LandingConfig lcfg{};
+    ZeroEffortQuery ze = [](double) { return BallisticState{}; };
+    std::optional<ManeuverNode> node;
+
+    void setup(DebugSubsystem m) {
+        DebugSubsystems s{sim, exec, mc, ap, live, coast, lcfg, node, att,
+                          &tdbg, ze};
+        setup_debug_scenario(m, s);
+    }
+};
+
+// M06-R11 (FIX 3): place_in_orbit uses the SELECTED body's own terrain and mu
+// (not the primary's) for the orbit radius and circular speed, preserving the
+// +20 m clearance and the due-north / tangential direction convention.
+void test_orbit_fixture_primary() {
+    Harness h;
+    h.setup(DebugSubsystem::Predictor);  // place_in_orbit(sim, 0)
+    const auto& bin = h.sim.binary();
+    const lander::Body& b = bin.body(0);
+    const double r = b.terrain.max_surface_radius() + 20.0;
+    const Vec2 p0 = bin.position(0, 0.0);
+    const Vec2 v0 = bin.velocity(0, 0.0);
+    const double speed = std::sqrt(b.mu / r);
+    const State st = h.sim.state();
+    check_close(st.x, p0.x, 1e-9, "primary orbit x = body x");
+    check_close(st.y, p0.y + r, 1e-9, "primary orbit y = body y + r");
+    check_close(st.vx, v0.x + speed, 1e-9, "primary orbit vx = v0.x + circ");
+    check_close(st.vy, v0.y, 1e-9, "primary orbit vy = v0.y");
+    const double alt = altitude_at(b.terrain, st, p0, bin.body_rotation(0.0));
+    check(alt > 0.0, "primary orbit clears its own surface");
+}
+
+// M06-R11 (FIX 3): the companion-orbit fixture uses the companion's own
+// (much smaller) terrain radius and mu, not the primary's -- the old code
+// produced a too-large radius and too-slow circular speed here.
+void test_orbit_fixture_companion() {
+    Harness h;
+    h.setup(DebugSubsystem::AutolandCompanion);  // place_in_orbit(sim, 1)
+    const auto& bin = h.sim.binary();
+    const lander::Body& b = bin.body(1);
+    const double r = b.terrain.max_surface_radius() + 20.0;
+    const Vec2 p0 = bin.position(1, 0.0);
+    const Vec2 v0 = bin.velocity(1, 0.0);
+    const double speed = std::sqrt(b.mu / r);
+    const State st = h.sim.state();
+    check_close(st.x, p0.x, 1e-9, "companion orbit x = body x");
+    check_close(st.y, p0.y + r, 1e-9, "companion orbit y = body y + r");
+    check_close(st.vx, v0.x + speed, 1e-9, "companion orbit vx = v0.x + circ");
+    check_close(st.vy, v0.y, 1e-9, "companion orbit vy = v0.y");
+    const double alt = altitude_at(b.terrain, st, p0, bin.body_rotation(0.0));
+    check(alt > 0.0, "companion orbit clears its own surface");
+    check(r < 100.0, "companion orbit radius is on the companion's scale");
+}
+
 }  // namespace
 
 int main() {
@@ -351,6 +525,10 @@ int main() {
     test_determinism();
     test_landing_debug_getters();
     test_predictor_keeps_prediction_overlay();
+    test_debug_font_coverage();
+    test_body_relative_altitude();
+    test_orbit_fixture_primary();
+    test_orbit_fixture_companion();
 
     if (failures == 0) {
         std::printf("All lander_debug_subsystem_tests passed\n");

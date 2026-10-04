@@ -24,6 +24,7 @@
 #include "lander/binary.hpp"
 #include "lander/ballistic.hpp"
 #include "lander/camera.hpp"
+#include "lander/debug_font.hpp"
 #include "lander/debug_subsystem.hpp"
 #include "lander/flight_computer.hpp"
 #include "lander/guarded_actions.hpp"
@@ -204,9 +205,17 @@ constexpr Glyph kGlyphRParen = {
     {0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08}};
 constexpr Glyph kGlyphComma = {
     {0, 0, 0, 0, 0, 0x04, 0x08}};
+constexpr Glyph kGlyphLBracket = {
+    {0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E}};
+constexpr Glyph kGlyphRBracket = {
+    {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}};
 
+// M06-R11: glyph() renders whatever the debug font understands; the exact
+// character set (uppercase + digits + punctuation, with lowercase normalized to
+// uppercase) is defined by lander::debug_font so it stays testable headlessly.
 const Glyph* glyph(char c) {
-    switch (c) {
+    const int n = lander::debug_font::normalize(c);
+    switch (n) {
         case 'A': return &kGlyphA;
         case 'B': return &kGlyphB;
         case 'C': return &kGlyphC;
@@ -254,6 +263,8 @@ const Glyph* glyph(char c) {
         case '(': return &kGlyphLParen;
         case ')': return &kGlyphRParen;
         case ',': return &kGlyphComma;
+        case '[': return &kGlyphLBracket;
+        case ']': return &kGlyphRBracket;
         default: return &kGlyphSpace;
     }
 }
@@ -1216,8 +1227,9 @@ void draw_line_simple(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
 }
 
 void draw_trajectory(SDL_Renderer* renderer,
-                     const lander::TrajectoryPrediction& prediction,
-                     const lander::Camera& cam, bool has_node) {
+                      const lander::TrajectoryPrediction& prediction,
+                      const lander::Camera& cam, bool has_node,
+                      const lander::Simulation& sim) {
     auto draw_path = [&](const std::vector<lander::Vec2>& points, Color color) {
         for (size_t i = 0; i + 1 < points.size(); ++i) {
             const Vec2 a = to_screen(points[i].x, points[i].y, cam);
@@ -1255,6 +1267,15 @@ void draw_trajectory(SDL_Renderer* renderer,
                                   prediction.closest.target_position.y, cam);
         fill_rect(renderer, static_cast<int>(p.x) - 3,
                   static_cast<int>(p.y) - 3, 6, 6, make_color(255, 196, 64));
+        // M06-R11: the amber square is the closest approach to the destination
+        // body's pad; label it with that body and the time-to-approach (ETA)
+        // so the marker is self-explanatory in the scene.
+        const int dest = sim.contract().destination_body;
+        char label[32];
+        std::snprintf(label, sizeof label, "CP %s T%+.0fs", body_name(dest),
+                      prediction.closest.time - sim.sim_time());
+        draw_text(renderer, label, static_cast<int>(p.x) + 8,
+                  static_cast<int>(p.y) + 4, 1, make_color(255, 196, 64));
     }
 
     if (prediction.peri.valid) {
@@ -1664,21 +1685,31 @@ void draw_debug_subsystem_panel(
     line(lander::debug_subsystem_description(mode), dim);
     std::snprintf(buffer, sizeof buffer, "T %8.2f s", common.sim_time);
     line(buffer, white);
-    std::snprintf(buffer, sizeof buffer, "BODY %-2d   TARGET %-2d",
-                  common.reference_body, common.target_body);
+    // M06-R11: make the reference / target body identity explicit (a named
+    // body, not a bare index) and label every frame. Frames used below:
+    //   W  = world / inertial frame (fixed barycentric axes)
+    //   R  = the reference body's surface (altitude is relative to it)
+    //   B  = body-centre-relative (rotating with the tidal spin)
+    std::snprintf(buffer, sizeof buffer, "REF %-10s(#%d)  TGT %-10s(#%d)",
+                  common.reference_label.c_str(), common.reference_body,
+                  common.target_label.c_str(), common.target_body);
     line(buffer, white);
     const std::string state =
         common.crashed ? "CRASHED" : (common.landed ? "LANDED" : "FLIGHT");
-    std::snprintf(buffer, sizeof buffer, "STATE %-7s  X %8.1f  Y %8.1f",
+    std::snprintf(buffer, sizeof buffer,
+                  "STATE %-7s  W X %7.0f  W Y %7.0f",
                   state.c_str(), common.x, common.y);
     line(buffer, common.crashed ? red : white);
-    std::snprintf(buffer, sizeof buffer, "ALT %7.1f m   VR %6.2f  VT %6.2f",
+    std::snprintf(buffer, sizeof buffer,
+                  "R-ALT %7.1f m  B VR %+6.1f  B VT %+6.1f",
                   common.altitude, common.radial_velocity,
                   common.tangential_velocity);
     line(buffer, dim);
-    std::snprintf(buffer, sizeof buffer, "V-REL %8.2f m/s (vs target)",
+    std::snprintf(buffer, sizeof buffer,
+                  "B V-REL %8.2f m/s  (vs target body centre)",
                   common.relative_speed);
     line(buffer, dim);
+    line("frames: W=inertial(world) R=ref-surface B=body-centre(rot)", dim);
     blank();
 
     // --- Mode-specific detail section for the isolated subsystem. ---
@@ -1712,8 +1743,12 @@ void draw_debug_subsystem_panel(
             const lander::LocalVelocity lv =
                 lander::local_velocity(st, bin.position(ref, t),
                                        bin.velocity(ref, t));
+            // M06-R11: this is the body-CENTRE-relative velocity (the ship's
+            // velocity in the reference body's centre, rotating with the tidal
+            // spin), NOT a surface-relative quantity -- the ship may be far
+            // above the surface, so "surface-relative" was a misleading label.
             std::snprintf(buffer, sizeof buffer,
-                          "  SURF  VR %+7.2f   VT %+7.2f  (ref body)",
+                          "  B  VR %+7.2f   VT %+7.2f  (body-centre frame)",
                           lv.radial, lv.tangential);
             line(buffer, dim);
             std::snprintf(buffer, sizeof buffer,
@@ -1733,9 +1768,14 @@ void draw_debug_subsystem_panel(
             // closest approach, and the low-rate cost of the advance.
             std::snprintf(
                 buffer, sizeof buffer,
-                "  MODE  %-5s   [F2]COAST  [F3]LIVE  [F4]PLAN",
+                "  ROLLING MODE %-5s   [F2]COAST  [F3]LIVE  [F4]PLAN",
                 prediction_kind_name(ctx.predictor_kind));
             line(buffer, white);
+            // M06-R11: make explicit that the readouts below are the rolling
+            // predictor's own cache, distinct from the long COAST / PLAN
+            // projected arcs drawn on the scene.
+            line("  (readouts = rolling predictor; COAST/PLAN = long arcs)",
+                 dim);
             std::snprintf(
                 buffer, sizeof buffer,
                 "  CACHE last: %s   rebuild %d  shift %d  invalidate %d",
@@ -1743,14 +1783,34 @@ void draw_debug_subsystem_panel(
                 live_predictor.cold_rebuilds(), live_predictor.shifts(),
                 live_predictor.invalidations());
             line(buffer, live_predictor.cache_hit_last() ? green : amber);
-            std::snprintf(
-                buffer, sizeof buffer,
-                "  HORIZON %4d  SAMPLES %4d  primed %s  terminal %s",
-                live_predictor.horizon_steps(),
-                (int)live_predictor.samples().size(),
-                live_predictor.primed() ? "yes" : "no",
-                live_predictor.terminal() ? "yes" : "no");
-            line(buffer, white);
+            // M06-R11: show the horizon in both steps and seconds, the sample
+            // count in both steps and seconds (the actual available forecast
+            // duration while the ring is filling), and make an empty ring
+            // explicit instead of printing 0 / blank.
+            {
+                const double dt = sim.config().fixed_dt;
+                const int hs = live_predictor.horizon_steps();
+                const int n = (int)live_predictor.samples().size();
+                if (n == 0) {
+                    std::snprintf(buffer, sizeof buffer,
+                                  "  HORIZON %4d(%5.1fs)  SAMPLES --  (not primed)",
+                                  hs, hs * dt);
+                    line(buffer, dim);
+                } else {
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  HORIZON %4d(%5.1fs)  SAMPLES %4d(%5.1fs)",
+                        hs, hs * dt, n, n * dt);
+                    line(buffer, white);
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  primed %-3s  terminal %-3s  avail %5.1f s",
+                        live_predictor.primed() ? "yes" : "no",
+                        live_predictor.terminal() ? "yes" : "no",
+                        n * dt);
+                    line(buffer, dim);
+                }
+            }
             const auto& sig = ctx.predictor_signature;
             std::snprintf(
                 buffer, sizeof buffer,
@@ -1766,39 +1826,60 @@ void draw_debug_subsystem_panel(
             }
             const auto& contact = live_predictor.contact();
             if (contact.valid) {
+                // M06-R11: show an ETA (contact time minus now), the absolute
+                // time labelled separately, the named contact body, and the
+                // world-frame contact position.
+                const int cbody =
+                    contact.landed ? contact.body : contact.crash_body;
                 std::snprintf(
                     buffer, sizeof buffer,
-                    "  PRED  %s  body %d  T+%6.1f s  (%5.0f,%5.0f)",
+                    "  PRED  %s  %-10s#%d  ETA %5.1f s (t=%6.1f)  W(%4.0f,%4.0f)",
                     contact.landed ? "LAND" : "CRASH",
-                    contact.landed ? contact.body : contact.crash_body,
-                    contact.time, contact.position.x, contact.position.y);
+                    lander::debug_body_label(cbody).c_str(), cbody,
+                    contact.time - t, contact.time,
+                    contact.position.x, contact.position.y);
                 line(buffer, contact.landed ? green : red);
             } else {
                 line("  PRED  -- no contact in horizon", dim);
             }
-            // PE / AP and terrain clearance: a cheap O(samples) scan of the
-            // projection ring against both bodies' predicted positions.
-            double pe = 1e300, ap = -1e300, clr = 1e300;
+            // M06-R11: min / max body-centre radius over the horizon (the old
+            // "PE / AP" -- these are NOT apsis-finding, just the closest and
+            // farthest reference body-centre distance in the ring) and the
+            // reference-POINT clearance, now computed with the same terrain
+            // altitude the readout uses (altitude_at per sample, per body)
+            // instead of r - reference_radius (a constant that ignores the
+            // actual terrain shape).
             const int dest = sim.contract().destination_body;
-            for (const auto& smp : live_predictor.samples()) {
-                for (int b = 0; b < 2; b++) {
-                    const lander::Vec2 bp = bin.position(b, smp.time);
-                    const double r =
-                        std::hypot(smp.state.x - bp.x, smp.state.y - bp.y);
-                    if (b == ref) {
-                        pe = std::min(pe, r);
-                        ap = std::max(ap, r);
+            double min_r = 1e300, max_r = -1e300, clr = 1e300;
+            const int nscan = (int)live_predictor.samples().size();
+            if (nscan == 0) {
+                line("  MIN R --  MAX R --  CLR-PT --  (no forecast)", dim);
+            } else {
+                for (const auto& smp : live_predictor.samples()) {
+                    for (int b = 0; b < 2; b++) {
+                        const lander::Vec2 bp = bin.position(b, smp.time);
+                        const double r =
+                            std::hypot(smp.state.x - bp.x,
+                                       smp.state.y - bp.y);
+                        if (b == ref) {
+                            min_r = std::min(min_r, r);
+                            max_r = std::max(max_r, r);
+                        }
+                        const double alt = lander::altitude_at(
+                            bin.body(b).terrain, smp.state, bp,
+                            bin.body_rotation(smp.time));
+                        clr = std::min(clr, alt);
                     }
-                    clr = std::min(
-                        clr, r - bin.body(b).reference_radius);
                 }
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  MIN R %7.1f  MAX R %7.1f m  (ref body, W)", min_r, max_r);
+                line(buffer, dim);
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  CLR-PT %7.1f m  (ref-pt clearance, both bodies)", clr);
+                line(buffer, clr < 15.0 ? red : dim);
             }
-            std::snprintf(buffer, sizeof buffer,
-                          "  PE  %7.1f m   AP  %7.1f m  (ref body)", pe, ap);
-            line(buffer, dim);
-            std::snprintf(buffer, sizeof buffer,
-                          "  CLEAR %7.1f m  (min to terrain, both bodies)", clr);
-            line(buffer, clr < 15.0 ? red : dim);
             // Closest approach to the destination pad point over the ring.
             const auto& dterrain = bin.body(dest).terrain;
             double pad_closest = 1e300;
@@ -3416,7 +3497,7 @@ int main(int argc, char** argv) {
             // follows the selected kind.
             if (prediction_valid && !s.landed) {
                 draw_trajectory(renderer, prediction, cam,
-                                maneuver_node.has_value());
+                                maneuver_node.has_value(), sim);
             }
             if (!s.landed) {
                 draw_live_prediction(renderer, live_predictor, sim, cam);
@@ -3426,7 +3507,7 @@ int main(int argc, char** argv) {
                    !paused) {
             if (prediction_valid && !s.landed) {
                 draw_trajectory(renderer, prediction, cam,
-                                maneuver_node.has_value());
+                                maneuver_node.has_value(), sim);
             }
             if (!s.landed) {
                 // M06-R3: the powered LIVE projection and its predicted-contact
@@ -3439,7 +3520,7 @@ int main(int argc, char** argv) {
                    !s.crashed && !s.landed && !paused && prediction_valid) {
             // R8-08: keep the pre/post prediction arc visible while editing.
             draw_trajectory(renderer, prediction, cam,
-                            maneuver_node.has_value());
+                            maneuver_node.has_value(), sim);
         }
         lander::DebugCommonReadout debug_common{};
         if (debug_active) {
