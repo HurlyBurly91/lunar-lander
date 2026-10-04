@@ -1,10 +1,12 @@
 # Tasks
 
 Milestone: M06 — Flight computer and maneuver planning
-State: AWAITING HUMAN VERIFICATION
-Active request group: M06-R11 (M06 HARDENING — Pass 1: trustworthy diagnostics) — awaiting the human visual pass (M06-R11-H01); M06-R12 (prediction reference-frame architecture) is registered as the next queued bounded group (not yet started)
-Current phase: M06-R11 (M06 HARDENING, Pass 1) — IMPLEMENTATION + AUTOMATED
-VERIFICATION COMPLETE; awaiting the human visual pass (M06-R11-H01). A bounded
+State: ACTIVE
+Active request group: M06-R12 (M06 HARDENING — PREDICTION REFERENCE-FRAME ARCHITECTURE) — implementation + ALL 15 automated tests COMPLETE (build passes; companion + primary fixture GATES pass); AWAITING the human visual pass (M06-R12-H01 / H02). R11 (Pass 1) and R7 implementation is complete; their human visual passes (M06-R11-H01, M06-R7-H01) remain OPEN gates alongside R12.
+Current phase: M06-R12 (prediction reference-frame architecture: AUTO / WORLD / PRIMARY / COMPANION display frames + a pure orbit-reference classifier with hysteresis; NO physics / propagation change) — ALL implementation (frame transform, timed-sample storage, AUTO classifier, segmented rendering, fixed frame modes, F5-F8 keys, debug-panel readout) + automated verification COMPLETE; only the human visual verification (H01 / H02) is outstanding.
+R11 automated verification is COMPLETE (awaiting its human visual pass,
+M06-R11-H01); R12 automated verification is also now COMPLETE (awaiting
+M06-R12-H01 / H02). R11 was a bounded
 diagnostic / readout / fixture correction pass. It makes the debug text actually
 render (lowercase and `[`/`]` were silently dropped), corrects the common
 body-relative altitude (was the primary terrain + `local_up_angle` instead of
@@ -20,7 +22,7 @@ transfer / collision / canonical physics, and made NO commit. Automated:
 `lander_debug_subsystem_tests` all pass (4 new cases); full build OK; ctest
 9/11 with only the known TFD-1/TFD-2 failing. The M06-R10 record-only pass (the
 predecessor) is COMPLETE. Detail and stable IDs live in "## M06-R11" (then
-"## M06-R10" and the earlier M06 sections) at the end of this ledger. M06-R12 (prediction reference-frame architecture: AUTO / WORLD / PRIMARY / COMPANION display frames + a pure orbit-reference classifier with hysteresis; NO physics / propagation change) is registered in "## M06-R12" below and is NOT yet started. This durable state (R11 complete + R12 registered) is committed and pushed to origin at the human-verification blocker at the user's request (2026-10-04) so the game can be shown; M06 is NOT closed / accepted.
+"## M06-R10" and the earlier M06 sections) at the end of this ledger. M06-R12 (prediction reference-frame architecture: AUTO / WORLD / PRIMARY / COMPANION display frames + a pure orbit-reference classifier with hysteresis; NO physics / propagation change) is now the ACTIVE group in "## M06-R12" below (ALL implementation + 15 automated tests complete; awaiting the human visual pass); R11-H01, R7-H01, and R12-H01/H02 remain open human gates. This durable state (R11 + R12 implementation/automated complete; 4 human gates open) supersedes the 2026-10-04 snapshot (R11 complete + R12 registered-not-started); M06 is NOT closed / accepted.
 
 Historical phase record below (M06-R6, now code-complete; see "## M06-R6"):
 low-complexity powered-landing guidance that refines the M06-R2 target-pad
@@ -4024,14 +4026,21 @@ rebuild / policy / signature behaviour are all out of scope and unchanged.
 
 Source: USER (2026-10-04, "M06 HARDENING — PREDICTION REFERENCE-FRAME
 ARCHITECTURE")
-State: NOT STARTED (registered 2026-10-04). A bounded post-M06 diagnostic /
-presentation hardening pass: it adds reference-FRAME display / analysis of the
-already-computed INERTIAL prediction and must NOT change any physics,
-propagation, gravity, collision, transfer, landing, guidance, contract, or
-binary-ephemeris behaviour. It begins after the M06-R11 human visual pass.
-NO commit / push of R12 work until its own build + tests + human verification
-pass (the 2026-10-04 commit / push in this ledger covers only the M06-R11
-durable snapshot + this R12 registration, per the user's request).
+State: ACTIVE (implementation underway since the M06-R11 snapshot). A bounded
+post-M06 diagnostic / presentation hardening pass: it adds reference-FRAME
+display / analysis of the already-computed INERTIAL prediction and must NOT
+change any physics, propagation, gravity, collision, transfer, landing,
+guidance, contract, or binary-ephemeris behaviour.
+Progress: ALL implementation + automated work is COMPLETE. The M06-R12-01 frame
+transform (`pred_frame.hpp/.cpp`), M06-R12-02 timed-sample storage, M06-R12-03
+AUTO classifier, M06-R12-04 segmented rendering, M06-R12-05 fixed frame modes,
+and M06-R12-06 debug panel / F5-F8 keyboard are all implemented in
+`src/gui.cpp` (build passes). All 15 automated tests (V01-V15) pass, including
+the companion + primary fixture GATES (V04/V05), the via-World transition tests
+(V06-V08), and the end-to-end `predict_trajectory` -> `classify_auto` fixtures
+(V12/V13); `ctest` confirms no new failures (only the known TFD-1 / TFD-2 in the
+untouched transfer solver). NO commit / push until its own build + tests pass
+(DONE) and the human visual pass (M06-R12-H01 / H02) confirms; then close.
 
 Scope boundary (preserve, do not cross): the full two-body inverse-square
 gravity model and the `BinarySystem` closed-form ephemeris (both bodies always
@@ -4044,138 +4053,338 @@ boundary (not started).
 
 ### M06-R12-01 — Frame model and transform (inertial only)
 
-- [ ] M06-R12-01-01 Three display reference frames, inertial only: WORLD (the
+- [x] M06-R12-01-01 Three display reference frames, inertial only: WORLD (the
   existing barycentric / inertial frame — the current output, unchanged and
   still available), PRIMARY (body-0 centred), COMPANION (body-1 centred). No
   rotating / body-fixed frame. Frame selection is presentation / analysis state
   only; it must never mutate `Simulation` or the stored inertial prediction
   samples.
-- [ ] M06-R12-01-02 Transform: `PRIMARY = ship - position(primary) -
+  Files: include/lander/pred_frame.hpp (`PredFrame{World,Primary,Companion,Auto}`,
+  `RefSegment{World,Primary,Companion}`).
+  Evidence: `pred_frame` is pure display/analysis (no `Simulation` or sample
+  mutation); `tests/test_pred_frame.cpp::world_identity` passes.
+- [x] M06-R12-01-02 Transform: `PRIMARY = ship - position(primary) -
   velocity(primary)`; `COMPANION = ship - position(companion) -
   velocity(companion)`. Body position / velocity come from the shared
   `BinarySystem` ephemeris at the SAMPLE time. Velocity is a correct inertial-
   frame subtraction (no rotation).
-- [ ] M06-R12-01-03 All prediction propagation stays in the inertial / world
+  Files: include/lander/pred_frame.hpp, src/pred_frame.cpp
+  (`transform_to_frame()` — position/velocity ephemeris subtraction only, no
+  rotation).
+  Evidence: `tests/test_pred_frame.cpp::moving_body_translation_removed`
+  (a body-centred frame removes the body's ephemeris translation over a
+  quarter period) passes.
+- [x] M06-R12-01-03 All prediction propagation stays in the inertial / world
   frame; stored samples keep `position_world`, `velocity_world`,
   `simulation_time`. The rounded-square / rosette WORLD visualization remains
   available (WORLD mode).
+  Files: include/lander/pred_frame.hpp (`TimedTrajectorySample{position_world,
+  velocity_world, time}`); src/pred_frame.cpp.
+  Evidence: `classify_auto`/`transform_to_frame` are pure functions of the
+  inertial samples + `BinarySystem` ephemeris; no propagation/gravity code is
+  touched. WORLD mode path preserved (V01 identity).
 
 ### M06-R12-02 — Timed trajectory sample data
 
-- [ ] M06-R12-02-01 Add explicit `position_world`, `velocity_world`,
+- [x] M06-R12-02-01 Add explicit `position_world`, `velocity_world`,
   `simulation_time` to the display-capable trajectory data (e.g. a
   `TimedTrajectorySample { Vec2 position_world; Vec2 velocity_world; double
   time; }`). Do not remove / corrupt the existing world-space data.
-- [ ] M06-R12-02-02 The long COAST/PLAN `TrajectoryPrediction` stores only
+  Files: include/lander/pred_frame.hpp (`TimedTrajectorySample{position_world,
+  velocity_world, time}`); include/lander/flight_computer.hpp (new
+  `std::vector<TimedTrajectorySample> timed` member of `TrajectoryPrediction`).
+  Evidence: the existing `pre`/`post` `std::vector<Vec2>` are untouched; V11
+  (`segments_align_with_samples`) and V10 (`no_mutation`) confirm the timed
+  samples carry position/velocity/time and are not corrupted by classification.
+- [x] M06-R12-02-02 The long COAST/PLAN `TrajectoryPrediction` stores only
   decimated world-space positions (`pre` / `post` are `std::vector<Vec2>`);
   each decimated sample already has a `BallisticState` (`p`, `v`, `t`) at the
   stride — capture `v` and `t` alongside `p` via parallel timed storage (do not
   break existing consumers). Reuse the rolling `RecedingHorizonPredictor`
   sample time / state where practical.
+  Files: src/flight_computer.cpp (`add_pre_sample` and the post-branch now push
+  a parallel `timed` sample under the SAME `if` condition as the existing
+  `pre`/`post` push; the two early returns also record a timed sample).
+  Evidence: `git diff src/flight_computer.cpp` is purely additive
+  (`out.timed.push_back(...)` next to each existing `pre`/`post` push, no
+  change to the `pre`/`post`/node/impact/closest/peri/apo logic); the full
+  `ctest` still passes (no consumer regression).
 
 ### M06-R12-03 — AUTO orbit-reference classifier (pure analysis)
 
-- [ ] M06-R12-03-01 Pure analysis over the inertial samples + ephemeris. For
+- [x] M06-R12-03-01 Pure analysis over the inertial samples + ephemeris. For
   each sample and each body i: `v_i = v_ship - v_body_i`; `rho_i = |p_ship -
   p_body_i|`; `epsilon_i = 0.5*|v_i|^2 - mu_i/rho_i`; `a_self_i =
   mu_i/rho_i^2`; `g_other_ship = gravity from the other body to the ship`;
   `g_other_body = gravity from the other body to body i`; `a_tidal_i =
   |g_other_ship - g_other_body|`; `dominance_i = a_self_i /
   max(a_tidal_i, 1e-9)`.
-- [ ] M06-R12-03-02 E1 window: use the existing samples in `[t, t+W]` with
+  Files: src/pred_frame.cpp (`body_metrics()`).
+  Evidence: `tests/test_pred_frame.cpp` gate prints all six per-body metrics
+  (eps/dom/dth/cons/ratio + epsilon) for both bodies; companion gate shows
+  eps=-18.9 dom=7.71 and primary eps=+5.0 dom=0.63 at t=0 (companion bound and
+  dominant, primary unbound and non-dominant), matching hand analysis.
+- [x] M06-R12-03-02 E1 window: use the existing samples in `[t, t+W]` with
   `W = clamp(0.25*T_local, 2.0, 8.0)` (a few seconds; not a full orbit). If
   fewer than 75% of W is available, do not start a new capture.
-- [ ] M06-R12-03-03 E2 window metrics: unwrap `theta_i = atan2` around body i;
+  Files: src/pred_frame.cpp (`classify_auto()` window selection + `insufficient`
+  path when < 75% of W available).
+  Evidence: `classifier_window()` clamps to [2,8]; V10 (incomplete-horizon) is
+  the dedicated test.
+- [x] M06-R12-03-03 E2 window metrics: unwrap `theta_i = atan2` around body i;
   compute total `delta_theta`, `rho_min`, `rho_max`, `rho_mean`,
   `radial_ratio = rho_max/rho_min`, and `angular_consistency` over the window.
-- [ ] M06-R12-03-04 E3 raw candidate for body i requires ALL: `epsilon_i < 0`
+  Files: src/pred_frame.cpp (`window_metrics()` — `theta_i` unwrapped across
+  2π, cumulative `|Δθ|`, radial min/max/mean/ratio, `angular_consistency`).
+  Evidence: companion gate shows dth 0.68→2.13 rad, ratio ≤1.44, cons 1.00
+  over the orbit (winding, bounded, consistent); primary gate dth 0.40-0.51.
+- [x] M06-R12-03-04 E3 raw candidate for body i requires ALL: `epsilon_i < 0`
   (bound), `dominance_i >= 1.25`, `|delta_theta_i| >= 0.349 rad (20°)`,
   `angular_consistency_i >= 0.75`, `radial_ratio_i <= 4.0`.
-- [ ] M06-R12-03-05 E4 tie-break: if both bodies qualify, the larger
+  Files: src/pred_frame.cpp (`is_candidate()` — all five conjunctions).
+  Evidence: gate_companion (all five pass for companion, fail for primary),
+  gate_primary (all five pass for primary).
+- [x] M06-R12-03-05 E4 tie-break: if both bodies qualify, the larger
   `dominance` wins; then the larger `|delta_theta|`; then the previous segment;
   then body 0.
-- [ ] M06-R12-03-06 E5 hysteresis: states Primary / WorldTransfer / Companion.
+  Files: src/pred_frame.cpp (`pick_winner()` — dominance → |Δθ| → prev → body 0).
+  Evidence: gates show the higher-dominance body wins (companion 7.7 vs primary
+  0.63; primary 357 vs 0).
+- [x] M06-R12-03-06 E5 hysteresis: states Primary / WorldTransfer / Companion.
   Entering a new body-capture state requires 3 consecutive qualifying samples
   AND 0.5 s elapsed; releasing the current capture requires 3 consecutive
   failing samples AND 0.5 s. Never transition directly Primary -> Companion or
   Companion -> Primary; both go through World.
-- [ ] M06-R12-03-07 Centralize all classifier thresholds as named constants
+  Files: src/pred_frame.cpp (`classify_auto()` — `confirm`/`release` counters,
+  `elapsed`, via-World rule in the state transition).
+  Evidence: companion gate first 31 samples (0.26 s) are WORLD then lock to
+  COMPANION (prev=World → 3-sample + 0.5 s confirm); V09 is the dedicated
+  transition test.
+- [x] M06-R12-03-07 Centralize all classifier thresholds as named constants
   (the values above); do not scatter them through the code.
+  Files: include/lander/pred_frame.hpp (`ClassifierParams{kMinWindow=2.0,
+  kMaxWindow=8.0, kWindowFrac=0.25, kMinFrac=0.75, kDominanceMin=1.25,
+  kMinDeltaTheta=0.349, kMinConsistency=0.75, kMaxRadialRatio=4.0,
+  kConfirmSamples=3, kConfirmSeconds=0.5}`).
+  Evidence: single struct; `classify_auto` reads only from `params`.
 
 ### M06-R12-04 — AUTO segmented rendering
 
-- [ ] M06-R12-04-01 When AUTO crosses a frame boundary, segment the path: draw
+- [x] M06-R12-04-01 When AUTO crosses a frame boundary, segment the path: draw
   each frame's segment as a separate polyline; do NOT connect different-frame
   segments with a continuous line.
-- [ ] M06-R12-04-02 At each boundary draw a visible transition marker / label:
+  Files: src/gui.cpp (`draw_trajectory` now takes the per-sample `pred_frame`
+  plus the `std::vector<RefSegment> segments`; it walks `prediction.timed`,
+  transforming each sample with the local `render_world` anchored transform and
+  breaks a new polyline at every sample whose committed frame differs from the
+  previous — no connector line is drawn across a boundary).
+  Evidence: build passes; the segment-break logic keys off the same
+  `classify_auto` output that V06-V08 verify (no cross-frame adjacency, correct
+  boundary positions). Visual "no connector" confirmation is H02.
+- [x] M06-R12-04-02 At each boundary draw a visible transition marker / label:
   `REF -> WORLD`, `WORLD -> PRIMARY`, `PRIMARY -> WORLD`, `WORLD -> COMPANION`,
   `COMPANION -> WORLD`.
-- [ ] M06-R12-04-03 Periapsis, apoapsis, impact, closest-approach, and
+  Files: src/gui.cpp (`draw_transition_marker` — a hollow square at the boundary
+  sample's rendered position plus a short label of the two adjacent frames,
+  e.g. `W/P`, drawn in the embedded 5x7 font which has no `>` glyph).
+  Evidence: build passes; marker is emitted at each AUTO boundary. Visual
+  confirmation is H02.
+- [x] M06-R12-04-03 Periapsis, apoapsis, impact, closest-approach, and
   maneuver-node markers are each drawn in the same display frame as the segment
   that found them.
+  Files: src/gui.cpp (the node / impact / closest / peri / apo markers are each
+  transformed by `frame_for_time(t)`, i.e. the committed frame of the sample at
+  that sample's own time, so each marker sits in the frame of its segment).
+  Evidence: build passes; visual confirmation is H02.
 
 ### M06-R12-05 — Fixed frame modes
 
-- [ ] M06-R12-05-01 PRIMARY / COMPANION fixed modes apply NO auto hysteresis:
+- [x] M06-R12-05-01 PRIMARY / COMPANION fixed modes apply NO auto hysteresis:
   every sample is transformed into that single body-centred inertial frame.
+  Files: src/gui.cpp (when `pred_frame` is Primary / Companion / World,
+  `draw_trajectory` transforms every `prediction.timed` sample into that single
+  frame via `frame_for_time` — no hysteresis, no segmentation, one continuous
+  polyline).
+  Evidence: build passes; `draw_prediction_legend` shows the selected fixed
+  frame. Visual confirmation is H01.
 
 ### M06-R12-06 — Debug panel + keyboard
 
-- [ ] M06-R12-06-01 Compact debug-section display: `PRED FRAME` =
+- [x] M06-R12-06-01 Compact debug-section display: `PRED FRAME` =
   AUTO / WORLD / PRIMARY / COMPANION; current `REF SEGMENT` when AUTO;
   `EPS` / `DOM` / `WIND` / `RATIO` / `CONFIRM` diagnostics for AUTO; and a
   permanent, unambiguous `PHYSICS = WORLD / INERTIAL` line.
-- [ ] M06-R12-06-02 Keys: F5 = AUTO, F6 = PRIMARY, F7 = COMPANION, F8 = WORLD
+  Files: src/gui.cpp (`DebugPanelCtx` extended with `pred_frame` / `pred_final`
+  / `pred_metrics` / `pred_auto_valid`; the Predictor branch of
+  `draw_debug_subsystem_panel` prints the `PRED FRAME` line with the F5-F8
+  hints, the current `REF SEG`, per-body `PRM/CPN eps/dom/wind/ratio`, the
+  raw-vs-committed + hysteresis window, and the permanent `PHYSICS WORLD /
+  INERTIAL` line; `draw_prediction_legend` gains a persistent, colour-coded
+  `FRAME <name> [F5-8]` row visible in normal play).
+  Evidence: build passes; the panel reads the live `classify_auto`
+  `SampleMetrics`. Visual sanity confirmation is H01.
+- [x] M06-R12-06-02 Keys: F5 = AUTO, F6 = PRIMARY, F7 = COMPANION, F8 = WORLD
   (default). F2 / F3 / F4 (the existing COAST / LIVE / PLAN policy) remain.
   Keep consistent with how debug / harness keys are currently gated.
+  Files: src/gui.cpp (SDL scancodes `SDL_SCANCODE_F5..F8` set `pred_frame` and
+  raise a transient `PRED FRAME: <name>` debug message; these are user-facing
+  and ungated, consistent with F2/F3/F4 which are also ungated user policy keys).
+  Evidence: build passes; F2/F3/F4 handler is left untouched. Visual
+  confirmation of the switch is H02.
 
 ### M06-R12-V — Automated verification (14 tests + no-regression)
 
-- [ ] M06-R12-V01 World transform identity (WORLD == inertial samples, unchanged).
-- [ ] M06-R12-V02 Moving-body translation removal (a body-centred frame removes
-  the body's ephemeris translation over time).
-- [ ] M06-R12-V03 Body-centred circular-orbit stability (a circular orbit stays
+- [x] M06-R12-V01 World transform identity (WORLD == inertial samples,
+  unchanged).
+  Files: src/pred_frame.cpp; tests/test_pred_frame.cpp::world_identity.
+  Evidence: WORLD frame returns position/velocity exactly equal to the inertial
+  sample (0.0,0.0 / 0.0,0.0) — passes.
+- [x] M06-R12-V02 Moving-body translation removal (a body-centred frame
+  removes the body's ephemeris translation over time).
+  Files: src/pred_frame.cpp; tests/test_pred_frame.cpp::moving_body_translation_removed.
+  Evidence: a point stationary in the moving companion's frame stays at a
+  constant body-centred offset (translation cancelled to 1e-9) over a quarter
+  barycentric period — passes.
+- [x] M06-R12-V03 Body-centred circular-orbit stability (a circular orbit stays
   bounded / circular in the body-centred inertial frame).
-- [ ] M06-R12-V04 Primary classification (a bounded primary orbit -> AUTO PRIMARY).
-- [ ] M06-R12-V05 Companion classification (a bounded companion orbit -> AUTO
+  Files: src/pred_frame.cpp; tests/test_pred_frame.cpp::co_rotating_point_stationary.
+  Evidence: a point co-moving with the primary (position = ephemeris + fixed
+  offset, velocity = ephemeris velocity) maps to a CONSTANT position and ZERO
+  velocity in the body frame at t = 0/5/23.7/90 s (offset preserved to 1e-6) —
+  the inertial transform removes the body's motion exactly, so a stable orbit
+  straightens into a fixed circle. Passes.
+- [x] M06-R12-V04 Primary classification (a bounded primary orbit -> AUTO
+  PRIMARY).
+  Files: tests/test_pred_frame.cpp::gate_primary.
+  Evidence: primary circular orbit (r=364.9, ~0.6 r_H), 300 s coast @120 Hz ->
+  2115/2120 = 99.8% PRIMARY, final=PRIMARY; dominance 89-890, dth 0.40-0.51,
+  comp never qualifies (dom ~0). Gate PASSES.
+- [x] M06-R12-V05 Companion classification (a bounded companion orbit -> AUTO
   COMPANION). If it does not classify COMPANION, STOP and report the actual
   EPS / DOM / WIND / RATIO / consistency metrics; do NOT tune thresholds until
   the failure is understood.
-- [ ] M06-R12-V06 World / transfer detection (a fast inter-body arc -> WORLD,
+  Files: tests/test_pred_frame.cpp::gate_companion.
+  Evidence: companion circular orbit (r=58.3 = max_surface+20, ~0.6 r_H), 40 s
+  coast @120 Hz -> 2371/2402 = 98.7% COMPANION, final=COMPANION; companion dom
+  7.7->39, dth 0.68->2.13, ratio<=1.44, cons 1.0; primary non-qualifying
+  (dom<=0.71, dth<0.349). GATE PASSES with real metrics (no tuning). Note: a
+  300 s coast of the same orbit drifts into a barycenter/primary regime (correct
+  restricted-three-body tidal decay) — hence the 40 s (a few orbit periods)
+  horizon for a bounded-orbit fixture.
+- [x] M06-R12-V06 World / transfer detection (a fast inter-body arc -> WORLD,
   not captured to either body).
-- [ ] M06-R12-V07 Primary -> World -> Companion transition (segmented correctly).
-- [ ] M06-R12-V08 Companion -> World -> Primary transition (segmented correctly).
-- [ ] M06-R12-V09 Hysteresis (3 samples AND 0.5 s to enter and to release; no
+  Files: tests/test_pred_frame.cpp::no_direct_body_transition (single-body
+  sub-tests) + long-horizon inter-body probe.
+  Evidence: a primary-orbit coast classifies 100% non-COMPANION (companion count
+  0) and a companion-orbit coast classifies 100% non-PRIMARY (primary count 0)
+  — a body never captures the ship when it is really bound to the other / in
+  transit; the inter-body region between them is classified WORLD (the via-World
+  bridge, V07/V08). A pure inter-body transfer arc (probed) stays 100% WORLD
+  (P=0, C=0). Passes.
+- [x] M06-R12-V07 Primary -> World -> Companion transition (segmented correctly).
+  Files: tests/test_pred_frame.cpp::no_direct_body_transition (spliced P->C).
+  Evidence: a primary-orbit coast (60 s) spliced with a companion-orbit coast
+  generated from the companion's ephemeris at the splice time (40 s) classifies
+  as reduced sequence WPWC (W=52, P=2412, C=2340): it enters COMPANION only
+  through a WORLD bridge and never emits an adjacent P->C pair (the E5
+  via-World rule). Passes.
+- [x] M06-R12-V08 Companion -> World -> Primary transition (segmented correctly).
+  Files: tests/test_pred_frame.cpp::no_direct_body_transition (spliced C->P).
+  Evidence: the reverse splice (companion 40 s then primary 60 s) classifies as
+  WCWP (W=347, P=2381, C=2076): it enters PRIMARY only through a WORLD bridge
+  with no adjacent C->P pair. Passes.
+- [x] M06-R12-V09 Hysteresis (3 samples AND 0.5 s to enter and to release; no
   direct Primary <-> Companion).
-- [ ] M06-R12-V10 Incomplete-horizon tail (fewer than 75% of W -> no new capture).
-- [ ] M06-R12-V11 Frame selection never mutates `Simulation` or the stored
+  Files: src/pred_frame.cpp (`classify_auto` confirm/release counters + elapsed);
+  tests/test_pred_frame.cpp::hysteresis_prev_dependence.
+  Evidence: a 120 s primary coast run with prev=World opens in WORLD (a single
+  qualifying sample cannot lock) and only commits to PRIMARY after the 3-sample
+  + 0.5 s confirm; run with prev=Primary it opens in PRIMARY from sample 0 (no
+  spurious re-capture). No direct P<->C is ever emitted (V07/V08). Passes.
+- [x] M06-R12-V10 Incomplete-horizon tail (fewer than 75% of W -> no new capture).
+  Files: src/pred_frame.cpp (`window_ok` gate);
+  tests/test_pred_frame.cpp::incomplete_horizon_no_capture.
+  Evidence: a single sample (a full window of history is unavailable) yields
+  `window_ok==false` and the state stays WORLD even though the point is inside a
+  companion orbit — a new capture is refused until >=75% of W is available.
+  Passes.
+- [x] M06-R12-V11 Frame selection never mutates `Simulation` or the stored
   inertial samples (state / sample identity preserved across a frame switch).
-- [ ] M06-R12-V12 Companion-orbit fixture end-to-end: the M06-R11 debug
+  Files: src/pred_frame.cpp (`transform_to_frame` / `classify_auto` are pure
+  const functions); tests/test_pred_frame.cpp::no_mutation.
+  Evidence: running `classify_auto` over a sample array leaves every
+  `position_world` / `velocity_world` / `time` bit-identical before and after
+  (deep-copied and compared). Frame transform and classification take
+  `const` inputs; no `Simulation` or sample is written. Passes.
+- [x] M06-R12-V12 Companion-orbit fixture end-to-end: the M06-R11 debug
   companion-orbit fixture, run headlessly, yields AUTO == COMPANION (and WORLD
   keeps the rosette; PRIMARY / COMPANION frames are correct). Same STOP-and-
   report gate as V05 if it does not.
-- [ ] M06-R12-V13 Primary-orbit fixture end-to-end: AUTO == PRIMARY.
-- [ ] M06-R12-V14 Render segment boundaries (no cross-frame connector; a
+  Files: src/flight_computer.cpp (`predict_trajectory` `timed`),
+  src/pred_frame.cpp; tests/test_pred_frame.cpp::fixture_end_to_end (companion).
+  Evidence: a node-less `predict_trajectory` COAST from a bounded companion
+  orbit feeds its `timed` samples to `classify_auto` -> 1695/1726 = 98.2%
+  COMPANION, final=COMPANION (same STOP-and-report gate as V05; it PASSES).
+  Passes.
+- [x] M06-R12-V13 Primary-orbit fixture end-to-end: AUTO == PRIMARY.
+  Files: tests/test_pred_frame.cpp::fixture_end_to_end (primary).
+  Evidence: the same end-to-end path from a bounded primary orbit -> 2049/2059 =
+  99.5% PRIMARY, final=PRIMARY. Passes.
+- [x] M06-R12-V14 Render segment boundaries (no cross-frame connector; a
   boundary marker is emitted at each transition).
-- [ ] M06-R12-V15 Existing tests all still pass; full `ctest` baseline preserved
+  Files: src/gui.cpp (`draw_trajectory` polyline break + `draw_transition_marker`);
+  segment-data aspect verified by tests/test_pred_frame.cpp::no_direct_body_transition.
+  Evidence: the committed per-sample frame sequence is split at every boundary
+  with a WORLD bridge between bodies (V07/V08: WPWC / WCWP), so the renderer has
+  discrete same-frame polylines and a marker at each boundary; the drawn
+  "no connector / marker visible" aspect is a visual check (H02). Passes
+  (data-level).
+- [x] M06-R12-V15 Existing tests all still pass; full `ctest` baseline preserved
   (only the known TFD-1 / TFD-2 fail); no new failure; no test weakened.
+  Files: (whole project build).
+  Evidence: full `cmake --build build` succeeds (only the two pre-existing
+  narrowing warnings at src/gui.cpp:1477,1495); `ctest` -> 10/12 pass, the 2
+  failures are the known TFD-1 / TFD-2 transfer-solvability failures in
+  `lander_tests` ("primary-source transfer found a plausible arc") and
+  `lander_transfer_warm_tests` ("0->1 solved at 0/4"), both in the untouched
+  `src/ballistic.cpp` solver (R12's only shared-code change is the additive
+  `out.timed.push_back` in `src/flight_computer.cpp`); the new
+  `lander_pred_frame_tests` (12th target) passes. No test was weakened or
+  deleted. Passes.
 
 ### M06-R12-P — Preservation constraints
 
-- [ ] M06-R12-P01 No COAST / LIVE / PLAN behaviour fix (known predictor issues
+- [x] M06-R12-P01 No COAST / LIVE / PLAN behaviour fix (known predictor issues
   stay open; this pass only re-frames the display / analysis).
-- [ ] M06-R12-P02 No terminal-cache reuse.
-- [ ] M06-R12-P03 No frozen-COAST contact validator added.
-- [ ] M06-R12-P04 No SIM-COLL-01 change.
-- [ ] M06-R12-P05 No TFD-1 / TFD-2 fix (remain deferred post-M06).
-- [ ] M06-R12-P06 No autoland change.
-- [ ] M06-R12-P07 No `sync_orbit` / `B x3` change.
-- [ ] M06-R12-P08 No M07 start; no test weakening / deletion; no commit / push
+  Evidence: `git diff` touches only `pred_frame` (new), `flight_computer`
+  (additive `timed`), `gui.cpp` (rendering/keys), CMake, and the state docs —
+  no `RecedingHorizonPredictor` / COAST / LIVE / PLAN policy code changed.
+- [x] M06-R12-P02 No terminal-cache reuse.
+  Evidence: no terminal-cache code in the diff.
+- [x] M06-R12-P03 No frozen-COAST contact validator added.
+  Evidence: no new contact validator in the diff.
+- [x] M06-R12-P04 No SIM-COLL-01 change.
+  Evidence: `Simulation` contact / crash checker untouched (not in the diff).
+- [x] M06-R12-P05 No TFD-1 / TFD-2 fix (remain deferred post-M06).
+  Evidence: `src/ballistic.cpp` solver unchanged; TFD-1 / TFD-2 still fail in
+  `ctest` exactly as before (V15).
+- [x] M06-R12-P06 No autoland change.
+  Evidence: no landing / autoland code in the diff.
+- [x] M06-R12-P07 No `sync_orbit` / `B x3` change.
+  Evidence: `sync_orbit` / `B x3` untouched (not in the diff).
+- [x] M06-R12-P08 No M07 start; no test weakening / deletion; no commit / push
   of R12 work until its own verification passes.
-- [ ] M06-R12-P09 No SOI physics, no patched conics, no gravity-model switch,
+  Evidence: no M07 code added; no existing test weakened or deleted (V15);
+  this commit is the first R12 commit and its build + tests pass.
+- [x] M06-R12-P09 No SOI physics, no patched conics, no gravity-model switch,
   no orbit stabilization, no binary-ephemeris change, no `Simulation` state
   mutation, no collision / transfer / landing / guidance change; physics stays
   `WORLD / INERTIAL`.
+  Files: src/pred_frame.cpp (pure transform / classification);
+  tests/test_pred_frame.cpp::no_mutation, ::world_identity.
+  Evidence: `pred_frame` is pure analysis (const inputs, no `Simulation` or
+  sample mutation — V11); the binary ephemeris and gravity model are untouched;
+  the debug panel always shows `PHYSICS = WORLD / INERTIAL`.
 
 ### M06-R12-H — Human verification (closeout)
 

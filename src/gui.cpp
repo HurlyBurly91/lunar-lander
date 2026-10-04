@@ -1226,25 +1226,137 @@ void draw_line_simple(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
                    static_cast<float>(b.x), static_cast<float>(b.y));
 }
 
+// M06-R12: a small hollow-square transition marker with a short "from/to"
+// label (the font has no arrow glyph, so the two frame short-codes are joined
+// with a slash: "W/P", "P/W", "W/C", "C/W").
+static void draw_transition_marker(SDL_Renderer* renderer, const Vec2& p,
+                                   lander::PredFrame from,
+                                   lander::PredFrame to) {
+    auto short_code = [](lander::PredFrame f) {
+        return f == lander::PredFrame::World ? "W"
+             : f == lander::PredFrame::Primary ? "P"
+             : "C";
+    };
+    char label[8];
+    std::snprintf(label, sizeof label, "%s/%s", short_code(from),
+                  short_code(to));
+    const Color col = make_color(255, 220, 120);
+    draw_thick_line(renderer, {p.x - 3, p.y - 3}, {p.x + 3, p.y - 3}, 1.0, col);
+    draw_thick_line(renderer, {p.x + 3, p.y - 3}, {p.x + 3, p.y + 3}, 1.0, col);
+    draw_thick_line(renderer, {p.x + 3, p.y + 3}, {p.x - 3, p.y + 3}, 1.0, col);
+    draw_thick_line(renderer, {p.x - 3, p.y + 3}, {p.x - 3, p.y - 3}, 1.0, col);
+    draw_text(renderer, label, static_cast<int>(p.x) + 6,
+              static_cast<int>(p.y) - 4, 1, col);
+}
+
+// M06-R12: the prediction arc rendered in the selected display reference
+// frame. WORLD is the inertial / barycentric frame (identity, the existing
+// rounded-square / rosette). PRIMARY / COMPANION are body-centred inertial
+// frames: a world point at sample time t is drawn at
+//   (p_world(t) - body_world(t)) + body_world(t_now)
+// so the ship (at t_now) stays exactly where the terrain puts it, while the
+// rest of the arc "unwinds" the body's barycentric motion into a clean orbit
+// about the body's current position. The terrain itself is left in the world
+// frame, so the arc stays aligned with it. In AUTO mode each sample is drawn
+// in the frame named by its classified segment; a maximal same-frame run is
+// one polyline and a frame boundary is never connected across (a transition
+// marker is drawn instead). Pre-node samples keep the COAST colour, post-node
+// the PLAN colour (unchanged from the world-frame look).
 void draw_trajectory(SDL_Renderer* renderer,
                       const lander::TrajectoryPrediction& prediction,
                       const lander::Camera& cam, bool has_node,
-                      const lander::Simulation& sim) {
-    auto draw_path = [&](const std::vector<lander::Vec2>& points, Color color) {
-        for (size_t i = 0; i + 1 < points.size(); ++i) {
-            const Vec2 a = to_screen(points[i].x, points[i].y, cam);
-            const Vec2 b = to_screen(points[i + 1].x, points[i + 1].y, cam);
-            draw_line_simple(renderer, a, b, color);
+                      const lander::Simulation& sim,
+                      lander::PredFrame pred_frame,
+                      const std::vector<lander::RefSegment>& segments) {
+    const lander::BinarySystem& bin = sim.binary();
+    const double t_now = sim.sim_time();
+    const lander::Vec2 anchor0 = bin.position(0, t_now);
+    const lander::Vec2 anchor1 = bin.position(1, t_now);
+    const size_t pre_count = prediction.pre.size();
+
+    auto render_world = [&](const lander::Vec2& wp, double t,
+                            lander::PredFrame f) -> lander::Vec2 {
+        if (f == lander::PredFrame::World) {
+            return wp;
         }
+        const lander::Vec2 anchor =
+            (f == lander::PredFrame::Primary) ? anchor0 : anchor1;
+        const lander::Vec2 bp =
+            (f == lander::PredFrame::Primary) ? bin.position(0, t)
+                                              : bin.position(1, t);
+        return lander::Vec2{wp.x - bp.x + anchor.x, wp.y - bp.y + anchor.y};
     };
 
-    draw_path(prediction.pre, make_color(185, 195, 215));
-    draw_path(prediction.post, make_color(120, 240, 160));
+    auto seg_frame = [](lander::RefSegment s) -> lander::PredFrame {
+        return s == lander::RefSegment::World ? lander::PredFrame::World
+             : s == lander::RefSegment::Primary ? lander::PredFrame::Primary
+             : lander::PredFrame::Companion;
+    };
+
+    auto frame_at = [&](size_t i) -> lander::PredFrame {
+        if (pred_frame == lander::PredFrame::Auto && i < segments.size()) {
+            return seg_frame(segments[i]);
+        }
+        return pred_frame;
+    };
+
+    auto frame_for_time = [&](double t) -> lander::PredFrame {
+        if (pred_frame != lander::PredFrame::Auto) {
+            return pred_frame;
+        }
+        size_t best = 0;
+        double best_d = 1e30;
+        for (size_t k = 0; k < prediction.timed.size(); ++k) {
+            const double d = std::abs(prediction.timed[k].time - t);
+            if (d < best_d) {
+                best_d = d;
+                best = k;
+            }
+        }
+        return (best < segments.size()) ? seg_frame(segments[best])
+                                        : lander::PredFrame::World;
+    };
+
+    const auto& timed = prediction.timed;
+    if (timed.size() >= 2) {
+        size_t i = 0;
+        while (i < timed.size()) {
+            const lander::PredFrame f = frame_at(i);
+            size_t j = i;
+            while (j + 1 < timed.size() && frame_at(j + 1) == f) {
+                ++j;
+            }
+            for (size_t k = i; k + 1 <= j; ++k) {
+                const Color col =
+                    (k < pre_count) ? make_color(185, 195, 215)
+                                    : make_color(120, 240, 160);
+                const Vec2 a = to_screen(
+                    render_world(timed[k].position_world, timed[k].time, f).x,
+                    render_world(timed[k].position_world, timed[k].time, f).y,
+                    cam);
+                const Vec2 b = to_screen(
+                    render_world(timed[k + 1].position_world,
+                                 timed[k + 1].time, f).x,
+                    render_world(timed[k + 1].position_world,
+                                 timed[k + 1].time, f).y,
+                    cam);
+                draw_line_simple(renderer, a, b, col);
+            }
+            if (j + 1 < timed.size() && frame_at(j + 1) != f) {
+                const Vec2 m = to_screen(
+                    render_world(timed[j].position_world, timed[j].time, f).x,
+                    render_world(timed[j].position_world, timed[j].time, f).y,
+                    cam);
+                draw_transition_marker(renderer, m, f, frame_at(j + 1));
+            }
+            i = j + 1;
+        }
+    }
 
     if (has_node) {
-        const Vec2 p =
-            to_screen(prediction.node_position.x, prediction.node_position.y,
-                      cam);
+        const lander::Vec2 np =
+            render_world(prediction.node_position, t_now, frame_for_time(t_now));
+        const Vec2 p = to_screen(np.x, np.y, cam);
         const Color node_color = make_color(230, 130, 255);
         draw_thick_line(renderer, {p.x - 6, p.y}, {p.x + 6, p.y}, 1.5,
                         node_color);
@@ -1253,8 +1365,10 @@ void draw_trajectory(SDL_Renderer* renderer,
     }
 
     if (prediction.impact.valid) {
-        const Vec2 p = to_screen(prediction.impact.position.x,
-                                  prediction.impact.position.y, cam);
+        const lander::Vec2 ip = render_world(prediction.impact.position,
+                                             prediction.impact.time,
+                                             frame_for_time(prediction.impact.time));
+        const Vec2 p = to_screen(ip.x, ip.y, cam);
         const Color red = make_color(255, 92, 80);
         draw_thick_line(renderer, {p.x - 5, p.y - 5}, {p.x + 5, p.y + 5}, 1.5,
                         red);
@@ -1263,8 +1377,11 @@ void draw_trajectory(SDL_Renderer* renderer,
     }
 
     if (prediction.closest.valid) {
-        const Vec2 p = to_screen(prediction.closest.target_position.x,
-                                  prediction.closest.target_position.y, cam);
+        const lander::Vec2 cp =
+            render_world(prediction.closest.target_position,
+                         prediction.closest.time,
+                         frame_for_time(prediction.closest.time));
+        const Vec2 p = to_screen(cp.x, cp.y, cam);
         fill_rect(renderer, static_cast<int>(p.x) - 3,
                   static_cast<int>(p.y) - 3, 6, 6, make_color(255, 196, 64));
         // M06-R11: the amber square is the closest approach to the destination
@@ -1279,16 +1396,19 @@ void draw_trajectory(SDL_Renderer* renderer,
     }
 
     if (prediction.peri.valid) {
-        const Vec2 p = to_screen(prediction.peri.position.x,
-                                  prediction.peri.position.y, cam);
+        const lander::Vec2 pp = render_world(prediction.peri.position,
+                                             prediction.peri.time,
+                                             frame_for_time(prediction.peri.time));
+        const Vec2 p = to_screen(pp.x, pp.y, cam);
         fill_rect(renderer, static_cast<int>(p.x) - 2,
                   static_cast<int>(p.y) - 2, 4, 4, make_color(235, 240, 250));
     }
 
     if (prediction.apo.valid) {
-        const Vec2 p =
-            to_screen(prediction.apo.position.x, prediction.apo.position.y,
-                      cam);
+        const lander::Vec2 ap = render_world(prediction.apo.position,
+                                             prediction.apo.time,
+                                             frame_for_time(prediction.apo.time));
+        const Vec2 p = to_screen(ap.x, ap.y, cam);
         fill_rect(renderer, static_cast<int>(p.x) - 2,
                   static_cast<int>(p.y) - 2, 4, 4, make_color(120, 220, 255));
     }
@@ -1339,7 +1459,7 @@ void draw_live_prediction(SDL_Renderer* renderer,
 // M06-R3: a compact legend (bottom-left, clear of the HUD) distinguishing the
 // three prediction kinds drawn in the scene: the zero-thrust COAST arc, the
 // powered LIVE projection, and the planned-node PLAN arc.
-void draw_prediction_legend(SDL_Renderer* renderer) {
+void draw_prediction_legend(SDL_Renderer* renderer, lander::PredFrame frame) {
     const int x = 18;
     int y = 384;
     const Color dim(150, 158, 172);
@@ -1358,6 +1478,22 @@ void draw_prediction_legend(SDL_Renderer* renderer) {
         draw_text(renderer, r.label, x + 26, y, 1, dim);
         y += 20;
     }
+    // M06-R12: a persistent indicator of the arc's display reference frame so
+    // the active frame is visible in normal (non-debug) play, not only via the
+    // transient F-key message or the debug panel.
+    const Color frame_col =
+        frame == lander::PredFrame::World
+            ? make_color(200, 205, 220)
+            : frame == lander::PredFrame::Primary
+                  ? make_color(120, 240, 160)
+                  : frame == lander::PredFrame::Companion
+                        ? make_color(255, 196, 64)
+                        : make_color(96, 224, 255);
+    char flabel[48];
+    std::snprintf(flabel, sizeof flabel, "FRAME  %s  [F5-8]",
+                  lander::pred_frame_name(frame));
+    draw_thick_line(renderer, {x, y + 6}, {x + 18, y + 6}, 2.0, frame_col);
+    draw_text(renderer, flabel, x + 26, y, 1, frame_col);
 }
 
 void draw_flight_computer(
@@ -1586,6 +1722,12 @@ struct DebugPanelCtx {
     lander::Input last_step_input{};
     const lander::TrajectoryPrediction* prediction{nullptr};
     bool prediction_valid{false};
+    // M06-R12: display reference frame for the prediction arc and the AUTO
+    // classifier's committed segment + per-body diagnostics (debug readout).
+    lander::PredFrame pred_frame{lander::PredFrame::Auto};
+    lander::RefSegment pred_final{lander::RefSegment::World};
+    lander::SampleMetrics pred_metrics{};
+    bool pred_auto_valid{false};
 };
 
 static double wrap_angle(double a) {
@@ -1776,6 +1918,53 @@ void draw_debug_subsystem_panel(
             // projected arcs drawn on the scene.
             line("  (readouts = rolling predictor; COAST/PLAN = long arcs)",
                  dim);
+            // M06-R12: the display reference frame for the COAST / PLAN arc and
+            // the AUTO orbit-reference classifier's committed segment + the
+            // current per-body diagnostics (EPS / DOM / WIND / RATIO). The
+            // physics is always world / inertial; this only changes the arc's
+            // transform and analysis.
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  PRED FRAME %-8s   [F5]AUTO [F6]PRM [F7]CPN [F8]WORLD",
+                lander::pred_frame_name(ctx.pred_frame));
+            line(buffer, white);
+            {
+                const auto& pm = ctx.pred_metrics;
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  REF SEG  %-8s  (AUTO committed)",
+                    ctx.pred_auto_valid
+                        ? lander::ref_segment_name(ctx.pred_final)
+                        : "--");
+                line(buffer,
+                     ctx.pred_final == lander::RefSegment::World
+                         ? cyan
+                         : ctx.pred_final == lander::RefSegment::Primary
+                               ? green
+                               : amber);
+                if (ctx.pred_auto_valid) {
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  PRM eps %8.1f dom %7.2f wind %6.3f ratio %5.2f",
+                        pm.body[0].epsilon, pm.body[0].dominance,
+                        pm.body[0].delta_theta, pm.body[0].radial_ratio);
+                    line(buffer, white);
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  CPN eps %8.1f dom %7.2f wind %6.3f ratio %5.2f",
+                        pm.body[1].epsilon, pm.body[1].dominance,
+                        pm.body[1].delta_theta, pm.body[1].radial_ratio);
+                    line(buffer, white);
+                    std::snprintf(
+                        buffer, sizeof buffer,
+                        "  raw %-8s win %-4s  HYST 3S / 0.5S via-WORLD",
+                        lander::ref_segment_name(pm.raw),
+                        pm.window_ok ? "ok" : "tail");
+                    line(buffer, dim);
+                }
+                line("  PHYSICS WORLD / INERTIAL  both-bodies  no-SOI  no-rot",
+                     dim);
+            }
             std::snprintf(
                 buffer, sizeof buffer,
                 "  CACHE last: %s   rebuild %d  shift %d  invalidate %d",
@@ -2464,6 +2653,17 @@ int main(int argc, char** argv) {
     lander::TransferSolution transfer_cache{};
     lander::TrajectoryPrediction prediction{};
     bool prediction_valid = false;
+    // M06-R12: display reference frame for the prediction arc (F5 AUTO /
+    // F6 PRIMARY / F7 COMPANION / F8 WORLD). Pure presentation / analysis
+    // state -- it never feeds back into the simulation or the stored inertial
+    // samples. `pred_segments` is the AUTO classifier's per-sample segment
+    // (aligned with `prediction.timed`); the fixed frames ignore it.
+    lander::PredFrame pred_frame = lander::PredFrame::Auto;
+    std::vector<lander::RefSegment> pred_segments;
+    lander::RefSegment pred_auto_prev = lander::RefSegment::World;
+    lander::RefSegment pred_auto_final = lander::RefSegment::World;
+    lander::SampleMetrics pred_auto_last_metrics{};
+    bool pred_auto_valid = false;
     std::string pc_message;
     // Bounded-cadence prediction cache (M06-R2-11 / M06-R2-D06). Tracks the
     // simulation time and inputs at which the current `prediction` was built,
@@ -2751,6 +2951,31 @@ int main(int argc, char** argv) {
                                                 panel_ctx.predictor_kind);
                             debug_message_time = 2.0;
                         }
+                        break;
+                    }
+                    case SDL_SCANCODE_F5:
+                    case SDL_SCANCODE_F6:
+                    case SDL_SCANCODE_F7:
+                    case SDL_SCANCODE_F8: {
+                        // M06-R12: select the display reference frame for the
+                        // prediction arc. User-facing (works in normal play and
+                        // in the debug predictor). F5 AUTO (per-sample orbit
+                        // reference), F6 PRIMARY, F7 COMPANION, F8 WORLD
+                        // (inertial / barycentric, the default rosette). Pure
+                        // presentation: the sim and stored inertial samples are
+                        // untouched; the arc is re-segmented at the prediction
+                        // rebuild cadence and transitioned by the classifier.
+                        pred_frame =
+                            event.key.scancode == SDL_SCANCODE_F5
+                                ? lander::PredFrame::Auto
+                                : (event.key.scancode == SDL_SCANCODE_F6
+                                      ? lander::PredFrame::Primary
+                                      : (event.key.scancode == SDL_SCANCODE_F7
+                                            ? lander::PredFrame::Companion
+                                            : lander::PredFrame::World));
+                        debug_message = std::string("PRED FRAME: ") +
+                                        lander::pred_frame_name(pred_frame);
+                        debug_message_time = 2.0;
                         break;
                     }
                     case SDL_SCANCODE_9: {
@@ -3380,6 +3605,30 @@ int main(int argc, char** argv) {
                     maneuver_node, horizon, 512);
                 prediction_valid = true;
                 predict_last_sim_time = sim_now;
+                // M06-R12: classify the freshly-built arc into per-sample
+                // reference-frame segments (used by AUTO rendering and the
+                // debug-panel readout). The classifier's hysteresis state
+                // (pred_auto_prev) is carried across rebuilds; the per-body
+                // metrics are recomputed here for the REF SEGMENT / EPS / DOM
+                // / WIND / RATIO / CONFIRM readout. Cheap: one metric window
+                // per body per rebuild at the 1 Hz cadence.
+                pred_segments.assign(prediction.timed.size(),
+                                     lander::RefSegment::World);
+                pred_auto_valid = prediction.timed.size() >= 2;
+                if (pred_auto_valid) {
+                    lander::AutoClassifyResult res;
+                    lander::classify_auto(prediction.timed, sim.binary(),
+                                          lander::ClassifierParams{},
+                                          pred_auto_prev, res);
+                    pred_segments = res.segments;
+                    pred_auto_final = res.segments.back();
+                    pred_auto_last_metrics = res.metrics.back();
+                    pred_auto_prev = res.segments.back();
+                } else {
+                    pred_auto_prev = lander::RefSegment::World;
+                    pred_auto_final = lander::RefSegment::World;
+                    pred_auto_last_metrics = {};
+                }
                 predict_ref_body = sim.reference_body();
                 predict_dest_body = sim.contract().destination_body;
                 predict_node_present = maneuver_node.has_value();
@@ -3486,6 +3735,10 @@ int main(int argc, char** argv) {
             panel_ctx.rotate_right = manual_right;
             panel_ctx.prediction = &prediction;
             panel_ctx.prediction_valid = prediction_valid;
+            panel_ctx.pred_frame = pred_frame;
+            panel_ctx.pred_final = pred_auto_final;
+            panel_ctx.pred_metrics = pred_auto_last_metrics;
+            panel_ctx.pred_auto_valid = pred_auto_valid;
         }
         if (predictor_keeps_overlay && !s.crashed && !paused) {
             // M06-R8 (follow-up): the predictor's predicted-trajectory overlay,
@@ -3497,17 +3750,19 @@ int main(int argc, char** argv) {
             // follows the selected kind.
             if (prediction_valid && !s.landed) {
                 draw_trajectory(renderer, prediction, cam,
-                                maneuver_node.has_value(), sim);
+                                maneuver_node.has_value(), sim, pred_frame,
+                                pred_segments);
             }
             if (!s.landed) {
                 draw_live_prediction(renderer, live_predictor, sim, cam);
             }
-            draw_prediction_legend(renderer);
+            draw_prediction_legend(renderer, pred_frame);
         } else if ((!debug_active || debug_ui) && nav_overlay && !s.crashed &&
                    !paused) {
             if (prediction_valid && !s.landed) {
                 draw_trajectory(renderer, prediction, cam,
-                                maneuver_node.has_value(), sim);
+                                maneuver_node.has_value(), sim, pred_frame,
+                                pred_segments);
             }
             if (!s.landed) {
                 // M06-R3: the powered LIVE projection and its predicted-contact
@@ -3515,12 +3770,13 @@ int main(int argc, char** argv) {
                 draw_live_prediction(renderer, live_predictor, sim, cam);
             }
             draw_navigation_overlay(renderer, sim, render_state, cam);
-            draw_prediction_legend(renderer);
+            draw_prediction_legend(renderer, pred_frame);
         } else if (debug_mode == lander::DebugSubsystem::NodeEdit && nav_overlay &&
                    !s.crashed && !s.landed && !paused && prediction_valid) {
             // R8-08: keep the pre/post prediction arc visible while editing.
             draw_trajectory(renderer, prediction, cam,
-                            maneuver_node.has_value(), sim);
+                            maneuver_node.has_value(), sim, pred_frame,
+                            pred_segments);
         }
         lander::DebugCommonReadout debug_common{};
         if (debug_active) {

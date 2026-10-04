@@ -496,3 +496,76 @@ predictor / controller physics, so **none** of the issues above is closed.
 
 The frozen-COAST validator (PRED-05) and the companion scenarios (PRED-08)
 remain the entry points for Pass 2 and beyond.
+
+---
+
+## M06-R12 — prediction reference-frame architecture outcome (display/analysis only; all issues remain OPEN)
+
+Pass 2 added a **prediction reference-frame architecture**: a way to view and
+classify the *already-computed inertial* prediction in a body-centred frame for
+display and analysis. It changes **no** propagation, gravity, collision,
+transfer, landing, guidance, or binary-ephemeris behaviour, so **none** of the
+issues above is closed by it.
+
+### What was added (new `src/pred_frame.cpp` / `include/lander/pred_frame.hpp`)
+
+- **Inertial frame transform** `transform_to_frame(frame, pos, vel, bin, t)` →
+  `{ World, Primary, Companion }`. Each is a **pure translation** of the
+  barycentric (`WORLD`) frame by the body's inertial ephemeris at `t` (position
+  and velocity subtraction only). `WORLD` is the identity. There is **no
+  rotation, no body-fixed (rotating) frame, no SOI, no gravity-model switch, no
+  orbit stabilisation** — the canonical two-body gravity
+  (`docs/physics-model-gravity.md`) is untouched. The transform is applied in
+  the *render/analysis layer only*; the authoritative sim and every ballistic /
+  predictor integrator still run in `WORLD / INERTIAL`.
+- **AUTO orbit-reference classifier** `classify_auto(...)`: for each sample it
+  computes, per body, a bounded two-body diagnostic over a window
+  `W = clamp(0.25*T_local, 2, 8)` s (>=75% available) — specific two-body
+  energy `eps`, body dominance `= max(eps)/min(|eps|)`, a radial distance ratio,
+  a winding angle `dθ` (unwrapped body-relative angle), and an angular
+  consistency ratio — and commits a `Primary / World / Companion` reference
+  segment with **hysteresis** (3 samples **and** 0.5 s to enter and to release;
+  body→body changes are never direct and always route through `World`). The
+  classifier is a pure function of the inertial samples (no mutation).
+- **Timed trajectory samples**: `TrajectoryPrediction` now carries a parallel
+  `timed` vector (`position_world`, `velocity_world`, `time`) captured from the
+  decimated `BallisticState` already produced by `predict_trajectory`
+  (additive; the existing `pre`/`post` decimated positions and every other
+  consumer are unchanged).
+- **GUI integration**: F5 = AUTO / F6 = PRIMARY / F7 = COMPANION / F8 = WORLD
+  (F2/F3/F4 policy keys unchanged); AUTO segments render as separate polylines
+  with a transition marker at each boundary (no cross-frame connector); a
+  persistent `FRAME` legend row and a debug-panel `PRED FRAME` / `REF SEG` /
+  per-body `EPS`/`DOM`/`WIND`/`RATIO` / `PHYSICS = WORLD / INERTIAL` readout.
+
+### Fixture gates (pass with real two-body physics)
+
+- Bounded **companion** orbit coast → AUTO commits **COMPANION** (98.7% of
+  samples; final COMPANION; `primary==0`).
+- Bounded **primary** orbit coast → AUTO commits **PRIMARY** (99.8% of samples;
+  final PRIMARY; `companion==0`).
+- A body-centred co-rotating point maps to a constant position / zero velocity
+  in the body frame (the transform removes the body's inertial motion exactly),
+  confirming a stable orbit straightens into a fixed circle.
+
+### Relationship to the open issues (none closed)
+
+- **PRED-03 / PRED-06** — the body-centred frame + per-body epsilon/dominance
+  diagnostics give a concrete, quantitative tool to *measure* which body a
+  trajectory is bound to and when the reference switches, directly supporting
+  the PRED-03 "presentation/frame effect" hypothesis and the PRED-06 reference-
+  selection investigation. But the **gravity model itself is unchanged** and the
+  quantitative frozen-COAST / companion-scenario verification is still owed, so
+  **both remain OPEN.**
+- **PRED-01/02/04/05/07/08, SIM-COLL-01, TFD-1/TFD-2** — no change (the marker
+  position-agreement, contact localisation, both-body collision, frozen-COAST
+  truth, and transfer-solvability work all remain deferred as before). The
+  ctest baseline is unchanged (the same two known TFD-1/TFD-2 failures in the
+  untouched `src/ballistic.cpp`).
+
+### Scope guard (unchanged)
+
+Still a **bounded** hardening pass — **not** M07, not an expansion of M06's
+accepted scope, and no test was weakened or deleted. The frozen-COAST validator
+(PRED-05) and the companion scenarios (PRED-08) remain the entry points for the
+next pass; the R12 frame/classifier is a *diagnostic* for those, not a fix.

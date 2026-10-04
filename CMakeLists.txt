@@ -27,6 +27,7 @@ add_library(lander
     src/predictor.cpp
     src/landing.cpp
     src/debug_subsystem.cpp
+    src/pred_frame.cpp
 )
 target_include_directories(lander PUBLIC include)
 target_compile_options(lander PRIVATE
@@ -191,6 +192,21 @@ target_compile_options(lander_debug_subsystem_tests PRIVATE
 )
 
 add_test(NAME lander_debug_subsystem_tests COMMAND lander_debug_subsystem_tests)
+
+# M06-R12: the prediction reference-frame transform (inertial, no rotation) and
+# the AUTO orbit-reference classifier (primary / companion / world, hysteresis),
+# tested headlessly with no SDL dependency.
+add_executable(lander_pred_frame_tests
+    tests/test_pred_frame.cpp
+)
+target_link_libraries(lander_pred_frame_tests PRIVATE lander)
+target_compile_options(lander_pred_frame_tests PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+add_test(NAME lander_pred_frame_tests COMMAND lander_pred_frame_tests)
 
 # M06-R2-11: predictor/planner microbenchmark. A measurement tool, not a
 # pass/fail test, so it is a plain executable (run explicitly) rather than a

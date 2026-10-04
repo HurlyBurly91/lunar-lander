@@ -130,8 +130,26 @@ per frame with visible transition markers (no cross-frame connector). This is
 the pass following the bounded post-M06 hardening (R8 harness, R9 predictor
 overlay, R10 record-only, R11 diagnostics); it changes no physics and defers
 all known predictor / transfer defects (PRED-01..08, SIM-COLL-01,
-TFD-1 / TFD-2). Full atomic requirements, thresholds, and the 14-test
-verification live in `TASKS.md` (## M06-R12).
+TFD-1 / TFD-2). Full atomic requirements, thresholds, and the verification
+live in `TASKS.md` (## M06-R12).
+
+**M06-R12 outcome (2026-10-04):** implemented and automated-verification
+complete. New `src/pred_frame.cpp` / `include/lander/pred_frame.hpp` provide the
+inertial frame transform and the AUTO orbit-reference classifier (with
+hysteresis); `TrajectoryPrediction` carries parallel timed samples; the GUI adds
+F5 = AUTO / F6 = PRIMARY / F7 = COMPANION / F8 = WORLD with segmented AUTO
+rendering, transition markers, a persistent `FRAME` legend row, and a debug-panel
+`PRED FRAME` / `REF SEG` / per-body `EPS`/`DOM`/`WIND`/`RATIO` /
+`PHYSICS = WORLD / INERTIAL` readout. The two classifier fixture GATES pass with
+real two-body physics (companion orbit -> AUTO COMPANION 98.7% / final
+COMPANION; primary orbit -> AUTO PRIMARY 99.8% / final PRIMARY); a body-centred
+co-rotating point is stationary in the body frame; no physics / propagation /
+gravity / collision / transfer / landing / guidance / binary-ephemeris behaviour
+changed. Build clean; the new `lander_pred_frame_tests` passes; full ctest
+10/12 (the only 2 failures are the untouched-solver TFD-1 / TFD-2, unchanged).
+Committed and pushed to `origin`. Only the human visual pass
+(`M06-R12-H01` / `M06-R12-H02`) remains open (alongside the still-open
+`M06-R11-H01` and `M06-R7-H01`); M06 is NOT closed.
 
 All M06 flight-computer additions follow the canonical HOT / WARM / COLD
 computational rate tiers:

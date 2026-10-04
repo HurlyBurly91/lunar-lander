@@ -2,6 +2,7 @@
 
 #include "lander/ballistic.hpp"
 #include "lander/binary.hpp"
+#include "lander/pred_frame.hpp"
 #include "lander/sim.hpp"
 
 #include <optional>
@@ -80,6 +81,14 @@ struct TrajectoryPrediction {
     // position with the ideal impulse already applied.
     std::vector<Vec2> pre;
     std::vector<Vec2> post;
+
+    // M06-R12: full chronological world-frame samples (pre then post), each
+    // carrying position, velocity, and simulation time. Parallel to / aligned
+    // with the decimated `pre`/`post` above (one timed sample per decimated
+    // sample). This is the display-capable substrate for the reference-frame
+    // transform and the AUTO orbit-reference classifier; the existing Vec2
+    // `pre`/`post` are left unchanged for existing consumers.
+    std::vector<TimedTrajectorySample> timed;
 
     Vec2 node_position{};
     TerrainImpact impact{};

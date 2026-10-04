@@ -180,6 +180,7 @@ TrajectoryPrediction predict_trajectory(
 
     if (start.crashed) {
         out.pre.push_back({start.x, start.y});
+        out.timed.push_back({{start.x, start.y}, {start.vx, start.vy}, t0});
         return out;
     }
     if (start.landed) {
@@ -187,6 +188,7 @@ TrajectoryPrediction predict_trajectory(
         // prediction would immediately intersect the surface it is resting on.
         // Report the ship's current surface position and stop.
         out.pre.push_back({start.x, start.y});
+        out.timed.push_back({{start.x, start.y}, {start.vx, start.vy}, t0});
         const auto pad = destination_pad(bin, dest, t0);
         const double d = std::hypot(start.x - pad.position.x,
                                     start.y - pad.position.y);
@@ -222,6 +224,7 @@ TrajectoryPrediction predict_trajectory(
     auto add_pre_sample = [&](const BallisticState& st) {
         if (out.pre.empty() || out.pre.back() != st.p) {
             out.pre.push_back(st.p);
+            out.timed.push_back({st.p, st.v, st.t});
         }
     };
 
@@ -273,6 +276,7 @@ TrajectoryPrediction predict_trajectory(
         update_world(st);
         if (record_sample && (out.post.empty() || out.post.back() != st.p)) {
             out.post.push_back(st.p);
+            out.timed.push_back({st.p, st.v, st.t});
         }
         const Vec2 ref_pos = bin.position(ref, st.t);
         const double rho =
