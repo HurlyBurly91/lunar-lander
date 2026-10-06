@@ -9,3 +9,6 @@ cmake-build-*/
 /codex/*/records/
 /opencode/*/records/
 /codex/*/.gitignore
+.experience-index/
+experience-index.sqlite
+experience-vectors.bin
