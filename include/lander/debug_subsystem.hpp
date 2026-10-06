@@ -209,4 +209,103 @@ inline AttitudeDebugAxes attitude_debug_axes(double actual_angle,
     return axes;
 }
 
+// BEGIN CANONICAL ALGORITHM: node-edit debug display geometry
+// Reference: docs/flight-guidance-attitude-bang-bang-control-and-velocity-to-
+// be-gained-node-execution.md (node / VGO / basis semantics that the overlay
+// visualizes); docs/physics-model-gravity.md (physics stays WORLD/INERTIAL).
+//
+// The following are READ-ONLY, presentation-only geometry helpers used ONLY by
+// the `--debug-subsystem node-edit` isolation. They take plain values (no
+// Simulation / ManeuverNode / TrajectoryPrediction), so they never mutate game
+// state and are fully headless-testable. The arrow directions are expressed in
+// the camera-rotated DISPLAY space (the same rotation `to_screen_point` applies
+// to world vectors), so the rendered arrows keep a FIXED on-screen length
+// regardless of camera zoom, and their orientation matches how the surrounding
+// PRE/POST trajectory arc is drawn in the selected frame.
+
+// The camera-rotated (screen-space) unit direction for a world/display unit
+// vector `d` at camera roll `camera_angle`. Mirrors the rotation inside
+// `to_screen_point`: local_x = dx*c + dy*s; local_y = -dx*s + dy*c; and the
+// screen y-axis is inverted, so the on-screen direction is
+// (dx*c + dy*s, dx*s - dy*c). Pure; no mutation.
+inline Vec2 cam_rotate_dir(const Vec2& d, double camera_angle) {
+    const double c = std::cos(camera_angle);
+    const double s = std::sin(camera_angle);
+    return Vec2{d.x * c + d.y * s, d.x * s - d.y * c};
+}
+
+// The tip (in screen pixel coordinates) of a fixed-length arrow drawn from
+// `anchor` along the camera-rotated direction `d`. `length_px` is in pixels
+// (camera-zoom independent); a non-finite direction yields `anchor`. Pure.
+inline Vec2 screen_arrow_tip(const Vec2& anchor, const Vec2& d,
+                             double camera_angle, double length_px) {
+    const double norm = std::hypot(d.x, d.y);
+    if (!(norm > 0.0) || !std::isfinite(norm)) return anchor;
+    const Vec2 dir = Vec2{d.x / norm, d.y / norm};
+    const Vec2 rot = cam_rotate_dir(dir, camera_angle);
+    return Vec2{anchor.x + rot.x * length_px, anchor.y + rot.y * length_px};
+}
+
+// The fixed-screen arrow endpoints for the node-edit overlay, all measured from
+// the same on-screen anchor. PGR/RAD come from the supplied NodeBasis (used
+// verbatim, never recomputed); the DV ray comes from the supplied dv_world and
+// is only present when its magnitude exceeds `eps` (the magnitude is always
+// reported via dv_length_mps). All tips are a fixed `length_px` from `anchor`.
+struct NodeEditArrows {
+    Vec2 pgr_tip{};
+    Vec2 rad_tip{};
+    Vec2 dv_tip{};
+    bool dv_present = false;
+    double dv_length_mps = 0.0;
+};
+
+inline NodeEditArrows node_edit_arrows(const Vec2& anchor, const NodeBasis& basis,
+                                       const Vec2& dv_world, double camera_angle,
+                                       double length_px, double eps = 1.0e-6) {
+    NodeEditArrows a;
+    a.pgr_tip = screen_arrow_tip(anchor, basis.prograde, camera_angle, length_px);
+    a.rad_tip = screen_arrow_tip(anchor, basis.radial_out, camera_angle, length_px);
+    const double dv_mag = std::hypot(dv_world.x, dv_world.y);
+    a.dv_length_mps = dv_mag;
+    if (dv_mag > eps) {
+        a.dv_present = true;
+        a.dv_tip = screen_arrow_tip(anchor, dv_world, camera_angle, length_px);
+    } else {
+        a.dv_present = false;
+        a.dv_tip = anchor;
+    }
+    return a;
+}
+
+// The display-frame translation of a WORLD position `wp` for the given frame:
+// identity for the world frame (frame_body < 0), otherwise
+// wp - body_at_t + body_at_tnow (the same shift `pred_frame` / draw_trajectory
+// apply). `body_at_t` is the frame body's position at the feature's epoch and
+// `body_at_tnow` at the render time; both are supplied so this stays pure.
+inline Vec2 frame_shift_point(const Vec2& wp, int frame_body,
+                               const Vec2& body_at_t, const Vec2& body_at_tnow) {
+    if (frame_body < 0) return wp;
+    return wp - body_at_t + body_at_tnow;
+}
+
+// M06-R16: deterministic screen-space position for a node-edit arrow label.
+// The label sits `along` pixels beyond the arrow tip, further out along the
+// arrow, then `side` pixels perpendicular to it (positive = left of the arrow
+// travel, negative = the other side). Two nearly-parallel arrows (e.g. PGR and
+// a mostly-prograde DV) therefore keep their labels on opposite sides and stay
+// individually readable. Pure: same inputs -> same output, so the placement is
+// headless-testable. A degenerate (zero-length) arrow returns the tip.
+inline Vec2 node_edit_label_pos(const Vec2& anchor, const Vec2& tip,
+                                double along, double side) {
+    const double dx = tip.x - anchor.x;
+    const double dy = tip.y - anchor.y;
+    const double len = std::hypot(dx, dy);
+    if (!(len > 1.0e-9)) return tip;
+    const double ux = dx / len;
+    const double uy = dy / len;
+    return Vec2{tip.x + ux * along - uy * side, tip.y + uy * along + ux * side};
+}
+
+// END CANONICAL ALGORITHM: node-edit debug display geometry
+
 }  // namespace lander

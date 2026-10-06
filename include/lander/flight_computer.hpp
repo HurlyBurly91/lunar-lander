@@ -100,6 +100,16 @@ struct TrajectoryPrediction {
     bool basis_valid{false};
     Vec2 dv_world{};
     double total_dv{0.0};
+    // M06-R16: the single effective node-event epoch, in simulation seconds.
+    // = max(t0, snap_time(node->time, fixed_dt)) when a node exists, 0.0 when
+    // there is none. This is the exact epoch predict_trajectory anchors the
+    // pre-burn endpoint, node_position, NodeBasis, dv_world, and the PRE/POST
+    // boundary at. Every node graphic (the marker transform, the AUTO-frame
+    // lookup, and the PGR/RAD/DV geometry) MUST consume this one value --
+    // never the raw, stale ManeuverNode::time -- so an overdue node
+    // (node->time < t0) stays anchored to the current prediction epoch
+    // instead of drifting.
+    double node_time_effective{0.0};
 };
 
 // Pure zero-thrust prediction from `start` at `t0`. With a node, the pre-node
@@ -113,6 +123,40 @@ TrajectoryPrediction predict_trajectory(
     double t0, int reference_body, int destination_body,
     const std::optional<ManeuverNode>& node, double horizon_seconds,
     int target_samples = 1024);
+
+// M06-R17: the node's EVENT state resolved at a chosen "now" (`t_now`) rather
+// than at a prediction cache's rebuild epoch. It resolves the node's
+// effective epoch exactly like predict_trajectory does (
+// max(t_now, snap_time(node.time, fixed_dt)) ) and returns the zero-thrust
+// ship state at that epoch propagated from the CURRENT ship state, the
+// NodeBasis at the epoch, and the node's world delta-v reconstructed in that
+// basis. When the node's scheduled epoch is already in the past, the
+// effective epoch is t_now itself and no propagation is performed (the event
+// is the ship's current state); otherwise a single bounded propagation runs
+// from the current state to the snapped scheduled epoch. This is the cheap,
+// render-cadence twin of the predictor's node anchor, for the `node-edit`
+// overlay: the long-arc prediction cache is rebuilt at a bounded cadence, so
+// its node anchor is the ship's state at the last rebuild epoch, while this
+// helper keeps the on-scene node graphics tracking the live ship. Pure: it
+// never mutates the simulation, the node, or any cache.
+struct NodeEventState {
+    // The "now" this event was resolved from (echoed for callers).
+    double now{0.0};
+    // The effective event epoch: now when the node is overdue, otherwise the
+    // node's scheduled time snapped to the fixed-step grid.
+    double time{0.0};
+    // The zero-thrust ship state at `time`, propagated from the current
+    // state (identical to it when the node is overdue).
+    BallisticState state{};
+    NodeBasis basis{};
+    bool basis_valid{false};
+    Vec2 dv_world{};
+    double total_dv{0.0};
+};
+
+NodeEventState node_event_state(const BinarySystem& bin, const Config& cfg,
+                                const State& ship, double t_now,
+                                const ManeuverNode& node);
 
 // Osculating local circularization around the node's frame body. Creates or
 // edits the single node; never mutates live state.

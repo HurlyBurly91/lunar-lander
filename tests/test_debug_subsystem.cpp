@@ -51,6 +51,10 @@ using lander::make_common_readout;
 using lander::parse_debug_subsystem;
 using lander::setup_debug_scenario;
 
+// M06-R15: the pure node-edit geometry helpers under test.
+using lander::NodeBasis;
+using lander::NodeEditArrows;
+
 int failures = 0;
 
 void check(bool condition, const char* message) {
@@ -562,6 +566,293 @@ void test_attitude_debug_axes() {
     }
 }
 
+// M06-R15: the pure, headless node-edit geometry helpers that the on-scene
+// overlay and its fixed-screen arrows are built from. These are the automated
+// evidence that (V01) the arrows are fixed-length and camera-rotated, (V02) the
+// PGR / RAD / DV arrows come straight from the exact prediction basis / dv_world
+// (never recomputed), and (V03) the frame shift anchors a world point to the
+// node epoch and is the identity for the world frame. (V06) they are pure.
+void test_node_edit_debug_geometry() {
+    const double kLen = 40.0;
+
+    // V01a: cam_rotate_dir is a pure camera rotation R2D(cam_angle).
+    {
+        const double a = 0.6;
+        const Vec2 e0{1.0, 0.0};
+        const Vec2 r = lander::cam_rotate_dir(e0, a);
+        check_close(r.x, std::cos(a), 1e-12, "rotated (1,0).x == cos(a)");
+        check_close(r.y, std::sin(a), 1e-12, "rotated (1,0).y == sin(a)");
+        const Vec2 r0 = lander::cam_rotate_dir(e0, 0.0);
+        check_close(r0.x, 1.0, 1e-12, "identity cam leaves (1,0).x");
+        check_close(r0.y, 0.0, 1e-12, "identity cam leaves (1,0).y");
+    }
+
+    // V01b: screen_arrow_tip returns a fixed-length, camera-rotated tip and
+    // normalises a non-unit input direction.
+    {
+        const Vec2 anchor{100.0, 200.0};
+        const double a = 0.7;
+        const Vec2 tip = lander::screen_arrow_tip(anchor, Vec2{1.0, 0.0}, a,
+                                                  kLen);
+        check_close(std::hypot(tip.x - anchor.x, tip.y - anchor.y), kLen, 1e-9,
+                    "screen_arrow_tip fixed length");
+        check_close(tip.x - anchor.x, kLen * std::cos(a), 1e-9, "tip dir.x");
+        check_close(tip.y - anchor.y, kLen * std::sin(a), 1e-9, "tip dir.y");
+
+        const Vec2 tip2 =
+            lander::screen_arrow_tip(anchor, Vec2{3.0, 4.0}, 0.0, kLen);
+        check_close(std::hypot(tip2.x - anchor.x, tip2.y - anchor.y), kLen,
+                    1e-9, "non-unit dir normalised to fixed length");
+        check_close(tip2.x - anchor.x, kLen * 0.6, 1e-9, "norm dir.x (3/5)");
+        // Screen y is flipped (to_screen_point): world (0,1) at cam 0 -> screen
+        // (0,-1). So a world dir (0.6,0.8) maps to screen (0.6,-0.8).
+        check_close(tip2.y - anchor.y, -kLen * 0.8, 1e-9,
+                    "norm dir.y (4/5) [screen y flipped]");
+    }
+
+    // V01c: identity camera -> tip == anchor + length * dir, unchanged.
+    {
+        const Vec2 anchor{0.0, 0.0};
+        const Vec2 tip =
+            lander::screen_arrow_tip(anchor, Vec2{0.0, 1.0}, 0.0, 30.0);
+        check_close(tip.x, 0.0, 1e-12, "identity up tip.x == 0");
+        check_close(tip.y, -30.0, 1e-12, "identity up tip.y == -30 (y flip)");
+    }
+
+    // V02a: the PGR / RAD arrows match the supplied NodeBasis exactly.
+    {
+        const Vec2 anchor{50.0, 50.0};
+        const NodeBasis basis{Vec2{1.0, 0.0}, Vec2{0.0, 1.0}};
+        const NodeEditArrows ar =
+            lander::node_edit_arrows(anchor, basis, Vec2{0.0, 0.0}, 0.0, kLen);
+        check_close(
+            std::hypot(ar.pgr_tip.x - anchor.x, ar.pgr_tip.y - anchor.y), kLen,
+            1e-9, "PGR length == fixed");
+        check_close(ar.pgr_tip.x - anchor.x, kLen, 1e-9, "PGR dir == prograde");
+        check_close(ar.pgr_tip.y - anchor.y, 0.0, 1e-9, "PGR dir y == 0");
+        check_close(ar.rad_tip.x - anchor.x, 0.0, 1e-9, "RAD dir x == 0");
+        // radial_out (0,1) -> screen (0,-1) at cam 0 (screen y flipped).
+        check_close(ar.rad_tip.y - anchor.y, -kLen, 1e-9,
+                    "RAD dir == radial [screen y flipped]");
+    }
+
+    // V02b: the DV arrow is the exact dv_world (normalised direction), with
+    // the reported magnitude == |dv_world|.
+    {
+        const Vec2 anchor{0.0, 0.0};
+        const NodeBasis basis{Vec2{1.0, 0.0}, Vec2{0.0, 1.0}};
+        const Vec2 dv{3.0, 4.0};  // |dv| = 5, unit (0.6, 0.8)
+        const NodeEditArrows ar =
+            lander::node_edit_arrows(anchor, basis, dv, 0.0, kLen);
+        check(ar.dv_present, "nonzero dv -> dv_present");
+        check_close(ar.dv_length_mps, 5.0, 1e-12, "dv magnitude == 5");
+        check_close(ar.dv_tip.x, kLen * 0.6, 1e-9, "DV dir == norm dv.x");
+        check_close(ar.dv_tip.y, -kLen * 0.8, 1e-9,
+                    "DV dir == norm dv.y [screen y flipped]");
+    }
+
+    // V02c: a zero dv_world -> no DV arrow, but the magnitude is reported as 0
+    // and the PGR / RAD arrows are still drawn.
+    {
+        const Vec2 anchor{0.0, 0.0};
+        const NodeBasis basis{Vec2{1.0, 0.0}, Vec2{0.0, 1.0}};
+        const NodeEditArrows ar =
+            lander::node_edit_arrows(anchor, basis, Vec2{0.0, 0.0}, 0.0, kLen);
+        check(!ar.dv_present, "zero dv -> !dv_present");
+        check_close(ar.dv_length_mps, 0.0, 1e-12, "zero dv -> magnitude 0");
+        check_close(std::hypot(ar.pgr_tip.x, ar.pgr_tip.y), kLen, 1e-9,
+                    "PGR still drawn when dv == 0");
+        check_close(std::hypot(ar.rad_tip.x, ar.rad_tip.y), kLen, 1e-9,
+                    "RAD still drawn when dv == 0");
+    }
+
+    // V03: frame_shift_point anchors a world point to the given frame at the
+    // node epoch, and is the identity for the world frame / a stationary anchor.
+    {
+        const Vec2 wp{100.0, 50.0};
+        const Vec2 w =
+            lander::frame_shift_point(wp, -1, Vec2{999, 999}, Vec2{0, 0});
+        check(w == wp, "world frame shift is identity");
+
+        const Vec2 body_at_t{10.0, 20.0};
+        const Vec2 body_at_tnow{30.0, 40.0};
+        const Vec2 b =
+            lander::frame_shift_point(wp, 0, body_at_t, body_at_tnow);
+        check_close(b.x, 100.0 - 10.0 + 30.0, 1e-12, "body shift x");
+        check_close(b.y, 50.0 - 20.0 + 40.0, 1e-12, "body shift y");
+
+        const Vec2 same{5.0, 5.0};
+        check(lander::frame_shift_point(wp, 1, same, same) == wp,
+              "stationary body anchor -> identity");
+    }
+
+    // V06: the helpers are pure -- they take const refs and cannot mutate.
+    {
+        const NodeBasis basis{Vec2{1.0, 0.0}, Vec2{0.0, 1.0}};
+        const Vec2 dv{3.0, 4.0};
+        const Vec2 anchor{7.0, 8.0};
+        (void)lander::node_edit_arrows(anchor, basis, dv, 0.4, kLen);
+        (void)lander::screen_arrow_tip(anchor, dv, 0.4, kLen);
+        (void)lander::cam_rotate_dir(dv, 0.4);
+        (void)lander::frame_shift_point(anchor, 0, dv, basis.prograde);
+        (void)lander::node_edit_label_pos(anchor, dv, 2.0, 3.0);
+        check(basis.prograde.x == 1.0 && basis.radial_out.y == 1.0,
+              "NodeBasis unmutated");
+        check(dv.x == 3.0 && dv.y == 4.0, "dv_world unmutated");
+        check(anchor.x == 7.0 && anchor.y == 8.0, "anchor unmutated");
+    }
+}
+
+// M06-R16 (V04): deterministic, non-colliding placement of the node-edit
+// arrow labels. Each label sits `along` pixels beyond its arrow tip, further
+// out along the arrow, offset perpendicular by `side`. For two nearly
+// parallel arrows (the R15 defect: a mostly-prograde DV drawn on top of PGR)
+// the same-side placements coincide, while the opposite-side placement moves
+// the DV label clear of the PGR label. Perpendicular arrows stay distinct
+// under the same-side convention. The helper is pure and deterministic and
+// degrades to the tip for a zero-length arrow.
+void test_node_edit_label_placement() {
+    const Vec2 anchor{0.0, 0.0};
+
+    // PGR and DV both point screen-right (+x at camera 0), fixed 40 px.
+    const Vec2 tip_a{40.0, 0.0};
+    const Vec2 tip_b{40.0, 0.0};
+    const Vec2 a_side = lander::node_edit_label_pos(anchor, tip_a, 6.0, 7.0);
+    const Vec2 b_side = lander::node_edit_label_pos(anchor, tip_b, 6.0, 7.0);
+    check(a_side == b_side,
+          "parallel arrows: same-side labels collide (the R15 defect)");
+    // The label sits 6 px beyond the tip, further along the arrow, +7 px to
+    // the left of the arrow travel (screen +y for a +x arrow).
+    check_close(a_side.x, 46.0, 1e-9, "label extends along the arrow");
+    check_close(a_side.y, 7.0, 1e-9, "label offset perpendicular to the arrow");
+
+    // Flipping the side puts the DV label on the other side of its tip:
+    // 14 px away from the PGR label, individually readable.
+    const Vec2 b_other = lander::node_edit_label_pos(anchor, tip_b, 6.0, -7.0);
+    check_close(std::hypot(b_other.x - a_side.x, b_other.y - a_side.y), 14.0,
+                1e-9, "opposite-side label is 2*side from the same-side one");
+    check_close(b_other.x, 46.0, 1e-9, "flipped label still extends along");
+    check_close(b_other.y, -7.0, 1e-9, "flipped label on the other side");
+    const Vec2 b_again = lander::node_edit_label_pos(anchor, tip_b, 6.0, -7.0);
+    check(b_again == b_other, "label placement is deterministic");
+
+    // RAD points screen-down (0,-1 at camera 0): its same-side label stays
+    // well clear of the PGR label because the arrows are perpendicular.
+    const Vec2 rad_tip{0.0, -40.0};
+    const Vec2 rad_label = lander::node_edit_label_pos(anchor, rad_tip, 6.0,
+                                                       7.0);
+    check(std::hypot(rad_label.x - a_side.x, rad_label.y - a_side.y) > 10.0,
+          "perpendicular arrow label stays clear of the PGR label");
+
+    // A degenerate zero-length arrow falls back to the tip.
+    const Vec2 degenerate =
+        lander::node_edit_label_pos(anchor, anchor, 6.0, 7.0);
+    check(degenerate == anchor, "zero-length arrow -> label at the tip");
+}
+
+// M06-R17 (V02): the node-edit event state resolves the node's effective
+// epoch from the CURRENT ship state with the exact rule predict_trajectory
+// uses (max(t_now, snap(node.time, fixed_dt))), and agrees with the
+// predictor's node anchor computed from the same state. These are the
+// semantics the node-edit overlay now consumes at render cadence.
+void test_node_event_overdue_matches_predictor() {
+    Harness h;
+    h.setup(DebugSubsystem::NodeEdit);
+    const auto& bin = h.sim.binary();
+    const auto& cfg = h.sim.config();
+    const double t_now = h.sim.sim_time();
+    const State ship = h.sim.state();
+    check(h.node.has_value(), "node-edit fixture has a node");
+
+    // Scheduled epoch in the past: the effective epoch must clamp to t_now
+    // and the event state must be the ship's current state, unpropagated.
+    const lander::ManeuverNode overdue = [&] {
+        lander::ManeuverNode n = *h.node;
+        n.time = lander::snap_time(t_now, cfg.fixed_dt) - 2.0 * cfg.fixed_dt;
+        return n;
+    }();
+    const lander::NodeEventState ev =
+        lander::node_event_state(bin, cfg, ship, t_now, overdue);
+
+    check_close(ev.time, t_now, 1e-12, "overdue node clamps to t_now");
+    check_close(ev.state.p.x, ship.x, 1e-9, "overdue event x == ship x");
+    check_close(ev.state.p.y, ship.y, 1e-9, "overdue event y == ship y");
+    check_close(ev.state.v.x, ship.vx, 1e-9, "overdue event vx == ship vx");
+    check_close(ev.state.v.y, ship.vy, 1e-9, "overdue event vy == ship vy");
+
+    // The same rule predict_trajectory applies from the same state.
+    const lander::TrajectoryPrediction pred = lander::predict_trajectory(
+        bin, cfg, ship, t_now, h.sim.reference_body(),
+        h.sim.contract().destination_body, overdue, 2.0 * bin.period(), 512);
+    check_close(pred.node_time_effective, t_now, 1e-12,
+                "predictor clamps the same node to t_now");
+    check_close(pred.node_position.x, ev.state.p.x, 1e-9,
+                "event position == predictor node position (x)");
+    check_close(pred.node_position.y, ev.state.p.y, 1e-9,
+                "event position == predictor node position (y)");
+    check(ev.basis_valid == pred.basis_valid, "basis validity agrees");
+    check_close(ev.basis.prograde.x, pred.basis.prograde.x, 1e-9,
+                "prograde.x agrees");
+    check_close(ev.basis.prograde.y, pred.basis.prograde.y, 1e-9,
+                "prograde.y agrees");
+    check_close(ev.basis.radial_out.x, pred.basis.radial_out.x, 1e-9,
+                "radial.x agrees");
+    check_close(ev.basis.radial_out.y, pred.basis.radial_out.y, 1e-9,
+                "radial.y agrees");
+    check_close(ev.dv_world.x, pred.dv_world.x, 1e-9, "dv_world.x agrees");
+    check_close(ev.dv_world.y, pred.dv_world.y, 1e-9, "dv_world.y agrees");
+    check_close(ev.total_dv, pred.total_dv, 1e-9, "total_dv agrees");
+    // The fixture node carries a 0.5 m/s prograde delta-v.
+    check(ev.total_dv > 0.4 && ev.total_dv < 0.6,
+          "overdue event reports the node delta-v magnitude");
+}
+
+void test_node_event_future_matches_predictor() {
+    Harness h;
+    h.setup(DebugSubsystem::NodeEdit);
+    const auto& bin = h.sim.binary();
+    const auto& cfg = h.sim.config();
+    const double t_now = h.sim.sim_time();
+    const State ship = h.sim.state();
+    check(h.node.has_value(), "node-edit fixture has a node");
+    const lander::ManeuverNode future = *h.node;  // t0 + 5 s, ahead of now
+    check(future.time > t_now, "fixture node is scheduled ahead of now");
+
+    const lander::NodeEventState ev =
+        lander::node_event_state(bin, cfg, ship, t_now, future);
+
+    check_close(ev.time, lander::snap_time(future.time, cfg.fixed_dt), 1e-12,
+                "future node keeps its snapped scheduled epoch");
+    check(ev.time > t_now, "future event epoch is ahead of now");
+
+    const lander::TrajectoryPrediction pred = lander::predict_trajectory(
+        bin, cfg, ship, t_now, h.sim.reference_body(),
+        h.sim.contract().destination_body, future, 2.0 * bin.period(), 512);
+    check_close(pred.node_time_effective, ev.time, 1e-12,
+                "event epoch == predictor node epoch");
+    check_close(pred.node_position.x, ev.state.p.x, 1e-9,
+                "event position == predictor node position (x)");
+    check_close(pred.node_position.y, ev.state.p.y, 1e-9,
+                "event position == predictor node position (y)");
+    check(ev.basis_valid == pred.basis_valid, "basis validity agrees");
+    check_close(ev.basis.prograde.x, pred.basis.prograde.x, 1e-9,
+                "prograde.x agrees");
+    check_close(ev.basis.prograde.y, pred.basis.prograde.y, 1e-9,
+                "prograde.y agrees");
+    check_close(ev.basis.radial_out.x, pred.basis.radial_out.x, 1e-9,
+                "radial.x agrees");
+    check_close(ev.basis.radial_out.y, pred.basis.radial_out.y, 1e-9,
+                "radial.y agrees");
+    check_close(ev.dv_world.x, pred.dv_world.x, 1e-9, "dv_world.x agrees");
+    check_close(ev.dv_world.y, pred.dv_world.y, 1e-9, "dv_world.y agrees");
+    check_close(ev.total_dv, pred.total_dv, 1e-9, "total_dv agrees");
+    // The future event state must differ from the ship's current state
+    // (it was propagated, not copied).
+    const double moved =
+        std::hypot(ev.state.p.x - ship.x, ev.state.p.y - ship.y);
+    check(moved > 1.0, "future event state was propagated away from now");
+}
+
 }  // namespace
 
 int main() {
@@ -577,6 +868,10 @@ int main() {
     test_orbit_fixture_primary();
     test_orbit_fixture_companion();
     test_attitude_debug_axes();
+    test_node_edit_debug_geometry();
+    test_node_edit_label_placement();
+    test_node_event_overdue_matches_predictor();
+    test_node_event_future_matches_predictor();
 
     if (failures == 0) {
         std::printf("All lander_debug_subsystem_tests passed\n");

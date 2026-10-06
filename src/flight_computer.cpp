@@ -200,6 +200,13 @@ TrajectoryPrediction predict_trajectory(
         {start.x, start.y}, {start.vx, start.vy}, t0};
     const double t_node =
         node ? std::max(t0, snap_time(node->time, dt)) : t_end;
+    // M06-R16: expose the single effective node-event epoch. When a node exists
+    // this is exactly the t_node the pre-burn / node_position / NodeBasis /
+    // dv_world / PRE-POST boundary below are anchored at (an overdue node,
+    // node->time < t0, clamps to the current prediction epoch t0); otherwise
+    // it stays 0.0. Every node graphic must consume this one value, never the
+    // raw, stale node->time.
+    out.node_time_effective = node ? t_node : 0.0;
     const int pre_steps = ballistic_steps(t0, t_node, dt);
     const int total_steps = ballistic_steps(t0, t_end, dt);
     const int stride = std::max(1, total_steps / std::max(1, target_samples));
@@ -296,6 +303,29 @@ TrajectoryPrediction predict_trajectory(
         }
     }
 
+    return out;
+}
+
+NodeEventState node_event_state(const BinarySystem& bin, const Config& cfg,
+                                const State& ship, double t_now,
+                                const ManeuverNode& node) {
+    NodeEventState out{};
+    out.now = t_now;
+    // The exact same effective-epoch rule as predict_trajectory: an overdue
+    // node clamps to the current time, a future node to its snapped schedule.
+    out.time = std::max(t_now, snap_time(node.time, cfg.fixed_dt));
+    const BallisticState initial{{ship.x, ship.y}, {ship.vx, ship.vy}, t_now};
+    // Zero propagation when the node is overdue; one bounded propagation to
+    // the scheduled epoch otherwise (the same integrator as the predictor).
+    out.state = propagate_ballistic(
+        bin, initial, ballistic_steps(t_now, out.time, cfg.fixed_dt),
+        cfg.fixed_dt);
+    out.basis =
+        compute_node_basis(bin, out.time, node.frame_body, out.state.p,
+                           out.state.v);
+    out.basis_valid = finite_basis(out.basis);
+    out.dv_world = out.basis_valid ? node_world_dv(node, out.basis) : Vec2{};
+    out.total_dv = vec_length(out.dv_world);
     return out;
 }
 

@@ -4,28 +4,77 @@
 
 M06 — Flight computer and maneuver planning
 
-State: AWAITING HUMAN VERIFICATION
+State: ACTIVE
 
-Phase: M06-R14 (attitude debug visualization) — a bounded R8 debug-harness
-follow-up adding a compact, READ-ONLY attitude visualization drawn ONLY in the
-`--debug-subsystem attitude` isolation: at the drawn spacecraft, a fixed
-screen-length ACT ray along the actual thrust axis (`thrust_hat(angle)`), a
-fixed screen-length TGT ray along the canonical `attitude_target_direction()`
-target (absent when none), an optional error arc between them, and the mode
-name. It reuses the exact target direction the panel/controller already use via
-a single shared resolution (no duplicated target calculation), is display-only
-(no control / physics / camera change), and is guarded to the attitude mode.
-AUTOMATED WORK COMPLETE (2026-10-05): code implemented; the headless
-pure-geometry regression (`test_attitude_debug_axes`) added and passing; build +
-full ctest (11/12, sole failure = the pre-existing V14-C cross-body landing, NOT
-from R14) + headless attitude / predictor / normal smokes all exit 0. The human
-visual gate M06-R14-H01 PASSed (2026-10-05, USER: ACT tracks the thrust axis, TGT
-matches the commanded aim, Off removes the target ray without mutating attitude,
-PROGRADE / RETROGRADE / RADIAL OUT / RADIAL IN / TARGET / ANTI-TARGET all correct,
-the controller rotates toward target and settles, the error viz is coherent, and
-the overlay is useful and readable); committed and pushed to origin.
+Phase: M06-R17 (R16 correction: node-edit RUNNING jitter / stair-step —
+presentation cadence) — COMPLETE (2026-10-06): diagnosis confirmed, fix
+implemented, automated verification complete, and the human gate
+M06-R17-H01 was a PASS (all R15/R16 checks plus RUNNING stability; no
+node-edit defect remains); the node-edit cell (R15 + R16 + R17) is committed.
+The M06-R16 human
+re-run (2026-10-06) was a PARTIAL PASS: everything passed (paused fixture +
+banner, marker on the PRE/POST junction through all edits, de-collided
+labels, H/J/K/L/C/DEL, F5-F9, pause/resume) EXCEPT one defect — while the
+simulation is RUNNING, the node/trajectory visualization visibly jitters /
+stair-steps (stable once paused). The 12 Hz cache-rebuild hypothesis was
+CONFIRMED by an instrumented run (forced 4 Hz rebuild cadence headless: in
+43/43 rebuild epochs the marker was frozen between rebuilds, snapped back
+onto the ship on each, jump ~= v_ship x interval, node_time_effective ==
+rebuild epoch throughout the overdue window). The fix (presentation-only):
+a pure `node_event_state` flight-computer helper computes the node-event
+geometry (position, effective epoch, NodeBasis, dv_world) from the CURRENT
+ship state at render cadence (zero propagation when EFFECTIVE NOW; bounded
+propagation for a future node); the node-edit marker / arrows / labels
+consume it every frame so the marker stays glued to the drawn ship while
+RUNNING; the PRE/POST long arcs remain 12 Hz cached with a new explicit
+`PRED AGE <ms>` staleness readout. No predictor physics, no 12 Hz budget
+change, no normal-gameplay or other-debug-mode change (TASKS.md P01-P05).
+Automated verification: new overdue + future node-event regressions pass;
+`ctest` = 11/12 (sole failure = pre-existing V14-C body-2 cross-body
+landing); headless smokes exit 0 (node-edit paused ticks=0; normal seed 1
+ticks=237 unchanged). Human re-run (M06-R17-H01, 2026-10-06, USER): PASS —
+the RUNNING jitter is fixed acceptably and all R15/R16 checks hold; no
+node-edit defect remains. The user's experimental ENTER press crossed into
+the node-executor subsystem (the next cell, M06-R18); its missing-plume
+observation is that cell's presentation-defect hypothesis. The original
+defect history: M06-R15's node-edit visualization FAILED its first human gate
+(H01):
+the NODE marker / PGR / RAD / DV graphics drift off the PRE/POST arc once the
+node is overdue, and the NODE/PGR/RAD/DV labels collide. Root cause: the
+predictor clamps the node to the current prediction epoch internally
+(`t_node = max(t0, snap(node->time, dt))`) but R15 rendered the node graphics
+from the raw, stale `maneuver_node->time` (a future node's raw time == its
+effective epoch, so Delete+C "fixes" it until the node lapses). R16 is a
+display/presentation-only correction: (1) add a single explicit effective epoch
+`node_time_effective = max(t0, snap(node->time, fixed_dt))` to
+`TrajectoryPrediction` and make EVERY node graphic consume it (marker transform,
+AUTO-frame lookup, PGR/RAD/DV geometry); the raw scheduled `node->time` is never
+silently overwritten and is shown as `SCHED T±<s>` with an `EFFECTIVE NOW` tag
+once overdue; (2) a deterministic overdue-node regression (marker == PRE/POST
+junction in PRIMARY/COMPANION/MOONLET at the effective epoch; the old
+raw-epoch transform drifts; no sim mutation; covers fresh/overdue/Delete+C/
+F5-F9); (3) the `--debug-subsystem node-edit` fixture starts PAUSED by default
+with a "PAUSED FOR NODE EDIT  [P] RUN" banner so a human can inspect it without
+the event epoch moving (P toggles pause; H/J/K/L/C/Delete rebuild the prediction
+immediately while paused with no physics tick; normal play + other debug modes
+unchanged; no hidden orbit stabilization); (4) deterministic, non-colliding
+placement of the four labels (NODE below-right of the marker; PGR/RAD/DV at
+their arrow tips; DV offset from PGR when nearly parallel); (5) explicit
+`pre.back() == post.front() == node_position` at the effective epoch (overdue =>
+at the current ship position). Scope guard: no change to maneuver-node planning
+math, the node basis, the node executor, the attitude controller, gravity /
+ephemerides, the prediction integrator, the R12/R13 frame transforms, the
+control bindings, or normal gameplay. R16 implementation and automated
+verification are COMPLETE (2026-10-05; D01-D07 / V01-V06 in `TASKS.md`): the
+effective epoch now drives every node graphic, the overdue-node regression
+passes, the node-edit fixture starts paused, and the labels are de-collided.
+The M06-R16-H01 human re-run (2026-10-06) was a PARTIAL PASS (only the RUNNING
+jitter remained); the phase is now M06-R17, which fixes that one defect; DO NOT
+commit until M06-R15-H01 re-PASSes via the M06-R17-H01 re-run. M06-R14
+(attitude debug visualization) is the most recently COMPLETED pass
+(2026-10-05; M06-R14-H01 human-accepted; committed and pushed to origin).
 M06 is still awaiting the other open human passes M06-R12-H01/H02,
-M06-R11-H01, M06-R7-H01 (unchanged by R14). The most recently completed pass,
+M06-R11-H01, M06-R7-H01 (unchanged by R14/R15). The previously completed pass,
 M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET), is COMPLETE and
 committed/pushed (2026-10-05; H01/H02/H03 passed). R13 was the first M06
 hardening pass that intentionally changes the canonical gravity / ephemeris
@@ -104,11 +153,31 @@ time. `M06-R7-H01` (the consolidated M06 playtest) stays OPEN as the acceptance
 gate; this tool supports that playtest one subsystem at a time. M06-R6 / M06-R7
 remain code-complete (see `TASKS.md`).
 
-Test status (current for M06-R14; R14 is display-only so the R13 automated
-baseline below is unchanged): M06-R14 — `ctest` = 11/12 (sole failure = the
-pre-existing V14-C body-2 cross-body landing, NOT introduced by R14);
-`lander_debug_subsystem_tests` (incl. the new `test_attitude_debug_axes`) pass;
-headless `--debug-subsystem attitude` / `predictor` / normal smokes all exit 0.
+Test status (current for M06-R17, which kept all R16 work and added its
+regressions; the R13 automated baseline below is unchanged): M06-R17 — full
+build clean (2026-10-06); new `tests/test_debug_subsystem.cpp` regressions
+`test_node_event_overdue_matches_predictor` / `test_node_event_future_matches_
+predictor` pass (node-event state from the current ship state equals the ship
+state exactly when overdue and equals `predict_trajectory` for the same
+epoch, overdue and future cases); `ctest` = 11/12 (sole failure = the
+pre-existing V14-C body-2 cross-body landing, NOT introduced by R17);
+headless smokes exit 0 (node-edit paused `ticks=0`; normal seed 1 `ticks=237`
+identical to baseline). M06-R16 — full build clean;
+`lander_flight_computer_tests` (new `test_node_time_effective_overdue`:
+effective-epoch == t0 when overdue / == snap(node.time) when future, per-frame
+F5-F9 junction match, stale raw-epoch transform drifts, node.time never
+overwritten, no sim mutation), `lander_debug_subsystem_tests` (new
+`test_node_edit_label_placement`: distinct/deterministic NODE/PGR/RAD/DV label
+positions, DV side-flip when near-parallel), and `lander_predictor_tests` all
+pass; `ctest` = 11/12 (sole failure = the pre-existing V14-C body-2 cross-body
+landing, NOT introduced by R16); headless smokes: `--debug-subsystem node-edit`
+exits 0 with `ticks=0` (fixture correctly starts PAUSED), normal gameplay exits
+0 with ticks advancing, and `attitude` / `node-executor` / `predictor` smokes
+all exit 0 still ticking (other modes unchanged). M06-R14 — `ctest` = 11/12
+(sole failure = the pre-existing V14-C body-2 cross-body landing, NOT
+introduced by R14); `lander_debug_subsystem_tests` (incl. the new
+`test_attitude_debug_axes`) pass; headless `--debug-subsystem attitude` /
+`predictor` / normal smokes all exit 0.
 M06-R13 baseline (all non-human verification complete):
 `lander_pred_frame_tests` (all pass): V19 `gate_moonlet` PASSES (~99.8% MOONLET,
 final MOONLET); V20 3-body via-WORLD PASSES (P->M = WPWM, M->P = WMWP, no direct
@@ -138,7 +207,20 @@ play: three bodies render, contract loop undisturbed, F9 works),
 `M06-R13-H02` (predictor + body-2 fixture: AUTO MOONLET, F9, body-2 readouts),
 and `M06-R13-H03` (predictor + body-1 fixture unchanged from R12 — regression
 check) all PASSed (2026-10-05). The M06-R14 attitude-visualization gate
-`M06-R14-H01` also PASSed (2026-10-05, USER). The still-open gates from earlier passes
+`M06-R14-H01` also PASSed (2026-10-05, USER). The M06-R15 node-edit
+visualization gate `M06-R15-H01` FAILED its first human verification (node
+graphics drift when overdue; label collisions) and was corrected by M06-R16
+(implementation + automated verification COMPLETE 2026-10-05); the M06-R16-H01
+re-run (2026-10-06) was a PARTIAL PASS — all R15/R16 checks passed EXCEPT one
+newly observed defect: while the simulation is RUNNING, the node/trajectory
+visualization visibly jitters / stair-steps (stable once paused). The remaining
+defect was corrected by M06-R17 (presentation cadence: node-event geometry
+at render cadence via the new `node_event_state` flight-computer helper,
+12 Hz long arcs kept with an explicit `PRED AGE` staleness readout); the
+M06-R17-H01 re-run (2026-10-06, USER) was a PASS — all R15/R16 checks plus
+RUNNING stability, no node-edit defect remaining — and the node-edit cell
+(R15 + R16 + R17) is now committed. The
+still-open gates from earlier passes
 remain: `M06-R12-H01` (static frame + legend + debug-panel visual pass),
 `M06-R12-H02` (AUTO frame visual pass — segmented arc, transition markers, no
 cross-frame connector), `M06-R11-H01` (the Pass 1 diagnostics visual pass),

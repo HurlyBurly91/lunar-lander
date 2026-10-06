@@ -1,18 +1,68 @@
 # Tasks
 
 Milestone: M06 — Flight computer and maneuver planning
-State: AWAITING HUMAN VERIFICATION
-Active request group: NONE active — M06 is idle awaiting its remaining open
-human gates (no new implementation group started this pass).
-Current phase: M06-R14 (attitude debug visualization) COMPLETE and
-committed/pushed (2026-10-05; M06-R14-H01 human-accepted). Prior state preserved:
-M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET) is COMPLETE and
-committed/pushed (2026-10-05; its H01/H02/H03 human gates all PASSed); M06-R12
-is complete/committed (commit `e968d1c`); M06-R11 (Pass 1) and M06-R7 are
+State: ACTIVE
+Active request group: M06-R17 (node-edit RUNNING jitter / stair-step —
+presentation cadence) — COMPLETE: the node-edit cell (R15 + R16 + R17) was
+human-accepted (2026-10-06) and committed together. M06-R18 (node-executor
+observability / presentation prep) is the next request group and begins after
+that commit.
+Current phase: M06-R17 — a bounded, display/presentation-only correction of the
+ONE defect left by the M06-R16 human re-run (2026-10-06 PARTIAL PASS): while the
+simulation is RUNNING, the node/trajectory visualization visibly jitters /
+stair-steps in `--debug-subsystem node-edit` (stable once paused). DIAGNOSIS
+CONFIRMED (2026-10-06, instrumented per-frame run at a forced 4 Hz rebuild
+cadence): the hypothesis held exactly — the cached NODE/PRE/POST junction is
+fixed between 12 Hz prediction rebuilds and snaps on every rebuild epoch
+(43/43 rebuilds: monotone offset growth 0.041 -> 5.491 m between rebuilds;
+per-rebuild snap 5.906 m ~= v_ship x 0.25 s; `node_time_effective == t_reb`
+throughout the overdue window). FIX IMPLEMENTED (2026-10-06, D02/D03): a new
+pure flight-computer helper `node_event_state` (flight_computer.hpp/.cpp;
+outside the display-geometry canonical region, no doc change needed) resolves
+the effective epoch exactly like `predict_trajectory` (`t_node =
+max(t_now, snap(node.time, dt))`), propagates zero-thrust from the CURRENT
+authoritative/presentation ship state (0 steps when overdue -> event == current
+state; bounded steps for a future node), and returns NodeBasis + dv_world +
+total_dv at that epoch; `draw_trajectory` / `draw_node_edit_debug` take an
+optional `NodeEventState*` override so the node marker, arrows, and label
+geometry come from that fresh event state at render cadence (an overdue event
+anchors at its own time -> identity body-frame shift -> marker sits exactly on
+the drawn ship at t_present), while the expensive PRE/POST long arcs stay 12 Hz
+cached and a new `PRED AGE <ms>` readout (sim_time - prediction build epoch)
+makes any staleness explicit. NO predictor physics, NO 12 Hz budget, NO normal
+gameplay, NO other debug mode, NO sim/node/camera mutation (P01-P05).
+AUTOMATED VERIFICATION COMPLETE (2026-10-06): new regressions
+`test_node_event_overdue_matches_predictor` / `test_node_event_future_matches_
+predictor` (tests/test_debug_subsystem.cpp) pass; `ctest` = 11/12 (sole
+failure = pre-existing V14-C body-2 cross-body landing, unchanged); headless
+smokes exit 0 (node-edit paused ticks=0; normal seed 1 ticks=237 unchanged).
+M06-R17-H01 (the M06-R15-H01 / M06-R16-H01 gate re-run with the fix) was a
+PASS (2026-10-06, USER): all R15/R16 checks plus RUNNING stability; no
+node-edit defect remains. The user's experimental ENTER press crossed into
+the node-executor subsystem (not a node-edit failure); its missing-plume
+aspect is the presentation-defect hypothesis for the next cell, M06-R18.
+The node-edit cell (R15 + R16 + R17) is committed.
+M06-R16 (the R15 correction: single effective node-epoch source of truth
+`TrajectoryPrediction.node_time_effective` consumed by every node graphic;
+paused node-edit fixture with "PAUSED FOR NODE EDIT  [P] RUN" banner;
+de-collided NODE/PGR/RAD/DV labels via the pure `node_edit_label_pos` helper;
+overdue-node regression) is IMPLEMENTED and its automated verification is
+COMPLETE (2026-10-05; D01-D07 / V01-V06 in "## M06-R16"): build clean, focused
+binaries pass, `ctest` = 11/12 (sole failure = pre-existing V14-C), headless
+node-edit smoke `ticks=0` (paused). Human re-run 2026-10-06 = PARTIAL PASS
+(only the RUNNING jitter remains) — that defect is what M06-R17 fixes.
+M06-R15 (the original node-edit debug visualization: NODE marker at the event
+epoch, PGR/RAD basis arrows, DV ray, LIVE label, PRE/POST + control legend) is
+the pass ultimately being corrected; it remains BLOCKED on that gate. M06-R14
+(attitude debug visualization) remains COMPLETE and committed/pushed
+(2026-10-05; M06-R14-H01 human-accepted).
+Prior state preserved: M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET)
+is COMPLETE and committed/pushed (2026-10-05; H01/H02/H03 PASS); M06-R12 is
+complete/committed (commit `e968d1c`); M06-R11 (Pass 1) and M06-R7 are
 code-complete. The still-OPEN human visual passes `M06-R12-H01` / `M06-R12-H02`,
 `M06-R11-H01`, `M06-R7-H01`, and the deferred predictor / transfer defects
-(PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) all remain open. R14 acceptance does
-NOT close M06.
+(PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) all remain open. R15 does NOT close
+M06; do NOT commit until M06-R15-H01 is human-accepted.
 R11 automated verification is COMPLETE (awaiting its human visual pass,
 M06-R11-H01); R12 automated verification is also now COMPLETE (awaiting
 M06-R12-H01 / H02). R11 was a bounded
@@ -5229,6 +5279,722 @@ deferred defects (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) remain open.
 - [x] M06-R14-D05 Add the focused headless test + register it in `main()`.
 - [x] M06-R14-D06 Build + run tests + headless smoke; do NOT commit; stop for
   human attitude visual verification.
-  Evidence (2026-10-05): build + `lander_debug_subsystem_tests` + full `ctest`
-  (11/12; sole failure = pre-existing V14-C) + headless attitude/predictor/normal
-  smokes all exit 0. Human gate H01 PASSed; committed and pushed to origin.
+   Evidence (2026-10-05): build + `lander_debug_subsystem_tests` + full `ctest`
+   (11/12; sole failure = pre-existing V14-C) + headless attitude/predictor/normal
+   smokes all exit 0. Human gate H01 PASSed; committed and pushed to origin.
+
+## M06-R15 — M06 DEBUG PHASE follow-up: node-edit debug visualization (visual observability)
+
+Source: USER (2026-10-05, "NODE-EDIT VISUAL OBSERVABILITY ONLY"). Bounded
+follow-up to the R8 subsystem-isolation debug harness. Make the
+`--debug-subsystem node-edit` isolation mode visually intelligible by adding a
+compact, read-only node-edit visualization to the scene:
+(A) a fixed marker at the node's EVENT epoch (label `NODE` / `T+<s>`, optional
+body name) in the SAME display frame as the drawn PRE/POST arc — audit the
+presentation-only transform and correct it so it is anchored to the node epoch,
+not `t_now`;
+(B) fixed-screen PGR + RAD arrows from the exact `NodeBasis`;
+(C) a distinct fixed-screen DV ray from the exact `prediction.dv_world` (magnitude
+always printed, e.g. `DV 0.50 M/S`; omit the ray when ~0);
+(D) clear PRE/POST legibility (existing coast/plan colors + a compact PRE/POST
+label/legend; PRE ends exactly at the node and POST starts at the same position
+— fix only a presentation/data mapping bug if decimation breaks the join; never
+change propagation);
+(E) the live craft clearly visible with a `LIVE` label, distinct from the node,
+and edits never move LIVE;
+(F) the existing key bindings preserved (H/J time, K/Shift+K PGR, L/Shift+L RAD,
+C/DEL/U/I/Y, ENTER) plus a persistent, readable control legend in the scene or
+panel, and a brief transient message when an edit key is pressed;
+(G) full frame consistency — the node marker, basis arrows, DV ray, and PRE/POST
+all use the same selected frame (AUTO/WORLD/PRIMARY/COMPANION/MOONLET; AUTO uses
+the node-epoch segment), no new frame concept, physics stays WORLD/INERTIAL;
+(H) focused headless / pure-geometry tests.
+Do NOT commit; STOP for human node-edit visual verification when visible.
+Scope boundary (preserve, do not cross): this is DISPLAY ONLY — no change to the
+node planning algorithms, the node basis math, predictor propagation, the node
+execution, the control / key bindings, the physics, the flight computer, or the
+camera behavior; no change to any other debug mode or to normal (non-debug)
+gameplay; no new HUD / nav / predictor clutter beyond the node-edit isolation;
+the visualization is read-only and never mutates the simulation / maneuver node
+/ prediction. The R12/R13 display-frame architecture remains authoritative; only
+the presentation of the node and its arrows is made consistent with it.
+State: COMPLETE (2026-10-06, human-accepted; committed with R16 + R17).
+M06-R15-H01 FAILED on first human verification (2026-10-05: the NODE marker /
+PGR / RAD / DV graphics drift off the PRE/POST arc once the node is overdue —
+R15 rendered the node from the raw, stale `maneuver_node->time` while the
+predictor clamps it to the current epoch — and the labels collide); RE-OPENED
+by M06-R16 (single effective node-epoch source of truth + paused fixture +
+de-collided labels); the M06-R16-H01 re-run (2026-10-06) was a PARTIAL PASS
+with one remaining defect (RUNNING jitter), corrected by M06-R17; the final
+M06-R17-H01 re-run (2026-10-06) was a PASS — all R15/R16 checks plus
+RUNNING-stability confirmed. The user's experimental ENTER press observed
+"magic" acceleration with no plume: that deliberately crossed into the
+separate node-executor subsystem (not a node-edit failure); the missing-plume
+aspect is a presentation defect carried to M06-R18.
+
+### M06-R15-01 — Node marker at the event epoch
+
+- [~] M06-R15-01-01 Draw a fixed marker at the node using the node's EVENT time
+  (not `t_now`), in the same display frame the drawn trajectory uses at the node
+  (AUTO = the node-epoch segment). Label it `NODE` / `T+<s>` and optionally the
+  body name. Audit the current transform and correct it only if it is
+  presentation-wrong (it currently uses `t_now`).
+  Files: src/gui.cpp; include/lander/debug_subsystem.hpp
+  Evidence: M06-R15-V01 (pure transform uses the node epoch, not t_now); H01.
+  Status: implemented — draw_trajectory's marker now uses `node_time` +
+  `frame_for_time(node_time)` (same shift as the arc at the node epoch); the
+  scene overlay repeats it via lander::frame_shift_point. Visual placement
+  pending M06-R15-H01.
+
+### M06-R15-02 — Prograde / radial basis arrows
+
+- [~] M06-R15-02-01 Draw two fixed-screen arrows at the node: prograde and
+  radial (outward), using the existing `NodeBasis` from the prediction (do NOT
+  recompute). Directions transform consistently with the selected frame.
+  Files: src/gui.cpp; include/lander/debug_subsystem.hpp
+  Evidence: M06-R15-V02 (PGR/RAD arrows equal the supplied basis); H01.
+  Status: implemented — lander::node_edit_arrows uses `prediction.basis`
+  verbatim; visual match pending M06-R15-H01.
+
+### M06-R15-03 — Delta-v ray
+
+- [~] M06-R15-03-01 Draw a distinct fixed-screen ray at the node along the
+  existing `prediction.dv_world` (NOT a re-derived quantity). Always print the
+  magnitude, e.g. `DV 0.50 M/S`; when the magnitude is ~0, show `DV 0.00 M/S`
+  and omit the directional ray.
+  Files: src/gui.cpp; include/lander/debug_subsystem.hpp
+  Evidence: M06-R15-V03 (DV ray = normalized dv_world; zero dv -> no ray); H01.
+  Status: implemented — ray from `prediction.dv_world`; `DV x.xx m/s` label
+  always drawn; ray omitted when |dv|<=1e-6. Visual pending M06-R15-H01.
+
+### M06-R15-04 — PRE/POST legibility
+
+- [~] M06-R15-04-01 Keep the existing coast (PRE) / plan (POST) colors and add a
+  compact `PRE` / `POST` label or legend; PRE ends exactly at the node and POST
+  starts at the same position (no jump, no fake connector). If a presentation /
+  data mapping bug breaks the join (decimation / timed indexing), fix only that;
+  never change propagation.
+  Files: src/gui.cpp; include/lander/predictor.hpp
+  Evidence: M06-R15-V04 (pre.back() == post.front() == node_position); H01.
+  Status: implemented — compact PRE/POST legend added in the scene overlay
+  using the exact coast(185,195,215)/thrust(120,240,160) arc colors; the join
+  is exact (verified by V04; no propagation change). Visual pending H01.
+
+### M06-R15-05 — Live craft vs node
+
+- [~] M06-R15-05-01 Keep the live craft clearly visible (it is the actual
+  game state) with a `LIVE` label; the node and its arrows must be visually
+  distinct from it; edits to the node never move the live craft.
+  Files: src/gui.cpp
+  Evidence: M06-R15-V06 (helpers do not mutate the prediction/sim); H01.
+  Status: implemented — `LIVE` cyan label at the actual craft; node/arrows in
+  distinct magenta/violet/amber. Helpers are pure (const refs) so edits cannot
+  move LIVE. Visual pending M06-R15-H01.
+
+### M06-R15-06 — Edit feedback / control legend
+
+- [~] M06-R15-06-01 Preserve all existing key bindings (H/J time, K/Shift+K PGR,
+  L/Shift+L RAD, C create, DEL clear, U circular, I transfer, Y match,
+  ENTER execute). Add a persistent, readable control legend in the scene or
+  panel. Optionally show a brief transient message when an edit key is pressed.
+  Files: src/gui.cpp
+  Evidence: H01 (the control legend is readable; edit keys give visible feedback;
+  ENTER is not used during node-edit verification).
+  Status: implemented — NodeEdit panel now shows a colour legend, the full
+  control legend (time/dv/plan/edit keys), and the "do NOT use [Return] during
+  node-edit verification" caveat. No key binding was changed. Visual pending
+  M06-R15-H01.
+
+### M06-R15-07 — Frame consistency
+
+- [~] M06-R15-07-01 The node marker, basis arrows, DV ray, and PRE/POST all use
+  the same selected frame (AUTO/WORLD/PRIMARY/COMPANION/MOONLET); in AUTO the
+  node epoch is used. Do not invent a new frame concept. Physics remains
+  WORLD/INERTIAL.
+  Files: src/gui.cpp; include/lander/pred_frame.hpp
+  Evidence: M06-R15-V05 (frame-shift helper consistent with the trajectory
+  render transform); H01.
+  Status: implemented — the overlay resolves the node's frame via the shared
+  file-static auto_frame_at (node-epoch segment) and shifts with
+  lander::frame_shift_point, identical to draw_trajectory's render_world; the
+  LIVE label sits at the arc's live end (identity at t_now). Physics unchanged.
+  Visual pending M06-R15-H01.
+
+### M06-R15-P — Preservation constraints
+
+- [x] M06-R15-P01 Read-only: the visualization reads the node / prediction /
+  basis / dv_world and the selected frame only; it never mutates the
+  simulation, the maneuver node, the flight computer, or the camera.
+  Evidence: draw_node_edit_debug takes only const refs; the pure helpers take
+  plain values; no write to sim/node/camera. M06-R15-V06.
+- [x] M06-R15-P02 No change to node planning / basis math, predictor
+  propagation, node execution, controls / key bindings, physics, the flight
+  computer, or the camera.
+  Evidence: diff touches only src/gui.cpp (presentation), the debug-subsystem
+  header (new pure helpers), and tests; no flight_computer/predictor/ballistic
+  logic change. Full ctest unchanged (V07).
+- [x] M06-R15-P03 No duplicated node-basis / delta-v calculation with different
+  semantics: the arrows use the exact `NodeBasis` and `dv_world` already on the
+  prediction; no second basis / dv computation.
+  Evidence: node_edit_arrows reads prediction.basis / prediction.dv_world
+  directly (V02/V03).
+- [x] M06-R15-P04 Node-edit mode only: nothing is added for any other
+  `--debug-subsystem` value or in normal gameplay; the R12/R13 display-frame
+  architecture remains authoritative.
+  Evidence: the overlay call is guarded to DebugSubsystem::NodeEdit; headless
+  ui/predictor/attitude/normal smokes all exit 0 unchanged (V07).
+
+### M06-R15-V — Automated verification
+
+- [x] M06-R15-V01 Headless pure-geometry (`tests/test_debug_subsystem.cpp`):
+  the node display-frame shift uses the node epoch (`wp - body(node_t) +
+  body(t_now)`, identity for the world frame) and is NOT the t_now-only
+  identity for a moving body.
+  Evidence: test_node_edit_debug_geometry (frame_shift_point body-epoch case +
+  world identity + stationary-identity) — PASS.
+- [x] M06-R15-V02 PGR/RAD/DV arrows equal the supplied `NodeBasis` / `dv_world`
+  (normalized) for sampled frames / angles; fixed pixel length, independent of
+  camera scale.
+  Evidence: test_node_edit_debug_geometry (cam_rotate_dir, screen_arrow_tip
+  fixed length, basis/dv directions) — PASS.
+- [x] M06-R15-V03 Zero dv -> no directional ray, but `dv_length_mps` is 0.
+  Evidence: test_node_edit_debug_geometry (zero-dv case: !dv_present,
+  dv_length_mps==0, PGR/RAD still drawn) — PASS.
+- [x] M06-R15-V04 Data level (`tests/test_flight_computer.cpp`): with a node,
+  `pre.back() == post.front() == node_position` (exact join).
+  Evidence: test_pre_post_join — PASS.
+- [x] M06-R15-V05 The frame-shift helper is consistent with `draw_trajectory`'s
+  `render_world` (the same translation evaluated at the node epoch).
+  Evidence: frame_shift_point and render_world both compute
+  `wp - bin.position(body, t) + bin.position(body, t_now)`; V01 asserts the
+  formula; draw_node_edit_debug feeds it the same body_at_t/body_at_tnow.
+- [x] M06-R15-V06 The pure helpers do not mutate `Simulation` / `ManeuverNode` /
+  `TrajectoryPrediction`.
+  Evidence: helpers take only const refs / plain values;
+  test_node_edit_debug_geometry asserts inputs are unmutated — PASS.
+- [x] M06-R15-V07 Full build + existing `lander_debug_subsystem_tests`,
+  `lander_flight_computer_tests`, `lander_predictor_tests` still pass; full
+  `ctest` unchanged from the R14 baseline (11/12; sole failure = the pre-existing
+  V14-C cross-body landing); headless `node-edit` / `predictor` / normal smokes
+  exit 0.
+  Evidence: 2026-10-05 build OK; lander_debug_subsystem_tests +
+  lander_flight_computer_tests PASS; ctest 11/12 (sole failure = pre-existing
+  lander_landing_tests V14-C); headless node-edit/predictor/attitude/ui/normal
+  smokes all exit 0 (SDL_VIDEODRIVER=dummy, --frames).
+
+### M06-R15-H — Human verification
+
+- [x] M06-R15-H01 Human: in `--debug-subsystem node-edit`, the node marker is at
+  the node (event epoch), PRE/POST are clearly distinct and meet at the node,
+  the PGR/RAD arrows match the basis, the DV ray + magnitude are correct,
+  H/J/K/L produce the expected visual changes, the live craft (LIVE) is not
+  moved by edits, C/DEL work, no burn occurs unless ENTER is used (and ENTER is
+  not used during this verification), and switching frame keeps all of it
+  consistent. STOP and report after implementation; do NOT commit until this
+  PASSes.
+    Status: FAILED on first verification (2026-10-05); RE-OPENED by M06-R16.
+    FINAL RESULT (2026-10-06, USER, via the M06-R17-H01 re-run): PASS — H/J
+    node-time editing, K/Shift+K prograde editing, L/Shift+L radial editing,
+    Delete/C recreate, F5-F9 frame switching, pause/resume, and coherent
+    node/PGR/RAD/DV geometry all confirmed, including the RUNNING-stability
+    check; the effective-node-epoch drift defect is fixed. No node-edit defect
+    remains. (An experimental ENTER press crossed into the node-executor
+    subsystem — the next cell, not a node-edit failure.) Human-accepted;
+    committed 2026-10-06 with R16 + R17.
+    The M06-R16 correction (single effective node-epoch source of truth,
+    paused node-edit fixture, de-collided labels) is IMPLEMENTED and its
+    automated verification is COMPLETE (2026-10-05). Re-run 2026-10-06 (via
+    M06-R16-H01): PARTIAL PASS — the fixture starts paused with the banner, the
+    marker sits on the PRE/POST junction through all edits, the four labels are
+    separately readable, and pause/resume + F5-F9 + H/J/K/L/C/DEL all behave;
+    the ONE remaining defect is that while the simulation is RUNNING the
+    node/trajectory visualization visibly jitters / stair-steps (stable once
+    paused). That defect is now carried to M06-R17 (presentation-cadence
+    correction); this gate stays OPEN until M06-R17's fix re-PASSes it (via
+    M06-R17-H01, the same checks plus the RUNNING-stability check). Do NOT
+    commit until this re-PASSes.
+
+### M06-R15-D — Derived implementation tasks
+
+- [x] M06-R15-D01 Add pure geometry to `include/lander/debug_subsystem.hpp`:
+  `cam_rotate_dir`, `screen_arrow_tip`, `NodeEditArrows` + `node_edit_arrows`,
+  and `frame_shift_point`.
+  Files: include/lander/debug_subsystem.hpp (CANONICAL ALGORITHM region).
+- [x] M06-R15-D02 In `src/gui.cpp` add file-static `auto_frame_at` +
+  `node_display_position` (single source of truth for the node display position
+  at the node epoch); change `draw_trajectory`'s node marker to use it (add a
+  `node_time` parameter) and update all call sites.
+  Files: src/gui.cpp — added frame_body_of/seg_frame_of/auto_frame_at; added the
+  `node_time` parameter to draw_trajectory; marker now uses the node epoch; all
+  three call sites updated to pass `maneuver_node ? ->time : 0.0`.
+- [x] M06-R15-D03 Add `draw_node_edit_debug(...)` in `src/gui.cpp` (fixed-screen
+  PGR/RAD/DV arrows + NODE/LIVE/PRE/POST labels) and insert a NodeEdit-only call
+  in the render loop (after the attitude block, before the panel).
+  Files: src/gui.cpp.
+- [x] M06-R15-D04 Enhance the NodeEdit debug panel case: a color legend
+  (PRE/POST/PGR/RAD/DV/LIVE), the full control legend, and the
+  "do not use ENTER during node-edit verification" caveat; optional transient
+  edit messages.
+  Files: src/gui.cpp (NodeEdit panel case).
+- [x] M06-R15-D05 Add the focused headless tests (V01-V03 in
+  `tests/test_debug_subsystem.cpp`; V04 in `tests/test_flight_computer.cpp`) and
+  register them in `main()`.
+  Files: tests/test_debug_subsystem.cpp (test_node_edit_debug_geometry),
+  tests/test_flight_computer.cpp (test_pre_post_join).
+- [x] M06-R15-D06 Build + run tests + headless smokes; do NOT commit; stop for
+  human node-edit visual verification.
+  Evidence: build OK; focused tests PASS; ctest 11/12 (pre-existing V14-C only);
+  headless node-edit/predictor/attitude/ui/normal smokes exit 0. NOT committed.
+
+## M06-R16 — M06 DEBUG PHASE follow-up (R15 correction): node-epoch source of truth + stable node-edit editing
+
+Source: USER (2026-10-05, "M06-R15 HUMAN VERIFICATION: FAIL — NODE EVENT-EPOCH /
+LEGIBILITY DEFECTS"). Bounded correction of the M06-R15 node-edit visualization
+after its human gate FAILED on first verification. Two distinct defects, one
+root cause (a second, stale node-epoch source of truth) plus label collisions:
+(1) the NODE marker / PGR / RAD / DV graphics drift far from the PRE/POST arc
+once the node is overdue, because the predictor clamps the node to the current
+prediction epoch (`t_node = max(t0, snap(node->time, dt))`) but R15 rendered the
+node graphics from the raw, stale `maneuver_node->time`; (2) after Delete + C
+recreates a fresh future node the graphics snap back on the arc (a future node's
+raw time == its effective epoch); (3) the NODE / PGR / RAD / DV labels overlap
+enough that prograde / radial edits cannot be judged reliably.
+Scope boundary (preserve, do not cross): this is R15 debug-observability +
+epoch consistency ONLY. Do NOT change maneuver-node planning math, the node
+basis algorithm, the node executor, the attitude controller, gravity /
+ephemerides, the prediction integrator, the R12/R13 frame transforms, the
+control bindings, or normal gameplay semantics. This is a display /
+presentation-only correction: the prediction's single effective node epoch
+becomes the source of truth for every node graphic, the node-edit debug fixture
+starts paused so a human can inspect it without the event epoch moving, and the
+node labels are de-collided in deterministic screen space.
+
+State: COMPLETE (2026-10-06, human-accepted; committed with R15 + R17).
+M06-R15-H01 FAILED on first verification; this request group corrects it and
+RE-OPENS M06-R15-H01. All automated work (D01-D07, V01-V06) is complete and
+verified 2026-10-05. Human re-run 2026-10-06: PARTIAL PASS — H/J time edits,
+K/Shift+K prograde, L/Shift+L radial, Delete/C recreate, F5-F9 frame
+switching, pause/resume, and paused node/PGR/RAD/DV coherence all PASS; ONE
+defect remained: while the simulation is RUNNING the node/trajectory
+visualization visibly jitters / stair-steps (stable once paused). That defect
+was corrected by M06-R17 and the same human gate re-PASSed via M06-R17-H01
+(2026-10-06). Human-accepted; committed 2026-10-06 with R15 + R17.
+
+### M06-R16-01 — One effective node-epoch source of truth (A)
+
+- [~] M06-R16-01-01 Establish exactly one explicit effective event epoch on
+  TrajectoryPrediction: `node_time_effective = max(t0, snap_time(node->time,
+  fixed_dt))` when a node exists (0.0 when there is no node). This is the same
+  value predict_trajectory already uses internally (`t_node`) for pre_steps, the
+  pre-burn endpoint, node_position, the NodeBasis, dv_world, and the PRE/POST
+  boundary.
+- [~] M06-R16-01-02 Every node graphic must consume `prediction.node_time_effective`,
+  never the raw `ManeuverNode::time`: the node marker's display-frame transform,
+  the AUTO-frame lookup, the PGR / RAD / DV scene geometry, and any node-event
+  marker. Do NOT independently recompute / clamp the epoch in multiple
+  consumers. The raw `ManeuverNode::time` remains the player's scheduled time and
+  is never silently overwritten when it becomes overdue.
+- [~] M06-R16-01-03 Diagnostic presentation distinguishes the two epochs when the
+  node is overdue (`node.time < t_now`): show the scheduled time plus a clear
+  "EFFECTIVE NOW" tag, e.g. `SCHED T-12.4 S  [EFFECTIVE NOW]`; when still in the
+  future show `NODE T+4.2 S`.
+  Files: include/lander/flight_computer.hpp; src/flight_computer.cpp; src/gui.cpp
+  Evidence: M06-R16-V01 (effective epoch == t0 when overdue; == snap(node.time)
+  when in the future; graphics consume it).
+
+### M06-R16-02 — Overdue-node regression (B)
+
+- [~] M06-R16-02-01 A deterministic regression that reproduces the observed failure:
+  create a node in the future; advance the authoritative simulation time beyond
+  `node.time`; rebuild the prediction; assert (a) `prediction.node_time_effective
+  == the current prediction epoch`, (b) the node marker transformed in the
+  PRIMARY / COMPANION / MOONLET body-centred frames using
+  `node_time_effective` equals the transformed PRE/POST junction, and (c) the
+  marker does NOT use the obsolete scheduled epoch (the old raw-`node.time`
+  transform drifts). Also covers a fresh future node, an overdue node, Delete +
+  recreate, and F5-F9 frame switching. No simulation state mutation.
+  Files: tests/test_flight_computer.cpp
+  Evidence: the new regression (M06-R16-V02) — it must FAIL against the pre-fix
+  raw-epoch transform and PASS against `node_time_effective`.
+
+### M06-R16-03 — Paused node-edit fixture (C)
+
+- [~] M06-R16-03-01 For `--debug-subsystem node-edit` ONLY, start the fixture PAUSED
+  by default so a human can inspect node geometry without the event epoch moving
+  underneath the editor. `P` still toggles pause normally; while paused, editing
+  (H/J/K/L/C/Delete) still rebuilds the visual prediction immediately and no
+  physics tick occurs because an edit key was pressed. Show a clear "PAUSED FOR
+  NODE EDIT  [P] RUN" indicator. Normal gameplay and every other debug mode are
+  unchanged; do NOT add hidden orbit stabilization.
+  Files: src/gui.cpp
+  Evidence: M06-R16-V03 (headless node-edit starts paused; edit keys rebuild the
+  prediction without a physics tick; P resumes; other modes unchanged).
+
+### M06-R16-04 — Deterministic node-label placement (D)
+
+- [~] M06-R16-04-01 Keep the same node geometry but place the four labels in
+  deterministic, non-colliding screen space: the NODE / time label below-right
+  of the marker; the PGR label at the PGR arrow tip; the RAD label at the RAD
+  arrow tip; and the DV magnitude at the DV arrow tip, offset (to the opposite
+  side) from PGR when the two are nearly collinear. No layout framework. NODE /
+  PGR / RAD / "DV x.xx m/s" must be separately identifiable.
+  Files: src/gui.cpp; include/lander/debug_subsystem.hpp (optional pure
+  placement helper)
+  Evidence: M06-R16-V04 (pure label-placement helper returns distinct,
+  deterministic screen positions for near-collinear PGR / DV).
+
+### M06-R16-05 — PRE/POST junction at the effective epoch (E)
+
+- [~] M06-R16-05-01 Explicitly verify (at the data level and in the scene) that the
+  last PRE position == the first POST position == `node_position` at the
+  effective node epoch, and that the visual node marker sits at that same
+  transformed point. When the node is overdue (effective NOW) the junction may
+  be at the current ship position — that is correct under the existing predictor
+  semantics and must be labelled `EFFECTIVE NOW`, not presented as unexplained
+  movement. Do not fabricate a connector or move either trajectory for
+  presentation.
+  Files: src/gui.cpp; tests/test_flight_computer.cpp
+  Evidence: M06-R16-V05 (`pre.back() == post.front() == node_position` at the
+  effective epoch; overdue -> effective == t0).
+
+### M06-R16-P — Preservation constraints
+
+- M06-R16-P01 No change to maneuver-node planning math, the node basis algorithm,
+  the node executor, the attitude controller, gravity / ephemerides, the
+  prediction integrator, the R12/R13 frame transforms, the control bindings, or
+  normal gameplay semantics.
+- M06-R16-P02 Read-only node graphics: the visualization still reads the node /
+  prediction / basis / dv_world and the selected frame; it never mutates the
+  simulation, the maneuver node, the flight computer, or the camera.
+- M06-R16-P03 Node-edit mode only: the paused-start fixture and the node-label
+  de-collision apply ONLY to `--debug-subsystem node-edit`; every other debug
+  mode and normal gameplay behave exactly as before.
+- M06-R16-P04 The raw `ManeuverNode::time` is never silently overwritten when it
+  becomes overdue; only the derived `prediction.node_time_effective` is derived.
+
+### M06-R16-V — Automated verification
+
+- [x] M06-R16-V01 `predict_trajectory` sets `node_time_effective == max(t0,
+  snap(node.time, dt))`; `== t0` when the node is overdue, `== snap(node.time)`
+  when in the future, and the node marker / arrows in gui.cpp consume
+  `prediction.node_time_effective` (not the raw `node.time`).
+  Evidence: tests/test_flight_computer.cpp::test_node_time_effective_overdue
+  (future-node block) — passed 2026-10-05. gui.cpp `draw_trajectory` /
+  `draw_node_edit_debug` now read `prediction.node_time_effective` only.
+- [x] M06-R16-V02 Overdue-node regression: with `node.time < t0`, the marker
+  transformed in PRIMARY / COMPANION / MOONLET using `node_time_effective`
+  equals the transformed PRE/POST junction, and the old raw-`node.time`
+  transform drifts (reproduces the observed bug). Also covers a fresh future
+  node, Delete + recreate, and F5-F9 frame switching. No sim mutation.
+  Evidence: same test, blocks 2-5 (frames = world + bodies 0-2; drift asserted
+  > 0.05 m in a body frame; node.time provably unoverwritten; State unmutated)
+  — passed 2026-10-05.
+- [x] M06-R16-V03 Headless: `--debug-subsystem node-edit` starts paused;
+  H/J/K/L/C/Delete rebuild the prediction immediately while paused and cause no
+  physics tick (sim_time unchanged); P resumes; normal + other debug modes are
+  unchanged.
+  Evidence: `SDL_VIDEODRIVER=dummy ./build/lander_gui --seed 7 --debug-
+  subsystem node-edit --frames 120` -> exit 0, `ticks=0` (frozen); normal
+  `--seed 1 --frames 120` -> exit 0, `ticks=237` (still runs); `attitude`
+  (ticks=276), `node-executor` (ticks=416), `predictor --debug-predictor-body
+  1` (ticks=365) all exit 0 with ticks > 0 (other modes unchanged). Edit-key
+  rebuilds-while-paused is the same `prediction_inputs_changed()` path the
+  frame loop already exercises (rebuild is gated only on !crashed && !landed,
+  never on `paused`), and the effective-epoch math it recomputes is exactly what
+  V01/V02 assert headlessly.
+- [x] M06-R16-V04 The pure node-label placement helper returns deterministic,
+  individually-distinct screen positions (NODE, PGR, RAD, DV) and keeps the DV
+  label offset from PGR when PGR / DV are nearly parallel.
+  Evidence: tests/test_debug_subsystem.cpp::test_node_edit_label_placement —
+  parallel same-side labels coincide (the R15 defect), opposite-side placement
+  is 14 px apart, perpendicular RAD stays clear, degenerate arrow -> tip,
+  deterministic — passed 2026-10-05.
+- [x] M06-R16-V05 Data level: `pre.back() == post.front() == node_position` at
+  the effective node epoch; when overdue the effective epoch == t0 (junction at
+  the current ship position) and no fabricated connector is introduced.
+  Evidence: test_node_time_effective_overdue asserts `pre.back() == node_
+  position == post.front()` (1e-9) for the future, overdue, and recreated
+  nodes; the scene draws no connector (arcs end/start at the marker by
+  construction) — passed 2026-10-05.
+- [x] M06-R16-V06 Full build + `lander_debug_subsystem_tests` +
+  `lander_flight_computer_tests` + `lander_predictor_tests` still pass; full
+  `ctest` unchanged from the R14/R15 baseline (11/12; sole failure = the
+  pre-existing V14-C cross-body landing); headless `node-edit` / `predictor` /
+  `attitude` / `ui` / normal smokes exit 0.
+  Evidence: 2026-10-05 build clean (only the pre-existing test_predictor.cpp
+  unused-variable warning); the three focused binaries all print "All ...
+  passed"; full `ctest` = 11/12 with the sole failure `lander_landing_tests`
+  (pre-existing V14-C body-2 cross-body reds only); headless smokes above all
+  exit 0.
+
+### M06-R16-H — Human verification
+
+- [x] M06-R16-H01 Re-runs the FAILED M06-R15-H01 (same gate): in
+  `--debug-subsystem node-edit` the fixture starts paused with a clear "PAUSED
+  FOR NODE EDIT  [P] RUN" banner; the NODE marker sits on the arc at the node
+  and stays on the arc as the node is edited (including once it becomes
+  overdue, labelled EFFECTIVE NOW); PRE/POST meet at the node; the PGR / RAD /
+  DV arrows and their four labels are separately readable (no collisions);
+  H/J/K/L edits move the expected things with the prediction rebuilding live;
+  the LIVE craft is not moved by edits; C/DEL work; F5-F9 frame switching keeps
+  it consistent; no burn unless ENTER (and ENTER is not used during this
+  verification). STOP and report; do NOT commit until M06-R15-H01 re-PASSes.
+   Result (2026-10-06, USER): PARTIAL PASS — all of the above PASSED while
+   paused / through the edits; the only remaining defect was that, while the
+   simulation is RUNNING, the node/trajectory visualization visibly jitters /
+   stair-steps (stable once paused). Carried to M06-R17, whose fix made the
+   same gate re-PASS via M06-R17-H01 (2026-10-06); this gate is resolved.
+
+### M06-R16-D — Derived implementation tasks
+
+- [x] M06-R16-D01 Add `double node_time_effective` to `TrajectoryPrediction`
+  (include/lander/flight_computer.hpp) and set it in `predict_trajectory`
+  (src/flight_computer.cpp) to `max(t0, snap(node.time, dt))` when a node exists
+  (else 0.0).
+  Files: include/lander/flight_computer.hpp (documented field after total_dv);
+  src/flight_computer.cpp (`out.node_time_effective = node ? t_node : 0.0;`
+  immediately after `t_node` is computed).
+  Evidence: V01/V02 pass; the field is the exact `t_node` the pre-burn endpoint,
+  node_position, NodeBasis, dv_world, and PRE/POST boundary are anchored at.
+- [x] M06-R16-D02 gui.cpp: make `draw_trajectory`'s node marker and the
+  `draw_node_edit_debug` overlay consume `prediction.node_time_effective`
+  (marker transform / AUTO-frame lookup / PGR-RAD-DV anchor all at the
+  effective epoch); drop reliance on the raw `maneuver_node->time` for those
+  graphics (the prediction now carries the epoch, so the redundant `node_time`
+  parameter can be removed from `draw_trajectory`).
+  Files: src/gui.cpp (draw_trajectory signature + marker; draw_node_edit_debug
+  epoch, auto_frame_at, bin.position, and anchor all use node_time_effective).
+  Evidence: no node graphic reads raw `node->time` for geometry anymore; the
+  only raw-time uses are the SCHED/NODE label deltas (display of the player's
+  scheduled value) and the overdue test (`node->time < t_now`).
+- [x] M06-R16-D03 gui.cpp: the NODE label shows `SCHED T±<s>` + an "EFFECTIVE
+  NOW" tag when overdue, and `NODE T+<s>` when in the future.
+  Files: src/gui.cpp (draw_node_edit_debug node label block).
+  Evidence: overdue -> two lines "SCHED T-10.0s <frame>" / "[EFFECTIVE NOW]"
+  above the marker (clear of the LIVE label, which coincides with it when
+  overdue); future -> "NODE T+10.0s <frame>" below-right of the marker.
+- [x] M06-R16-D04 gui.cpp: start the node-edit fixture paused (in
+  `start_mission`, after `setup_debug_scenario`); relax the node-edit arc +
+  overlay render guards so they draw while paused; add the "PAUSED FOR NODE
+  EDIT  [P] RUN" banner.
+  Files: src/gui.cpp (start_mission sets `paused = true` for NodeEdit only;
+  both NodeEdit render gates no longer require `!paused`; amber center banner
+  drawn while paused in that mode).
+  Evidence: headless node-edit 120 frames -> `ticks=0` exit 0 (paused, frozen);
+  normal + attitude + node-executor + predictor smokes still tick (P03 holds).
+- [x] M06-R16-D05 gui.cpp / debug_subsystem.hpp: deterministic non-colliding
+  placement of the NODE / PGR / RAD / DV labels (DV offset from PGR when
+  near-parallel).
+  Files: include/lander/debug_subsystem.hpp (pure `node_edit_label_pos` in the
+  canonical node-edit geometry region); src/gui.cpp (PGR / RAD / DV labels via
+  the helper; DV side flips when dot(PGR dir, DV dir) > 0.90).
+  Evidence: V04 test (parallel same-side labels coincide; opposite-side 14 px
+  apart; perpendicular RAD clear; deterministic; degenerate -> tip).
+- [x] M06-R16-D06 Add the R16 automated regressions (V01-V05) and register
+  them in the test `main()`s.
+  Files: tests/test_flight_computer.cpp (test_node_time_effective_overdue);
+  tests/test_debug_subsystem.cpp (test_node_edit_label_placement).
+  Evidence: both registered and passing 2026-10-05.
+ - [x] M06-R16-D07 Build + run focused tests + `lander_debug_subsystem` /
+   `flight_computer` / `predictor` tests + full ctest; headless node-edit /
+   other smokes; do NOT commit; stop at M06-R15-H01.
+   Evidence: see V06 (ctest 11/12, sole failure = pre-existing V14-C) and V03
+   (all headless smokes exit 0 with the expected tick behavior). NOT committed;
+   stopped at M06-R15-H01 / M06-R16-H01 awaiting the user.
+
+## M06-R17 — M06 DEBUG PHASE follow-up (R16 correction): node-edit RUNNING jitter / stair-step (presentation cadence)
+
+Source: USER (2026-10-06, "M06-R16 HUMAN RE-VERIFY: PARTIAL PASS, ONE DEFECT
+REMAINS"). The M06-R16-H01 re-run PASSED everything except one defect: while
+the simulation is RUNNING, the node/trajectory visualization visibly jitters /
+stair-steps; once paused it becomes stable. PASS on the re-run: H/J time edits;
+K/Shift+K prograde edits; L/Shift+L radial edits; Delete/C recreate; F5-F9
+frame switching; pause/resume behavior; node/PGR/RAD/DV geometry coherent and
+readable while paused.
+
+Strong hypothesis to VERIFY (explicitly: do not assume): the expensive
+long-arc prediction cache rebuilds at `kPredictRefreshSec = 1/12 s` while the
+authoritative simulation advances at 120 Hz and rendering advances at display
+rate. For an overdue node, `node_time_effective == t0 of the last rebuild`, so
+the cached NODE / PRE / POST junction represents "NOW at last prediction
+rebuild", not presentation NOW; it stays fixed between 12 Hz rebuilds and
+jumps when the next rebuild occurs.
+
+State: COMPLETE (2026-10-06, human-accepted; committed with R15 + R16).
+Diagnosis confirmed (V01), fix implemented (D02/D03), automated verification
+complete (V02/V03); the same human gate (M06-R15-H01 via M06-R17-H01)
+re-RAN and was a PASS (2026-10-06, USER — see M06-R17-H01). The node-edit
+cell (R15 + R16 + R17) is accepted and committed together 2026-10-06.
+
+### M06-R17-01 — Diagnose and confirm the jitter mechanism (do not assume)
+
+- [x] M06-R17-01-01 Add temporary diagnostic evidence sufficient to correlate:
+  the rendered node screen/world position each frame; current sim_time; the
+  prediction build epoch (`predict_last_sim_time`); `node_time_effective`;
+  whether the prediction rebuilt this frame; the live ship world position; the
+  PRE/POST junction world position.
+  Evidence: env-var-gated per-frame log (LLR17_* hooks; artifacts
+  /tmp/opencode/r17diag.log, r17diag2.log, r17out.txt).
+- [x] M06-R17-01-02 Reproduce: `./build/lander_gui --debug-subsystem node-edit`;
+  let the node become EFFECTIVE NOW; observe several jitter cycles; report
+  whether each visible jump coincides with the 12 Hz long-prediction rebuild.
+  Evidence: CONFIRMED. At a forced 4 Hz rebuild cadence (LLR17_CAD=0.25; this
+  CPU runs the native 12 Hz every-frame, ~90 ms rebuild, so the native cadence
+  could not be isolated headless): 479 overdue frames across 43 rebuild
+  epochs; the marker offset vs ship stayed fixed between rebuilds and grew
+  monotonically 0.041 -> 5.491 m within each epoch (43/43 epochs); each rebuild
+  snapped the marker back onto the ship (jump 5.906 m ~= v_ship x 0.25 s);
+  `node_time_effective == t_reb` for the entire overdue window. Every visible
+  jump coincides exactly with a prediction-rebuild epoch — the hypothesis held.
+- [x] M06-R17-01-03 Remove the temporary diagnostics after diagnosis.
+  Evidence: all LLR17_* / TEMP M06-R17 instrumentation removed from
+  src/gui.cpp; `grep -ri 'r17\|TEMP M06' src/ include/` returns nothing.
+- M06-R17-01-04 Not applicable (the hypothesis WAS confirmed; the stop-and-
+  report branch did not fire).
+
+### M06-R17-02 — Narrow presentation fix (only if the hypothesis is confirmed)
+
+- [x] M06-R17-02-01 Separate the cheap node-local display state from the
+  expensive long-arc cache: for node-edit visualization, compute/update the
+  NODE event geometry (event position, effective epoch, NodeBasis, dv_world)
+  from the current authoritative state at render/update cadence using the
+  minimum bounded propagation necessary to the node epoch. For EFFECTIVE NOW
+  this requires no long propagation: the node event position is the current
+  authoritative/presentation ship state, with basis / DV evaluated
+  consistently at the current simulation time.
+  Files: include/lander/flight_computer.hpp (new `NodeEventState` struct +
+  `node_event_state` declaration after `predict_trajectory`),
+  src/flight_computer.cpp (implementation after `predict_trajectory`),
+  src/gui.cpp (`draw_trajectory` / `draw_node_edit_debug` optional
+  `NodeEventState*` override; main-loop call site). The helper lives in the
+  flight computer (it does propagation/physics, not pure screen geometry), so
+  the "node-edit debug display geometry" canonical region in
+  debug_subsystem.hpp is untouched and no canonical doc change was needed.
+  Evidence: `node_event_state(bin, cfg, ship_state, t_now, node)` resolves
+  `t_node = max(t_now, snap_time(node.time, dt))` (same epoch rule as
+  `predict_trajectory`), propagates zero-thrust from the CURRENT state
+  (0 steps when overdue -> event == current state exactly), then
+  `compute_node_basis` / `node_world_dv` / `vec_length` at that epoch;
+  `draw_trajectory` anchors the marker's body-frame shift at the event's own
+  time when overdue (identity shift -> marker coincides with the drawn ship at
+  t_present) and at t_now for future events (unchanged convention).
+- [x] M06-R17-02-02 The expensive PRE/POST long arcs may remain 12 Hz cached
+  (do NOT raise the full rebuild to 60/120 Hz; preserve the 12 Hz budget).
+  Evidence: `kPredictRefreshSec` (gui.cpp) unchanged at 1/12 s; no rebuild
+  cadence change anywhere.
+- [x] M06-R17-02-03 Do not silently draw a NODE at a point inconsistent with
+  the cached PRE/POST junction: if the long arc is stale between rebuilds,
+  make that distinction explicit (e.g. a visible `PRED AGE <ms>` readout)
+  rather than pretending the two share the same epoch.
+  Evidence: new `PRED AGE <ms>` label in the node-edit overlay
+  (src/gui.cpp, y=134) = (sim_time - predict_last_sim_time) * 1000, showing
+  the age of the 12 Hz arc cache.
+- M06-R17-02-04 Simpler acceptable alternative (if the preferred direction
+  proves infeasible): freeze the node-edit trajectory presentation between
+  rebuilds while RUNNING and clearly show `PRED AGE <ms>`, provided the node
+  graphics do not jump relative to one another and the presentation remains
+  truthful.
+- M06-R17-02-05 Do NOT invent interpolation/translation that changes the
+  physical trajectory unless it is mathematically justified and tested.
+  Files: src/gui.cpp; include/lander/debug_subsystem.hpp (pure helper if
+  needed).
+  Evidence: node marker + PGR/RAD/DV arrows track the live craft smoothly
+  while RUNNING (no 12 Hz stair-step); regression M06-R17-V02; stale long arc
+  shown with an explicit age; headless smokes exit 0.
+
+### M06-R17-P — Preservation constraints
+
+- M06-R17-P01 Do NOT raise the expensive full trajectory rebuild above the
+  existing 12 Hz (`kPredictRefreshSec`) budget; do not add a new prediction
+  engine.
+- M06-R17-P02 Do NOT change predictor physics: propagation, horizon, decimation,
+  node planning math, node basis algorithm, or node execution semantics.
+- M06-R17-P03 Do NOT fake simulation state; do NOT change normal gameplay
+  physics.
+- M06-R17-P04 Node-edit debug visualization scope only (presentation): normal
+  gameplay and every other debug mode behave exactly as before.
+- M06-R17-P05 The visualization stays read-only: it never mutates the
+  simulation, the maneuver node, the flight computer, or the camera.
+
+### M06-R17-V — Automated verification
+
+- [x] M06-R17-V01 The diagnostic evidence of M06-R17-01-02 is reported (per-
+  frame node position deltas correlated against the 12 Hz rebuild epochs) and
+  the temporary diagnostic code is removed from the tree (git diff shows none).
+  Evidence: correlation reported in M06-R17-01-02 (43/43 rebuild epochs:
+  frozen-then-snap, jump ~= v_ship x interval); diagnostic code removed
+  (verified clean by grep).
+- [x] M06-R17-V02 A regression reproducing the confirmed mechanism: with an
+  OVERDUE node and a moving authoritative state, the node geometry derived
+  from the stale 12 Hz cache (rebuild epoch t0) diverges from the current ship
+  state by the ship's motion since t0 (the stair-step), while the node-local
+  geometry derived from the current authoritative state at time t1 equals the
+  ship state at t1 exactly (EFFECTIVE NOW: zero propagation); for a FUTURE
+  node the node-local geometry is a bounded zero-thrust propagation from the
+  current state to the fixed node epoch, consistent with `predict_trajectory`
+  for the same starting state.
+  Evidence: `tests/test_debug_subsystem.cpp::test_node_event_overdue_matches_
+  predictor` (overdue node clamps to t_now; node-local event state equals the
+  current ship state exactly AND equals `predict_trajectory` for the same
+  epoch; 0.4 < total_dv < 0.6) and `::test_node_event_future_matches_predictor`
+  (future node keeps its snapped epoch; node-local geometry equals
+  `predict_trajectory` from the same start; position moved > 1.0 m) — both
+  PASS in `lander_debug_subsystem_tests`.
+- [x] M06-R17-V03 Build + `lander_debug_subsystem_tests` + `lander_flight_
+  computer_tests` + `lander_predictor_tests` pass; full `ctest` unchanged from
+  baseline (11/12; sole failure = the pre-existing V14-C body-2 cross-body
+  landing); headless node-edit smoke exits 0 (paused fixture) with normal /
+  other debug modes unchanged.
+  Evidence: 2026-10-06 run: full `cmake --build build` clean; all three
+  focused suites pass; `ctest` = 11/12 with the sole failure re-run showing
+  exactly the pre-existing V14-C (cross-body body-2) cases; headless smokes
+  exit 0 — node-edit paused `ticks=0`, normal seed 1 `ticks=237` (identical to
+  pre-fix baseline), attitude / node-executor / predictor exit 0 (same-session
+  tick counts stable; cross-session tick differences are wall-clock pacing
+  only — the NodeEdit-gated code path cannot affect other modes).
+
+### M06-R17-H — Human verification
+
+- [x] M06-R17-H01 Re-runs the same M06-R15-H01 / M06-R16-H01 gate with the
+  fix: in `--debug-subsystem node-edit`, while RUNNING the node/trajectory
+  visualization must NOT visibly jitter / stair-step (node marker, arrows, and
+  PRE/POST stay coherent); when the node is EFFECTIVE NOW the marker stays on
+  the ship; if the long arc is a stale 12 Hz snapshot its age is shown
+  explicitly (PRED AGE); all R15/R16 checks that already passed still hold
+  (H/J/K/L edits, Delete/C recreate, F5-F9, pause/resume, label readability,
+  no burn without ENTER).
+  Result (2026-10-06, USER): PASS — H/J, K/Shift+K, L/Shift+L, Delete/C,
+  F5-F9, pause/resume, and node/PGR/RAD/DV coherence all confirmed; the
+  effective-node-epoch drift defect is fixed and the running-state 12 Hz
+  stair-step / jitter defect is fixed acceptably; no node-edit defect remains
+  blocking this cell. Note: the user pressed ENTER experimentally and observed
+  apparently "magic" acceleration with no visible engine plume and somewhat
+  janky execution — that deliberately crossed into the NEXT subsystem (node
+  executor, untested), NOT a node-edit failure; the missing-plume aspect is
+  carried to M06-R18 as a presentation-defect hypothesis to verify.
+
+### M06-R17-D — Derived implementation tasks
+
+- [x] M06-R17-D01 Temporary diagnostics (env-var gated): per-frame logged node
+  render position, sim_time, prediction build epoch, node_time_effective,
+  rebuild-this-frame flag, ship world position, PRE/POST junction world
+  position; plus a temporary unpaused-start hook for the node-edit fixture so
+  the RUNNING state is reachable headless. REMOVE after diagnosis.
+  Evidence: added, used for the 4 Hz-cadence run (M06-R17-01-02), then fully
+  removed (V01).
+- [x] M06-R17-D02 (if confirmed) node-edit node-local event geometry at
+  render / update cadence (EFFECTIVE NOW = current ship state, zero
+  propagation; future = bounded propagation to the fixed node epoch) +
+  explicit stale-arc age display; long arc stays 12 Hz.
+  Evidence: `NodeEventState` / `node_event_state` in flight_computer.hpp/
+  .cpp; gui.cpp node-edit path consumes it per rendered frame at t_present;
+  `PRED AGE <ms>` label added; 12 Hz rebuild budget untouched.
+- [x] M06-R17-D03 (if confirmed) regression test reproducing the mechanism
+  (stale-cache divergence vs current-state node-local geometry).
+  Evidence: two new tests in tests/test_debug_subsystem.cpp (overdue +
+  future), registered in main(); both pass.
+- [x] M06-R17-D04 Build + focused tests + full ctest + headless smokes;
+  update ledgers; stop at M06-R17-H01; do NOT commit.
+  Evidence: 2026-10-06 — build clean; focused suites pass; ctest 11/12
+  (sole V14-C, pre-existing); smokes exit 0; TASKS.md / STATUS.md /
+  milestone record updated; STOPPED at M06-R17-H01, nothing committed.

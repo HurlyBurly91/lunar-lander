@@ -289,6 +289,199 @@ void test_node_impulse_prediction() {
           "the post-node branch differs from the no-node path");
 }
 
+// M06-R15 (V04): the PRE branch's final point, the POST branch's first point,
+// and the node position all coincide at the node, i.e. the prediction joins
+// PRE/POST at the node with no gap. This is the numerical basis for the
+// on-scene node-edit overlay: the drawn PRE arc ends exactly where the NODE
+// marker sits and the POST arc starts from that same point.
+void test_pre_post_join() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const auto bin = lander::BinarySystem::canonical(
+        cfg.mu, 503ULL, lander::companion_seed(503ULL));
+    const lander::State start = state_relative(bin, 0, 100.0, 100.0, 0.5,
+                                               12.0, 0.0);
+    const double horizon = 2.0 * bin.period();
+
+    lander::ManeuverNode node{};
+    node.time = lander::snap_time(10.0, dt);
+    node.frame_body = 0;
+    node.dv_prograde = 1.0;
+    node.dv_radial = 0.5;
+
+    const auto pred =
+        lander::predict_trajectory(bin, cfg, start, 0.0, 0, 1, node, horizon,
+                                   100000);
+
+    check(!pred.pre.empty() && !pred.post.empty(),
+          "the node prediction has both pre and post branches");
+    check_close_vec(pred.pre.back(), pred.node_position, 1e-9,
+                    "PRE ends at the node position");
+    check_close_vec(pred.post.front(), pred.node_position, 1e-9,
+                    "POST starts at the node position");
+    check_close_vec(pred.pre.back(), pred.post.front(), 1e-9,
+                    "PRE and POST join at the node (no gap)");
+    check(node.time > 0.0 && node.time < horizon,
+          "the node time is inside the horizon");
+}
+
+// M06-R16 (V01..V05): the single effective node-event epoch
+// (prediction.node_time_effective = max(t0, snap(node->time, fixed_dt))) is
+// the one anchor every node graphic may use. A FUTURE node reports the
+// snapped scheduled epoch and its marker (node_position transformed at the
+// effective epoch) sits exactly on the PRE/POST junction in every display
+// frame. An OVERDUE node (node->time < t0) clamps to t0: the junction is the
+// current ship position, the effective-epoch marker coincides with the live
+// craft in every frame, and the stale raw-epoch transform demonstrably
+// drifts away (the R15 defect). Delete + recreate produces a fresh future
+// node with the future behavior again. Nothing here mutates the state, the
+// node, or any subsystem.
+void test_node_time_effective_overdue() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const auto bin = lander::BinarySystem::canonical(
+        cfg.mu, 503ULL, lander::companion_seed(503ULL));
+    const lander::State start = state_relative(bin, 0, 100.0, 100.0, 0.5,
+                                               12.0, 0.0);
+    const double horizon = 2.0 * bin.period();
+    const double t0 = 0.0;
+
+    // The same inertial frame shift the GUI's node graphics apply (M06-R12):
+    // identity for the world frame, otherwise wp - body(t_feat) + body(t_now).
+    auto transform_at = [&](const lander::Vec2& wp, int frame_body,
+                            double t_feat, double t_now) {
+        if (frame_body < 0) return wp;
+        return wp - bin.position(frame_body, t_feat) +
+               bin.position(frame_body, t_now);
+    };
+    // F5..F8 display frames map to world (-1) and bodies 0..2.
+    const int kFrames[] = {-1, 0, 1, 2};
+
+    // 1) Fresh fixture: a FUTURE node.
+    {
+        lander::ManeuverNode node{};
+        node.time = lander::snap_time(10.0, dt);
+        node.frame_body = 0;
+        node.dv_prograde = 1.0;
+        node.dv_radial = 0.5;
+
+        const auto pred = lander::predict_trajectory(
+            bin, cfg, start, t0, 0, 1, node, horizon, 100000);
+
+        check_close(pred.node_time_effective, node.time, 1e-9,
+                    "future node: effective epoch == snapped scheduled epoch");
+        check(pred.node_time_effective > t0,
+              "future node: effective epoch is ahead of t0");
+        check_close_vec(pred.pre.back(), pred.node_position, 1e-9,
+                        "future node: PRE ends at the node");
+        check_close_vec(pred.post.front(), pred.node_position, 1e-9,
+                        "future node: POST starts at the node");
+        for (int frame : kFrames) {
+            const lander::Vec2 marker =
+                transform_at(pred.node_position, frame,
+                             pred.node_time_effective, t0);
+            check_close_vec(
+                marker,
+                transform_at(pred.pre.back(), frame,
+                             pred.node_time_effective, t0),
+                1e-9, "future node: marker sits on the PRE/POST junction");
+            check_close_vec(
+                marker,
+                transform_at(pred.post.front(), frame,
+                             pred.node_time_effective, t0),
+                1e-9, "future node: marker sits on the POST junction");
+        }
+        // The prediction never rewrites the scheduled node time.
+        check_close(node.time, lander::snap_time(10.0, dt), 1e-12,
+                    "future node: raw scheduled time is not overwritten");
+    }
+
+    // 2) Overdue node: the scheduled time is in the past (the R15 symptom:
+    // the time advanced past the node).
+    {
+        lander::ManeuverNode node{};
+        node.time = lander::snap_time(-10.0, dt);
+        node.frame_body = 0;
+        node.dv_prograde = 1.0;
+        node.dv_radial = 0.5;
+
+        const auto pred = lander::predict_trajectory(
+            bin, cfg, start, t0, 0, 1, node, horizon, 100000);
+
+        check_close(pred.node_time_effective, t0, 1e-12,
+                    "overdue node: effective epoch clamps to t0");
+        check(pred.node_time_effective > node.time,
+              "overdue node: effective epoch is after the stale scheduled time");
+        // With zero pre-steps the node position is the current ship position.
+        check_close_vec(pred.node_position, lander::Vec2{start.x, start.y},
+                        1e-9, "overdue node: junction is the current ship");
+        check_close_vec(pred.pre.back(), pred.node_position, 1e-9,
+                        "overdue node: PRE (single sample) is at the ship");
+        check_close_vec(pred.post.front(), pred.node_position, 1e-9,
+                        "overdue node: POST starts at the ship");
+        for (int frame : kFrames) {
+            const lander::Vec2 marker =
+                transform_at(pred.node_position, frame,
+                             pred.node_time_effective, t0);
+            const lander::Vec2 ship =
+                transform_at(lander::Vec2{start.x, start.y}, frame,
+                             pred.node_time_effective, t0);
+            check_close_vec(marker, ship, 1e-9,
+                            "overdue node: marker sits on the live craft");
+        }
+        // The stale raw-epoch transform (the R15 defect) drifts from the
+        // marker in at least one body frame: bodies move in 10 s, so the
+        // shifted junction no longer lands where the marker does.
+        bool any_drift = false;
+        for (int frame : kFrames) {
+            if (frame < 0) continue;  // world is the identity; no drift
+            const lander::Vec2 stale =
+                transform_at(pred.node_position, frame, node.time, t0);
+            const lander::Vec2 marker =
+                transform_at(pred.node_position, frame,
+                             pred.node_time_effective, t0);
+            if (vec_length(stale - marker) > 0.05) any_drift = true;
+        }
+        check(any_drift,
+              "overdue node: raw-epoch transform drifts off the junction");
+        check_close(node.time, lander::snap_time(-10.0, dt), 1e-12,
+                    "overdue node: raw scheduled time is not overwritten");
+    }
+
+    // 3) Delete + recreate: a fresh default node is future again.
+    {
+        const lander::ManeuverNode fresh =
+            lander::default_node(t0, 0, dt);
+        check(fresh.time > t0, "recreated node is in the future");
+        const auto pred = lander::predict_trajectory(
+            bin, cfg, start, t0, 0, 1, fresh, horizon, 100000);
+        check_close(pred.node_time_effective, fresh.time, 1e-9,
+                    "recreated node: effective epoch == snapped scheduled");
+        check_close_vec(pred.pre.back(), pred.node_position, 1e-9,
+                        "recreated node: PRE ends at the node");
+        check_close_vec(pred.post.front(), pred.node_position, 1e-9,
+                        "recreated node: POST starts at the node");
+    }
+
+    // 4) No node at all: the effective epoch stays 0.0 (the no-node arc is
+    // the whole branch; there is nothing to anchor).
+    {
+        const auto pred = lander::predict_trajectory(
+            bin, cfg, start, t0, 0, 1, std::nullopt, horizon, 100000);
+        check_close(pred.node_time_effective, 0.0, 1e-12,
+                    "no node: effective epoch is 0.0");
+    }
+
+    // 5) No mutation: the ship state fed to the predictions is unchanged.
+    {
+        lander::State s2 = state_relative(bin, 0, 100.0, 100.0, 0.5, 12.0,
+                                          0.0);
+        (void)lander::predict_trajectory(bin, cfg, s2, t0, 0, 1,
+                                         std::nullopt, horizon, 100000);
+        check(s2 == start, "the ship state is unmutated by prediction");
+    }
+}
+
 void test_trajectory_prediction() {
     lander::Config cfg{};
     const double dt = cfg.fixed_dt;
@@ -959,6 +1152,8 @@ int main() {
     test_node_world_dv();
     test_predictor_parity();
     test_node_impulse_prediction();
+    test_pre_post_join();
+    test_node_time_effective_overdue();
     test_trajectory_prediction();
     test_planners();
     test_attitude_controller();

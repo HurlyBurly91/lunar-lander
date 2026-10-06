@@ -1259,6 +1259,45 @@ static void draw_transition_marker(SDL_Renderer* renderer, const Vec2& p,
               static_cast<int>(p.y) - 4, 1, col);
 }
 
+// M06-R15: shared display-frame mapping helpers used by BOTH the trajectory
+// arc and the node-edit overlay, so the node graphics and the drawn arc can
+// never disagree. Pure: no simulation state; the ephemeris translation itself
+// is applied by the caller (see lander::frame_shift_point).
+static int frame_body_of(lander::PredFrame f) {
+    return f == lander::PredFrame::Primary ? 0
+         : f == lander::PredFrame::Companion ? 1
+         : f == lander::PredFrame::Moonlet ? 2
+         : -1;
+}
+
+static lander::PredFrame seg_frame_of(lander::RefSegment s) {
+    return s == lander::RefSegment::World ? lander::PredFrame::World
+         : s == lander::RefSegment::Primary ? lander::PredFrame::Primary
+         : s == lander::RefSegment::Companion ? lander::PredFrame::Companion
+         : lander::PredFrame::Moonlet;
+}
+
+// Resolve the display frame for a given time: a fixed frame is returned
+// unchanged; in AUTO mode it is the frame of the segment owning the timed
+// sample nearest the time (World when there are none).
+static lander::PredFrame auto_frame_at(
+    const std::vector<lander::TimedTrajectorySample>& timed,
+    const std::vector<lander::RefSegment>& segments, double t,
+    lander::PredFrame pred_frame) {
+    if (pred_frame != lander::PredFrame::Auto) return pred_frame;
+    size_t best = 0;
+    double best_d = 1e30;
+    for (size_t k = 0; k < timed.size(); ++k) {
+        const double d = std::abs(timed[k].time - t);
+        if (d < best_d) {
+            best_d = d;
+            best = k;
+        }
+    }
+    return (best < segments.size()) ? seg_frame_of(segments[best])
+                                    : lander::PredFrame::World;
+}
+
 // M06-R12: the prediction arc rendered in the selected display reference
 // frame. WORLD is the inertial / barycentric frame (identity, the existing
 // rounded-square / rosette). PRIMARY / COMPANION are body-centred inertial
@@ -1277,22 +1316,20 @@ void draw_trajectory(SDL_Renderer* renderer,
                       const lander::Camera& cam, bool has_node,
                       const lander::Simulation& sim,
                       lander::PredFrame pred_frame,
-                      const std::vector<lander::RefSegment>& segments) {
+                      const std::vector<lander::RefSegment>& segments,
+                      const lander::NodeEventState* node_override =
+                          nullptr) {
     const lander::BinarySystem& bin = sim.binary();
     const double t_now = sim.sim_time();
     const size_t pre_count = prediction.pre.size();
 
-    // M06-R13: map a display frame to its body index (World is -1).
-    auto frame_body = [](lander::PredFrame f) -> int {
-        return f == lander::PredFrame::Primary ? 0
-             : f == lander::PredFrame::Companion ? 1
-             : f == lander::PredFrame::Moonlet ? 2
-             : -1;
-    };
-
+    // M06-R13: the display-frame mapping (frame -> body index, segment ->
+    // frame, AUTO time -> frame) is shared with the node-edit overlay via the
+    // file-static helpers frame_body_of / seg_frame_of / auto_frame_at, so the
+    // drawn arc and the node graphics always agree on the frame.
     auto render_world = [&](const lander::Vec2& wp, double t,
                             lander::PredFrame f) -> lander::Vec2 {
-        const int body = frame_body(f);
+        const int body = frame_body_of(f);
         if (body < 0) {  // WORLD: inertial / barycentric identity.
             return wp;
         }
@@ -1301,35 +1338,15 @@ void draw_trajectory(SDL_Renderer* renderer,
         return lander::Vec2{wp.x - bp.x + anchor.x, wp.y - bp.y + anchor.y};
     };
 
-    auto seg_frame = [](lander::RefSegment s) -> lander::PredFrame {
-        return s == lander::RefSegment::World ? lander::PredFrame::World
-             : s == lander::RefSegment::Primary ? lander::PredFrame::Primary
-             : s == lander::RefSegment::Companion ? lander::PredFrame::Companion
-             : lander::PredFrame::Moonlet;
-    };
-
     auto frame_at = [&](size_t i) -> lander::PredFrame {
         if (pred_frame == lander::PredFrame::Auto && i < segments.size()) {
-            return seg_frame(segments[i]);
+            return seg_frame_of(segments[i]);
         }
         return pred_frame;
     };
 
     auto frame_for_time = [&](double t) -> lander::PredFrame {
-        if (pred_frame != lander::PredFrame::Auto) {
-            return pred_frame;
-        }
-        size_t best = 0;
-        double best_d = 1e30;
-        for (size_t k = 0; k < prediction.timed.size(); ++k) {
-            const double d = std::abs(prediction.timed[k].time - t);
-            if (d < best_d) {
-                best_d = d;
-                best = k;
-            }
-        }
-        return (best < segments.size()) ? seg_frame(segments[best])
-                                        : lander::PredFrame::World;
+        return auto_frame_at(prediction.timed, segments, t, pred_frame);
     };
 
     const auto& timed = prediction.timed;
@@ -1369,8 +1386,40 @@ void draw_trajectory(SDL_Renderer* renderer,
     }
 
     if (has_node) {
-        const lander::Vec2 np =
-            render_world(prediction.node_position, t_now, frame_for_time(t_now));
+        // M06-R15/R16: the node marker is anchored to the single effective
+        // node-event epoch the prediction already carries
+        // (prediction.node_time_effective = max(t0, snap(node->time,
+        // fixed_dt))). Using the prediction's own epoch -- never the raw
+        // scheduled node->time, and never the render time t_now -- pins the
+        // marker to the arc in a body frame: a future node sits on the
+        // PRE/POST junction, and an overdue node clamps to t_now (the
+        // identity shift), i.e. the current ship position, exactly where the
+        // arc joins.
+        // M06-R17: the node-edit isolation passes a render-cadence override
+        // (lander::node_event_state): the marker's position and epoch are the
+        // ship's CURRENT state resolved each rendered frame, not the 12 Hz
+        // cache's rebuild epoch. A clamped (overdue) event anchors its frame
+        // at its own time -- the identity shift -- so the marker sits
+        // exactly on the drawn ship; a future event keeps the cache path's
+        // zero-at-t_now convention. Without an override the behaviour is
+        // unchanged.
+        const bool ov = node_override != nullptr;
+        const double node_t =
+            ov ? node_override->time : prediction.node_time_effective;
+        const lander::Vec2 wp =
+            ov ? node_override->state.p : prediction.node_position;
+        const lander::PredFrame mf = frame_for_time(node_t);
+        const int mbody = frame_body_of(mf);
+        lander::Vec2 np;
+        if (mbody < 0) {
+            np = wp;
+        } else {
+            const double t_anchor =
+                ov && node_t <= node_override->now ? node_t : t_now;
+            const lander::Vec2 bp = bin.position(mbody, node_t);
+            const lander::Vec2 anchor = bin.position(mbody, t_anchor);
+            np = lander::Vec2{wp.x - bp.x + anchor.x, wp.y - bp.y + anchor.y};
+        }
         const Vec2 p = to_screen(np.x, np.y, cam);
         const Color node_color = make_color(230, 130, 255);
         draw_thick_line(renderer, {p.x - 6, p.y}, {p.x + 6, p.y}, 1.5,
@@ -1901,6 +1950,177 @@ static void draw_attitude_debug_axes(SDL_Renderer* renderer,
               static_cast<int>(center.y) - 34, 1, label);
 }
 
+// M06-R15: the node-edit scene overlay, drawn ONLY in the `node-edit`
+// isolation. Read-only: it reads the prediction / node / basis / dv_world and
+// the selected display frame, then renders fixed-screen geometry (the NODE
+// marker + label, the LIVE craft label, and the PGR / RAD / DV arrows plus a
+// PRE/POST legend). It never mutates the simulation, the node, or the camera.
+// The NODE marker is anchored to the node's EVENT epoch in the same display
+// frame the drawn PRE/POST arc uses there (the same shift draw_trajectory /
+// lander::frame_shift_point apply), so it sits on the arc and stays consistent
+// when the frame is switched (AUTO / WORLD / a body frame).
+static void draw_node_edit_debug(SDL_Renderer* renderer,
+                                  const lander::Simulation& sim,
+                                  const lander::State& ship,
+                                  const lander::Camera& cam,
+                                  const lander::TrajectoryPrediction& prediction,
+                                  const std::optional<lander::ManeuverNode>& node,
+                                  lander::PredFrame pred_frame,
+                                  const std::vector<lander::RefSegment>& segments,
+                                  double t_render,
+                                  const lander::NodeEventState* node_override =
+                                      nullptr) {
+    const lander::BinarySystem& bin = sim.binary();
+    // M06-R17: the frame anchor and the SCHED / NODE time deltas use the
+    // presentation time (the time the bodies and the ship are drawn this
+    // frame) instead of the last authoritative tick; the two agree while
+    // paused, so the paused fixture display is unchanged.
+    const double t_now = t_render;
+
+    const Color live_c = make_color(96, 224, 255);   // cyan  : LIVE craft
+    const Color pgr_c = make_color(120, 220, 255);   // blue  : prograde
+    const Color rad_c = make_color(255, 196, 64);    // amber : radial (out)
+    const Color dv_c = make_color(235, 150, 255);    // violet: delta-v
+    const Color node_c = make_color(230, 130, 255);  // magenta: node marker
+    const double kArrowPx = 40.0;                   // fixed screen-length
+
+    // The live craft at its actual (world) position; node edits never move it.
+    const Vec2 live = to_screen(ship.x, ship.y, cam);
+    draw_text(renderer, "LIVE", static_cast<int>(live.x) + 6,
+              static_cast<int>(live.y) + 4, 1, live_c);
+
+    if (!node) return;  // beyond LIVE there is nothing until a node is created.
+
+    // M06-R16: every node graphic is anchored to the single effective epoch
+    // the prediction already carries (prediction.node_time_effective =
+    // max(t0, snap(node->time, fixed_dt))) -- never the raw, stale node->time.
+    // An overdue node (node->time < t_now) clamps to t_now, so body_at_t ==
+    // body_at_tnow (identity shift) and the marker sits at the current ship
+    // position, exactly where the PRE/POST arc joins; a future node sits at
+    // its snapped scheduled epoch, the arc junction there. This is the same
+    // epoch draw_trajectory anchors its marker to, so both always agree.
+    // M06-R17: when the node-edit isolation supplies a render-cadence event
+    // override, every node graphic (marker, arrows, labels) anchors to that
+    // event instead: the ship's CURRENT state, resolved at each rendered
+    // frame (zero propagation when the node is already overdue), so the
+    // overlay tracks the ship continuously while running instead of snapping
+    // at each 12 Hz cache rebuild. Without an override -- and while paused,
+    // where the two agree -- the R16 behaviour is unchanged.
+    const bool use_ov = node_override != nullptr;
+    const double node_eff =
+        use_ov ? node_override->time : prediction.node_time_effective;
+    const lander::PredFrame nf =
+        auto_frame_at(prediction.timed, segments, node_eff, pred_frame);
+    const int body = frame_body_of(nf);
+    const lander::Vec2 body_at_t =
+        body < 0 ? lander::Vec2{} : bin.position(body, node_eff);
+    const lander::Vec2 body_at_tnow =
+        body < 0 ? lander::Vec2{} : bin.position(body, t_now);
+    const lander::Vec2 node_disp = lander::frame_shift_point(
+        use_ov ? node_override->state.p : prediction.node_position, body,
+        body_at_t, body_at_tnow);
+    const Vec2 np = to_screen(node_disp.x, node_disp.y, cam);
+
+    // M06-R16: NODE marker + label, anchored to the effective epoch. A future
+    // node shows "NODE T+<delta>s <frame>" below-right of the marker; an
+    // overdue node keeps the scheduled delta visible ("SCHED T-<delta>s
+    // <frame>") but flags that the burn is anchored to NOW, and moves those
+    // lines above the marker so they stay clear of the LIVE label (which is
+    // below-right of the ship, and coincides with the marker when overdue).
+    draw_thick_line(renderer, {np.x - 6, np.y}, {np.x + 6, np.y}, 1.5, node_c);
+    draw_thick_line(renderer, {np.x, np.y - 6}, {np.x, np.y + 6}, 1.5, node_c);
+    char nbuf[48];
+    if (node->time < t_now) {
+        std::snprintf(nbuf, sizeof nbuf, "SCHED T%+.1fs %s", node->time - t_now,
+                      body_name(body));
+        draw_text(renderer, nbuf, static_cast<int>(np.x) + 8,
+                  static_cast<int>(np.y) - 17, 1, node_c);
+        draw_text(renderer, "[EFFECTIVE NOW]", static_cast<int>(np.x) + 8,
+                  static_cast<int>(np.y) - 8, 1, node_c);
+    } else {
+        std::snprintf(nbuf, sizeof nbuf, "NODE T%+.1fs %s", node->time - t_now,
+                      body_name(body));
+        draw_text(renderer, nbuf, static_cast<int>(np.x) + 8,
+                  static_cast<int>(np.y) + 8, 1, node_c);
+    }
+
+    // PRE / POST legend using the exact arc colours draw_trajectory draws.
+    {
+        const Vec2 lg{np.x - 60, np.y + 18};
+        draw_thick_line(renderer, {lg.x, lg.y}, {lg.x + 16, lg.y}, 2.0,
+                        make_color(185, 195, 215));
+        draw_text(renderer, "PRE", static_cast<int>(lg.x) + 20,
+                  static_cast<int>(lg.y) - 3, 1, make_color(185, 195, 215));
+        const Vec2 lg2{lg.x, lg.y + 12};
+        draw_thick_line(renderer, {lg2.x, lg2.y}, {lg2.x + 16, lg2.y}, 2.0,
+                        make_color(120, 240, 160));
+        draw_text(renderer, "POST", static_cast<int>(lg2.x) + 20,
+                  static_cast<int>(lg2.y) - 3, 1, make_color(120, 240, 160));
+    }
+
+    const bool basis_valid =
+        use_ov ? node_override->basis_valid : prediction.basis_valid;
+    if (!basis_valid) return;
+
+    // PGR / RAD / DV fixed-screen arrows from the exact prediction basis/dv.
+    // The on-screen geometry is this file's local Vec2; the pure helpers work
+    // in lander::Vec2, so we bridge at the boundary (no shared type).
+    const lander::NodeBasis& basis =
+        use_ov ? node_override->basis : prediction.basis;
+    const lander::Vec2& dv_world =
+        use_ov ? node_override->dv_world : prediction.dv_world;
+    const lander::Vec2 np_anchor{np.x, np.y};
+    const lander::NodeEditArrows ar = lander::node_edit_arrows(
+        np_anchor, basis, dv_world, cam.angle(), kArrowPx);
+    const Vec2 pgr_tip{ar.pgr_tip.x, ar.pgr_tip.y};
+    const Vec2 rad_tip{ar.rad_tip.x, ar.rad_tip.y};
+    const Vec2 dv_tip{ar.dv_tip.x, ar.dv_tip.y};
+    draw_thick_line(renderer, np, pgr_tip, 1.5f, pgr_c, 230);
+    draw_thick_line(renderer, np, rad_tip, 1.5f, rad_c, 230);
+    if (ar.dv_present) {
+        draw_thick_line(renderer, np, dv_tip, 2.0f, dv_c, 230);
+    }
+
+    // M06-R16: deterministic, non-colliding label placement. Each directional
+    // label sits just beyond its own arrow tip, further out along the arrow
+    // and offset perpendicular to it, so NODE / PGR / RAD / DV stay
+    // individually identifiable. When the DV arrow is nearly parallel to the
+    // PGR arrow (a mostly-prograde burn), the DV label flips to the opposite
+    // side of its tip from the PGR label so the two cannot overlap.
+    const Vec2 pgr_lab{
+        lander::node_edit_label_pos(np_anchor, ar.pgr_tip, 6.0, 7.0).x,
+        lander::node_edit_label_pos(np_anchor, ar.pgr_tip, 6.0, 7.0).y};
+    const Vec2 rad_lab{
+        lander::node_edit_label_pos(np_anchor, ar.rad_tip, 6.0, 7.0).x,
+        lander::node_edit_label_pos(np_anchor, ar.rad_tip, 6.0, 7.0).y};
+    const double pdx = pgr_tip.x - np.x;
+    const double pdy = pgr_tip.y - np.y;
+    const double ddx = dv_tip.x - np.x;
+    const double ddy = dv_tip.y - np.y;
+    const double plen = std::hypot(pdx, pdy);
+    const double dlen = std::hypot(ddx, ddy);
+    const double dot =
+        (plen > 1.0e-9 && dlen > 1.0e-9) ? (pdx * ddx + pdy * ddy) / (plen * dlen)
+                                         : 0.0;
+    const bool dv_near_pgr = ar.dv_present && dot > 0.90;
+    char vbuf[32];
+    std::snprintf(vbuf, sizeof vbuf, "DV %5.2f m/s", ar.dv_length_mps);
+    if (ar.dv_present) {
+        const lander::Vec2 dv_lab =
+            lander::node_edit_label_pos(np_anchor, ar.dv_tip, 6.0,
+                                        dv_near_pgr ? -7.0 : 7.0);
+        draw_text(renderer, vbuf, static_cast<int>(dv_lab.x),
+                  static_cast<int>(dv_lab.y), 1, dv_c);
+    } else {
+        draw_text(renderer, vbuf, static_cast<int>(np.x) + 8,
+                  static_cast<int>(np.y) + 16, 1, dv_c);
+    }
+    draw_text(renderer, "PGR", static_cast<int>(pgr_lab.x),
+              static_cast<int>(pgr_lab.y), 1, pgr_c);
+    draw_text(renderer, "RAD", static_cast<int>(rad_lab.x),
+              static_cast<int>(rad_lab.y), 1, rad_c);
+}
+
 // Read-only: it never drives or mutates the simulation; it only reads the
 // live subsystems, the common readout, and the debug-layer context.
 void draw_debug_subsystem_panel(
@@ -2342,7 +2562,18 @@ void draw_debug_subsystem_panel(
             } else {
                 line("  no node  -  [C] create  [H/J] time  [K/L] dv", dim);
             }
-            line("  [U/I/Y] plan  [Return] exec  [Del] clear", dim);
+            // M06-R15: a persistent, readable legend for the on-scene node-edit
+            // overlay (draw_node_edit_debug). Read-only; it names the colours
+            // drawn on the scene, the exact edit / plan / execute keys, and
+            // warns not to use [Return] during node-edit verification.
+            line("  scene:  LIVE  NODE  PGR  RAD  DV  PRE  POST", dim);
+            line("  time : [H] -1s   [J] +1s", dim);
+            line("  dv   : [K]/[SH+K] pro  [L]/[SH+L] rad  (0.1 m/s step)",
+                 dim);
+            line("  plan : [U] circular  [I] transfer  [Y] match", dim);
+            line("  edit : [C] create  [SH+C] other  [Del] clear", dim);
+            line("  [Return] execute  !! do NOT use during node-edit verify",
+                 amber);
             break;
         }
         case lander::DebugSubsystem::NodeExecutor: {
@@ -2935,6 +3166,16 @@ int main(int argc, char** argv) {
                 &transfer_debug, zero_effort,
             };
             lander::setup_debug_scenario(debug_mode, subs, debug_predictor_body);
+            // M06-R16: the node-edit fixture starts PAUSED so the developer can
+            // study a still scene before the world advances. The node, its
+            // effective epoch, and every node graphic are all functions of the
+            // (frozen) sim time and the edited node fields, so editing rebuilds
+            // the prediction in place with zero physics motion. P resumes the
+            // normal run; every other debug mode and normal gameplay stay
+            // running exactly as before.
+            if (debug_mode == lander::DebugSubsystem::NodeEdit) {
+                paused = true;
+            }
         }
         const lander::State& state = sim.state();
         const lander::Vec2 ref_pos =
@@ -3912,6 +4153,26 @@ int main(int argc, char** argv) {
             panel_ctx.pred_metrics = pred_auto_last_metrics;
             panel_ctx.pred_auto_valid = pred_auto_valid;
         }
+        // M06-R17: node-edit node-event geometry at render cadence. The
+        // long-arc prediction cache is rebuilt at a bounded cadence, so its
+        // node anchor is the ship's state at the last rebuild epoch; for a
+        // node whose scheduled epoch has already passed, that anchor -- and
+        // every graphic derived from it -- is frozen between rebuilds and
+        // snaps on each one (the R16 defect: a visible stair-step while
+        // running). This resolves the node event from the ship's CURRENT
+        // state at each rendered frame (zero propagation when overdue) so
+        // the node-edit marker / arrows / label track the ship continuously.
+        // Only the `node-edit` isolation consumes this; the cache, the
+        // executor, and every other mode are untouched.
+        lander::NodeEventState node_event{};
+        bool node_event_valid = false;
+        if (debug_mode == lander::DebugSubsystem::NodeEdit &&
+            maneuver_node.has_value()) {
+            node_event = lander::node_event_state(
+                sim.binary(), sim.config(), render_state, t_present,
+                *maneuver_node);
+            node_event_valid = true;
+        }
         if (predictor_keeps_overlay && !s.crashed && !paused) {
             // M06-R8 (follow-up): the predictor's predicted-trajectory overlay,
             // kept visible. The same calls normal gameplay uses, so the
@@ -3944,11 +4205,17 @@ int main(int argc, char** argv) {
             draw_navigation_overlay(renderer, sim, render_state, cam);
             draw_prediction_legend(renderer, pred_frame);
         } else if (debug_mode == lander::DebugSubsystem::NodeEdit && nav_overlay &&
-                   !s.crashed && !s.landed && !paused && prediction_valid) {
+                   !s.crashed && !s.landed && prediction_valid) {
             // R8-08: keep the pre/post prediction arc visible while editing.
+            // M06-R16: visible in BOTH paused and running states (the node-edit
+            // fixture is paused by default; P resumes it), so editing the node
+            // rebuilds the arc in place without the world advancing.
+            // M06-R17: the node marker itself uses the render-cadence event
+            // override (node_event above); the 12 Hz arc keeps drawing.
             draw_trajectory(renderer, prediction, cam,
                             maneuver_node.has_value(), sim, pred_frame,
-                            pred_segments);
+                            pred_segments,
+                            node_event_valid ? &node_event : nullptr);
         }
         lander::DebugCommonReadout debug_common{};
         if (debug_active) {
@@ -3968,6 +4235,41 @@ int main(int argc, char** argv) {
                 lander::attitude_debug_axes(render_state.angle, target_dir);
             draw_attitude_debug_axes(renderer, render_state, cam, axes,
                                      attitude_mode);
+        }
+        // M06-R15: node-edit scene overlay. Drawn ONLY in the `node-edit`
+        // isolation, in the same branch the pre/post arc is visible, so the
+        // NODE marker + PGR / RAD / DV arrows + LIVE label sit on the drawn
+        // arc and stay consistent with the selected frame. Read-only: it never
+        // mutates the simulation, the node, or the camera.
+        if (debug_mode == lander::DebugSubsystem::NodeEdit && nav_overlay &&
+            !s.crashed && !s.landed && prediction_valid) {
+            draw_node_edit_debug(renderer, sim, render_state, cam, prediction,
+                                  maneuver_node, pred_frame, pred_segments,
+                                  t_present,
+                                  node_event_valid ? &node_event : nullptr);
+            // M06-R16: while the node-edit fixture is paused, say so, so the
+            // developer knows the scene is frozen on purpose (not stuck) and
+            // how to resume. Drawn only for node-edit, on top of the overlay.
+            if (paused) {
+                const Color pause_c(255, 205, 90);
+                draw_center_text(renderer, "PAUSED FOR NODE EDIT   [P] RUN",
+                                  118, 1, pause_c);
+            }
+            // M06-R17: make the prediction cache's staleness explicit: how
+            // long since the last long-arc rebuild (the cadence cap is
+            // 12 Hz / ~83 ms). The node EVENT graphics above are
+            // render-cadence and unaffected; this labels what the 12 Hz
+            // PRE/POST arc itself is stale about.
+            {
+                char abuf[40];
+                std::snprintf(abuf, sizeof abuf, "PRED AGE %5.1f ms",
+                              (sim.sim_time() - predict_last_sim_time) *
+                                  1000.0);
+                const Color age_c(150, 158, 176);
+                const int w = text_width(abuf, 1);
+                draw_text(renderer, abuf, kWindowWidth / 2 - w / 2, 134, 1,
+                          age_c);
+            }
         }
         if (debug_active && !debug_ui) {
             draw_debug_subsystem_panel(
