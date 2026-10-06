@@ -308,4 +308,49 @@ inline Vec2 node_edit_label_pos(const Vec2& anchor, const Vec2& tip,
 
 // END CANONICAL ALGORITHM: node-edit debug display geometry
 
+// BEGIN CANONICAL ALGORITHM: node-executor debug display geometry
+// Reference: docs/flight-guidance-attitude-bang-bang-control-and-velocity-to-
+// be-gained-node-execution.md (VGO / thrust-axis semantics the overlay
+// visualizes); docs/physics-model-gravity.md (the VGO stays WORLD/INERTIAL).
+//
+// M06-R18: READ-ONLY, presentation-only geometry for the
+// `--debug-subsystem node-executor` isolation. Same display conventions as
+// the node-edit overlay: fixed on-screen length (pixels, camera-zoom
+// independent) and camera-rotated directions (reusing `cam_rotate_dir` /
+// `screen_arrow_tip`), anchored at the drawn ship. The ACT ray is the ship's
+// canonical thrust axis `thrust_hat(angle)`; the VGO ray is the executor's
+// remaining delta-v `dv_remaining()` (world frame) and is present only while
+// its magnitude exceeds `eps` (the magnitude is always reported via
+// vgo_mps). Pure: no simulation, camera, or SDL; same inputs -> same output.
+
+struct NodeExecutorOverlay {
+    Vec2 act_tip{};      // tip of the fixed-length ACT (thrust-axis) ray
+    Vec2 vgo_tip{};      // tip of the fixed-length VGO ray (== anchor when absent)
+    bool vgo_present = false;
+    double vgo_mps = 0.0;  // remaining VGO magnitude, always reported
+};
+
+inline NodeExecutorOverlay node_executor_overlay(const Vec2& anchor,
+                                                 double ship_angle,
+                                                 const Vec2& dv_remaining,
+                                                 double camera_angle,
+                                                 double length_px,
+                                                 double eps = 1.0e-3) {
+    NodeExecutorOverlay o;
+    o.act_tip = screen_arrow_tip(anchor, thrust_hat(ship_angle),
+                                 camera_angle, length_px);
+    o.vgo_mps = std::hypot(dv_remaining.x, dv_remaining.y);
+    if (o.vgo_mps > eps) {
+        o.vgo_present = true;
+        o.vgo_tip = screen_arrow_tip(anchor, dv_remaining,
+                                     camera_angle, length_px);
+    } else {
+        o.vgo_present = false;
+        o.vgo_tip = anchor;
+    }
+    return o;
+}
+
+// END CANONICAL ALGORITHM: node-executor debug display geometry
+
 }  // namespace lander

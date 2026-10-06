@@ -1,13 +1,17 @@
 # Tasks
 
 Milestone: M06 — Flight computer and maneuver planning
-State: ACTIVE
-Active request group: M06-R17 (node-edit RUNNING jitter / stair-step —
-presentation cadence) — COMPLETE: the node-edit cell (R15 + R16 + R17) was
-human-accepted (2026-10-06) and committed together. M06-R18 (node-executor
-observability / presentation prep) is the next request group and begins after
-that commit.
-Current phase: M06-R17 — a bounded, display/presentation-only correction of the
+State: AWAITING HUMAN VERIFICATION
+Active request group: M06-R18 (node-executor observability / presentation
+prep) — AWAITING HUMAN VERIFICATION: implementation (D01-D06) and automated
+verification (V01-V07) complete 2026-10-06; the group is "## M06-R18" at
+the end of this ledger. Its human gate M06-R18-H01 must NOT be self-
+completed and the work must NOT be committed until human acceptance. The
+node-edit cell (R15 + R16 + R17) was COMPLETE and committed as c2114f3
+(2026-10-06).
+Historical phase record below (node-edit cell M06-R17 + R16 + R15; all
+COMPLETE and committed as c2114f3 on 2026-10-06): M06-R17 — a bounded,
+display/presentation-only correction of the
 ONE defect left by the M06-R16 human re-run (2026-10-06 PARTIAL PASS): while the
 simulation is RUNNING, the node/trajectory visualization visibly jitters /
 stair-steps in `--debug-subsystem node-edit` (stable once paused). DIAGNOSIS
@@ -5998,3 +6002,242 @@ cell (R15 + R16 + R17) is accepted and committed together 2026-10-06.
   Evidence: 2026-10-06 — build clean; focused suites pass; ctest 11/12
   (sole V14-C, pre-existing); smokes exit 0; TASKS.md / STATUS.md /
   milestone record updated; STOPPED at M06-R17-H01, nothing committed.
+  (Cell subsequently human-accepted and committed as c2114f3, 2026-10-06.)
+
+## M06-R18 — node-executor observability / presentation prep
+
+Request group: M06-R18 (new; 2026-10-06, USER). State: AWAITING HUMAN
+VERIFICATION — implementation + automated verification complete
+(2026-10-06); awaiting M06-R18-H01. STOPPED UNCOMMITTED per the gate.
+Milestone spec entry: "M06-R18 — node-executor observability / presentation
+prep" in milestones/M06-flight-computer-and-maneuver-planning.md.
+
+### M06-R18 — user requirements
+
+- [x] M06-R18-01 Verify the "magic force" observation (USER, 2026-10-06).
+  Human observation: "The lander accelerates without visible engine thrust,
+  and execution is a bit janky — it looks like a magical force." Expected
+  architecture: `node_executor.make_input(...) -> Input.main_throttle ->
+  sim.step_once(step_input)`. Suspected defect: physics consumes
+  `step_input.main_throttle`, but the drawn plume (`draw_lander`'s
+  `thrust_level`) uses the GUI manual `throttle` variable -> the executor's
+  burn accelerates and consumes fuel with no plume when manual throttle ==
+  0. Verify this control path from the code; if confirmed record it as a
+  PRESENTATION defect and proceed; if NOT confirmed, STOP and report the
+  actual control path before changing any code.
+  Source: USER
+  Files: src/gui.cpp (main-loop composition 3715-3804; rendered
+  thrust_level 3979-3984; draw_lander 599-684), src/autopilot.cpp
+  (canonical VGO node execution 159-303), src/sim.cpp (thrust/fuel from
+  `Input.main_throttle`, 489/552)
+  Evidence (2026-10-06, from code): CONFIRMED as a presentation defect.
+  Physics is genuine: `sim.step_once(step_input)` consumes
+  `clamp01(input.main_throttle)` for thrust and fuel, and `step_input` is
+  composed from `node_executor.make_input` (gui.cpp:3771-3772; likewise
+  `transfer_mc.make_input` 3768 and `landing_ap.make_input` 3735-3736; the
+  manual path sets `step_input.main_throttle = throttle` 3793). The drawn
+  plume (gui.cpp:656-674 full model; 614-629 marker) instead uses the manual
+  knob `throttle` via `thrust_level` (gui.cpp:3981-3984). So an executor
+  burn with manual throttle 0 shows real acceleration + fuel burn and NO
+  plume; the same latent defect exists for transfer midcourse and the
+  landing autopilot. The "magic force" is genuine canonical engine thrust;
+  the defect is the plume's source of truth, not the physics.
+- [x] M06-R18-02 Fix the rendered thrust source (USER, 2026-10-06). The
+  drawn plume must use the actual composed main-engine input passed to the
+  authoritative Simulation. Establish a narrow presentation source of truth
+  (e.g. `last_applied_input` or `actual_main_throttle`) updated from the
+  exact `step_input` immediately before / when passed to
+  `sim.step_once(step_input)`. The rendered thrust level must track the
+  actual applied `Input.main_throttle`, not the player's manual throttle
+  knob. It must be correct for manual thrust, node executor, transfer
+  midcourse executor, and landing autopilot WITHOUT changing any controller.
+  States: ALIGN/WAIT (actual throttle 0) -> no flame; BURN -> flame at that
+  throttle; final partial throttle -> fractional plume; after
+  COMPLETE/ABORT -> no latent flame; landed/crashed suppression preserved;
+  pause/reset must not leave a stale flame. Do NOT infer flame from
+  acceleration; use the actual applied engine command.
+  Source: USER
+  Files: src/gui.cpp (`actual_thrust` beside `flame_clock`; set from
+  `step_input.main_throttle` at the existing `panel_ctx.last_step_input`
+  site; zeroed in `start_mission`; `thrust_level` now
+  `presentation_thrust_level(s, actual_thrust)`), include/lander/sim.hpp +
+  src/sim.cpp (pure `presentation_thrust_level` mapping beside the existing
+  `flame_flick`/`flame_length` presentation helpers)
+  Evidence: tests/test_flight_computer.cpp::test_node_executor_presentation
+  blocks A/B/C/D/E (pass, 2026-10-06); the composed input is identical for
+  manual / node executor / transfer midcourse / landing autopilot, so the
+  fix covers all four with no controller change
+- [ ] M06-R18-03 Node-executor scene visualization (USER, 2026-10-06). In
+  `--debug-subsystem node-executor`, keep the existing numeric panel
+  (STATE, ignite time, burn time, VGO remaining/total/delivered, throttle,
+  fuel, result) and add a MINIMAL scene visualization at the ship: (a)
+  ACTUAL THRUST AXIS via `thrust_hat(angle) = {-sin(angle), cos(angle)}` —
+  a fixed screen-space ray, labelled `ACT`; (b) VGO / desired burn
+  direction from the exact existing `node_executor.dv_remaining()`
+  (normalize for drawing only) — a fixed screen-space ray, labelled `VGO`,
+  omitted when effectively zero; (c) a compact state label near the craft:
+  ALIGN / WAIT / BURN / COMPLETE / ABORTED / INCOMPLETE. Do NOT recompute a
+  separate guidance direction. No predictor / nav clutter.
+  Source: USER
+  Files: include/lander/debug_subsystem.hpp (new delimited region
+  "node-executor debug display geometry": `NodeExecutorOverlay` +
+  `node_executor_overlay`), src/gui.cpp (`draw_node_executor_debug_axes`
+  1962; draw call + state label 4315-4322; numeric panel unchanged)
+  Evidence: tests/test_debug_subsystem.cpp::test_node_executor_overlay
+  (pass, 2026-10-06)
+- [ ] M06-R18-04 Paused debug startup (USER, 2026-10-06).
+  `--debug-subsystem node-executor` starts PAUSED by default with a banner
+  "PAUSED FOR NODE EXECUTOR [P] RUN". The executor remains armed. This is
+  debug-fixture behavior only; normal gameplay and all other debug modes are
+  unchanged. Rationale: time to inspect the initial state before the
+  default ~5 s node arrives. Do NOT change the default node time, node
+  delta-v, engine acceleration, executor timings, or physical state unless
+  a later human defect specifically requires it.
+  Source: USER
+  Files: src/gui.cpp (paused start in `start_mission`, R16/R17 node-edit
+  pattern; banner drawn at 4322 while paused)
+  Evidence: headless smoke 2026-10-06 —
+  `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./lander_gui --debug-subsystem
+  node-executor --frames 300` -> `ticks=0`, fuel 1000.00 unchanged, rc=0
+  (fixture paused; executor stays armed by the existing fixture, ignition
+  timing is absolute sim-time)
+
+### M06-R18 — preserve / constraints
+
+- M06-R18-P01 Do NOT redesign or retune the node executor. No changes to:
+  bang-bang attitude algorithm, alignment thresholds, ignition calculation,
+  burn-time calculation, VGO accounting, final-partial-throttle algorithm,
+  node planning, maneuver basis, transfer midcourse, landing autopilot,
+  physics, prediction, camera, M07. If the executor itself proves janky in
+  tomorrow's human test, record the specific behavior and fix it in this
+  cell — do not preemptively retune. Source: USER
+- M06-R18-P02 The existing numeric node-executor panel (STATE / NODE / VGO /
+  THR / FUEL / RESULT) stays as is. Source: USER
+- M06-R18-P03 Canonical regions untouched: `src/autopilot.cpp` (bang-bang
+  attitude 29-157; VGO node execution 159-303; warm midcourse 313+),
+  `src/landing.cpp`, `src/flight_computer.cpp`, `src/sim.cpp`,
+  `docs/physics-model-gravity.md`. Read-only use of
+  `node_executor.dv_remaining()` / `state()` in the overlay. Source: USER
+  + AGENTS.md canonical-region rule
+
+### M06-R18 — automated verification
+
+- [x] M06-R18-V01 Check A (presentation source): manual throttle = 0 but
+  executor applied `Input.main_throttle` > 0 -> physical input > 0 AND
+  visual thrust source > 0. Source: USER
+  Evidence: test_flight_computer.cpp::test_node_executor_presentation block A
+  (pass, 2026-10-06)
+- [x] M06-R18-V02 Check B: ALIGN/WAIT -> executor owns the controls, actual
+  main throttle == 0, no plume (visual source == 0). Source: USER
+  Evidence: block B (WAIT pre-ignition and ALIGN at 0.9 rad both: applied
+  0, plume 0) (pass)
+- [x] M06-R18-V03 Check C: BURN -> actual throttle > 0, fuel decreases, VGO
+  decreases, plume source == applied throttle. Source: USER
+  Evidence: block C — real `Simulation` run of the fixture: 60 wait + 60
+  burn steps; per-step dv minus the identical zero-input reference run matches
+  `main_accel x throttle x dt` along the pre-step nose within 1e-3; fuel
+  1000 -> 952; VGO 4 -> 2 m/s at the node; no crash/land (pass)
+- [x] M06-R18-V04 Check D: final partial burn -> 0 < applied < 1 on the
+  appropriate final step, visual throttle equals that fraction. Source: USER
+  Evidence: block D — 4.11 m/s node: 124 burn steps, final throttle 0.29-
+  0.31 (0 < t < 1), plume == applied every step (pass)
+- [x] M06-R18-V05 Check E: COMPLETE/ABORT -> subsequent applied throttle =
+  0, no residual visual thrust (no latent output). Source: USER
+  Evidence: block E — 3 steps post-COMPLETE and 2 post-ABORT all zero with
+  plume 0; plus suppression gates (crashed/landed/empty-fuel with applied
+  1.0 -> presentation level 0) (pass)
+- [ ] M06-R18-V06 Check F: debug geometry -> ACT axis matches
+  `state.angle` (via `thrust_hat`), VGO ray matches normalized
+  `dv_remaining`,   zero VGO -> no VGO ray, geometry fixed screen size /
+  read-only (pure function, camera rotation only, no zoom dependence).
+  Source: USER
+  Evidence: test_debug_subsystem.cpp::test_node_executor_overlay (camera-0
+  ACT along screen -y for world +y; camera rotation carries both rays; fixed
+  length independent of magnitude; zero / below-eps / non-finite VGO ->
+  omitted with tip == anchor, no NaN; pure across calls) (pass, 2026-10-06)
+- [ ] M06-R18-V07 Run: focused node-executor tests,
+  `lander_debug_subsystem_tests`, `lander_flight_computer_tests` (executor
+  tests), `lander_predictor_tests`, full `ctest` (baseline 11/12 — the
+  known unrelated V14-C body-2 cross-body landing failure is reported
+  separately and NOT fixed); headless smokes: `--debug-subsystem
+  node-executor` paused -> ticks=0, normal seed 1 120 f unchanged. Source:
+  USER
+  Evidence (2026-10-06): build clean; `lander_flight_computer_tests`
+  PASS (0.83 s, incl. test_node_executor_presentation A-E);
+  `lander_debug_subsystem_tests` PASS (2.68 s, incl. test_node_executor_
+  overlay); `lander_predictor_tests` PASS; full `ctest` 11/12 (92%) — sole
+  failure `lander_landing_tests`, the known pre-existing V14-C cross-body
+  soft-land (3 cases: primary -> companion; perturbed start velocity;
+  independent body/terrain seed) — unchanged by this cell, NOT fixed,
+  reported separately per the ledger; headless smoke node-executor --frames
+  300 -> ticks=0, fuel 1000.00, rc=0 (paused fixture); headless smoke
+  --seed 1 --frames 120 -> ticks=237, state=landed, rc=0 (baseline
+  unchanged); screenshot artifact /tmp/opencode/r18_node_executor_paused.ppm
+  generated for human inspection (not read back into the model)
+
+### M06-R18 — human verification
+
+- [ ] M06-R18-H01 (GATE — do NOT self-complete; do NOT commit until human
+  acceptance). Human re-run: `./build/lander_gui --debug-subsystem
+  node-executor`; human presses P and verifies: 1. ALIGN: ACT axis
+  physically rotates toward the VGO; throttle 0; no flame. 2. WAIT:
+  alignment held; throttle 0; no flame. 3. BURN: begins only when aligned
+  and at/after ignition; visible flame along the actual craft thrust axis;
+  panel THR > 0; fuel decreases; VGO decreases. 4. FINAL STEP: partial
+  throttle visible / numerically reported where observable; no obvious
+  overshoot. 5. COMPLETE: VGO ~0; throttle 0; flame gone; no latent force.
+  6. ABORT: fresh run, Shift+Enter or X during ALIGN/WAIT/BURN -> ABORTED;
+  throttle immediately zero and stays zero; no latent force or flame. 7.
+  OFF-AXIS SAFETY: no engine burn while substantially misaligned merely
+  because the node time has passed. 8. Physicality: acceleration matches
+  the actual thrust / fuel spend; no direct velocity snap / magic-force
+  look. Source: USER
+
+### M06-R18-D — derived implementation tasks
+
+- [x] M06-R18-D01 gui.cpp: narrow presentation source of truth — a gui-local
+  `actual_thrust` (presentation state beside `flame_clock`), set from the
+  exact `step_input` at the existing `panel_ctx.last_step_input =
+  step_input;` site, zeroed in `start_mission`; `thrust_level` becomes the
+  gate `(fuel > 0 && !landed && !crashed)` applied to the clamped actual
+  applied throttle; a pure headless-testable mapping (presentation thrust
+  level from state + applied throttle) lives in a header per the R14/R15/R17
+  pattern.
+  Done: `actual_thrust` gui.cpp:3009 (set 3860, zeroed 3167);
+  `presentation_thrust_level` declared in include/lander/sim.hpp and defined
+  in src/sim.cpp beside `flame_flick`/`flame_length` (presentation-only,
+  never feeds physics); `thrust_level` gui.cpp:4047.
+- [x] M06-R18-D02 Pure overlay geometry for the node-executor scene viz
+  (ACT tip via `thrust_hat`, VGO tip via normalized `dv_remaining` with
+  zero-omission, fixed `length_px`, camera rotation only) added to
+  include/lander/debug_subsystem.hpp as a new delimited canonical-geometry
+  region (Reference: the node-execution doc), reusing `thrust_hat` /
+  `cam_rotate_dir` / `screen_arrow_tip`; no guidance recomputation.
+  Done: region "node-executor debug display geometry" with `NodeExecutorOverlay`
+  + `node_executor_overlay` (eps default 1e-3 m/s; non-finite -> anchor).
+- [x] M06-R18-D03 gui.cpp: `draw_node_executor_debug_axes` (R14 pattern):
+  fixed-length ACT + VGO rays + state label at the drawn ship, drawn ONLY in
+  the node-executor isolation and in BOTH paused and running states; no
+  prediction/nav overlay in this mode (keeps_prediction_overlay already
+  false).
+  Done: `draw_node_executor_debug_axes` gui.cpp:1962 (ACT cyan 96/224/255,
+  VGO amber 255/196/64, state label); render-loop call gui.cpp:4315 gated on
+  `debug_mode == NodeExecutor` only.
+- [x] M06-R18-D04 gui.cpp: node-executor fixture starts PAUSED in
+  `start_mission` (R16/R17 node-edit pattern) with the "PAUSED FOR NODE
+  EXECUTOR   [P] RUN" banner; executor stays armed by the existing fixture
+  (no physics / timing / node changes).
+  Done: paused start in `start_mission`; banner gui.cpp:4322; smoke-verified
+  ticks=0 while paused.
+- [x] M06-R18-D05 Supplemental presentation regressions (new test function,
+  does not replace existing executor tests): V01-V06 as executable checks,
+  including a real-`Simulation::step_once` physicality assertion (per-step
+  dv ~ main_accel x applied throttle x dt — no velocity snap).
+  Done: `test_node_executor_presentation()` in tests/test_flight_computer.cpp
+  (blocks A-E, registered in main) and `test_node_executor_overlay()` in
+  tests/test_debug_subsystem.cpp (registered in main); existing executor
+  tests untouched.
+- [x] M06-R18-D06 Build + V07 suite + headless smokes; update ledgers
+  (TASKS/STATUS/milestone); STOP uncommitted at M06-R18-H01.
+  Done: build clean; V07 results above; ledgers updated 2026-10-06; work
+  STOPPED UNCOMMITTED at M06-R18-H01 (no commit until human acceptance).

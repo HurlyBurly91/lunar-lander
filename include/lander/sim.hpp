@@ -181,6 +181,18 @@ State interpolated_state(const State& previous, const State& current,
 double flame_flick(double t);
 double flame_length(double thrust_level, double t);
 
+// M06-R18: presentation-only source of truth for the drawn plume. The
+// rendered thrust level is the ACTUAL main-engine input the authoritative
+// simulation last received (`applied_main_throttle`, the `Input.main_throttle`
+// composed for the last `Simulation::step_once`), clamped to [0, 1] and
+// suppressed to 0 for a crashed / landed ship or an empty tank. It is the
+// same value for every thrust source (manual, node executor, transfer
+// midcourse, landing autopilot) because every one of them composes its burn
+// through that one input field. Never used by physics, fuel, collision, or
+// scoring; headless-testable pure mapping.
+double presentation_thrust_level(const State& state,
+                                 double applied_main_throttle);
+
 bool operator==(const Input& lhs, const Input& rhs);
 bool operator==(const Config& lhs, const Config& rhs);
 

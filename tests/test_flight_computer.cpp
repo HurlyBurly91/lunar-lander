@@ -1077,6 +1077,310 @@ void test_node_executor() {
     }
 }
 
+// M06-R18 (R18-02 / V01..V05): the presentation layer of the node-executor
+// isolation. The executor is driven exactly as in test_node_executor above
+// (no executor change); every assertion is about the PRESENTATION quantities
+// -- the actually-applied `Input.main_throttle` and the pure
+// `presentation_thrust_level` mapping the drawn plume is sourced from -- plus
+// the physicality of the burn in the authoritative simulation (the per-step
+// velocity change beyond an identical zero-input reference run equals the
+// applied thrust: no "magic force", no plume without engine).
+void test_node_executor_presentation() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+
+    // (A) Manual throttle 0, executor burning at ignition: the applied
+    // input is full throttle and the presentation mapping reports a
+    // non-zero plume that equals it.
+    {
+        lander::ManeuverNode node{};
+        node.time = 100.0;
+        node.frame_body = 0;
+        node.dv_prograde = 4.0;
+        const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, node.time - 0.5, cfg);  // armed at ignition
+        lander::State s{};
+        s.fuel = 1000.0;
+        s.angle = 0.0;  // aligned with the +y VGO
+        const lander::Input input =
+            exec.make_input(s, node.time - 0.5, cfg, false, false);
+        check(input.main_throttle > 0.0,
+              "A: an executor burn with manual throttle 0 applies main thrust");
+        check_close(input.main_throttle, 1.0, 1e-12,
+                    "A: the 4 m/s node ignites at full throttle");
+        check_close(lander::presentation_thrust_level(s, input.main_throttle),
+                    input.main_throttle, 1e-12,
+                    "A: with manual 0 and applied > 0, the plume source "
+                    "equals the applied input");
+    }
+
+    // (B) ALIGN and WAIT: no applied thrust, and the mapping reports no
+    // plume.
+    {
+        lander::ManeuverNode node{};
+        node.time = 100.0;
+        node.dv_prograde = 4.0;
+        const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+        // Aligned before ignition: the first input already holds (throttle
+        // 0) and the executor settles into WAIT.
+        lander::NodeExecutor wait_exec;
+        wait_exec.arm(node, basis, node.time - 5.0, cfg);
+        lander::State ws{};
+        ws.fuel = 1000.0;
+        ws.angle = 0.0;
+        const lander::Input wait_in =
+            wait_exec.make_input(ws, node.time - 5.0, cfg, false, false);
+        check(wait_in.main_throttle == 0.0, "B: WAIT applies no main thrust");
+        check(lander::presentation_thrust_level(ws, wait_in.main_throttle) ==
+                  0.0,
+              "B: WAIT shows no plume");
+        lander::State ws2 = ws;
+        wait_exec.after_step(ws, ws2, wait_in, node.time - 5.0 + dt, cfg);
+        check(wait_exec.state() == lander::ExecutorState::Wait,
+              "B: the aligned pre-ignition node holds in WAIT");
+
+        // Misaligned before ignition: attitude-only ALIGN, no thrust.
+        lander::NodeExecutor align_exec;
+        align_exec.arm(node, basis, node.time - 5.0, cfg);
+        lander::State as{};
+        as.fuel = 1000.0;
+        as.angle = 0.9;
+        const lander::Input align_in =
+            align_exec.make_input(as, node.time - 5.0, cfg, false, false);
+        check(align_in.main_throttle == 0.0, "B: ALIGN applies no main thrust");
+        check(lander::presentation_thrust_level(as, align_in.main_throttle) ==
+                  0.0,
+              "B: ALIGN shows no plume");
+        check(align_exec.state() == lander::ExecutorState::Align,
+              "B: the misaligned node stays in ALIGN");
+    }
+
+    // (C) BURN in the authoritative simulation: the applied throttle is
+    // positive, fuel decreases, the tracked VGO decreases, the plume source
+    // equals the applied input at every burning step, and the per-step
+    // velocity change beyond an identical zero-input reference run equals
+    // the applied thrust (the engine, not magic).
+    {
+        const std::uint64_t seed = 503;
+        const auto bin = lander::BinarySystem::canonical(
+            cfg.mu, seed, lander::companion_seed(seed));
+        lander::State start = state_relative(
+            bin, 0, 100.0, 400.0, 0.0, 23.2, 0.0);
+        start.angle = 0.0;  // nose along the +y VGO
+        start.omega = 0.0;
+
+        lander::Simulation sim;
+        sim.reset(seed);
+        sim.set_state(start);
+        lander::Simulation ref;
+        ref.reset(seed);
+        ref.set_state(start);
+
+        lander::ManeuverNode node{};
+        node.time = 1.0;  // burn_time 1 s -> ignition at 0.5
+        node.frame_body = 0;
+        node.dv_prograde = 4.0;
+        const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, sim.sim_time(), cfg);
+
+        double now = sim.sim_time();
+        int wait_steps = 0;
+        int burn_steps = 0;
+        bool plume_matches = true;
+        bool dv_matches = true;
+        bool fuel_decreases = true;
+        for (int i = 0; i < 120; ++i) {
+            const lander::State before = sim.state();
+            const lander::State ref_before = ref.state();
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            (void)sim.step_once(input);
+            (void)ref.step_once(lander::Input{});
+            now += dt;
+            exec.after_step(before, sim.state(), input, now, cfg);
+
+            const double expected_plume =
+                lander::presentation_thrust_level(sim.state(),
+                                                  input.main_throttle);
+            if (std::abs(expected_plume - input.main_throttle) > 1e-12) {
+                plume_matches = false;
+            }
+            if (input.main_throttle > 0.0) {
+                ++burn_steps;
+                if (sim.state().fuel >= before.fuel) {
+                    fuel_decreases = false;
+                }
+                // Isolate the engine term: the identical reference run
+                // (zero input, same gravity field) carries no thrust, so the
+                // difference of the two per-step velocity changes is the
+                // applied thrust along the pre-step nose (within the tiny
+                // gravity-field difference between the diverging positions).
+                const double dvx =
+                    (sim.state().vx - before.vx) -
+                    (ref.state().vx - ref_before.vx);
+                const double dvy =
+                    (sim.state().vy - before.vy) -
+                    (ref.state().vy - ref_before.vy);
+                const double ex =
+                    -std::sin(before.angle) *
+                    cfg.main_accel * input.main_throttle * dt;
+                const double ey =
+                    std::cos(before.angle) *
+                    cfg.main_accel * input.main_throttle * dt;
+                if (std::hypot(dvx - ex, dvy - ey) > 1e-3) {
+                    dv_matches = false;
+                }
+            } else {
+                ++wait_steps;
+            }
+        }
+        check(wait_steps == 60, "C: the node waits 0.5 s before ignition");
+        check(burn_steps == 60, "C: the first 0.5 s of the 1 s burn elapse");
+        check(plume_matches, "C: the plume source equals the applied input "
+                             "at every step");
+        check(fuel_decreases, "C: burning consumes fuel in the authoritative "
+                              "simulation");
+        check(dv_matches, "C: the per-step delta-v matches the applied "
+                          "thrust (no magic force)");
+        check_close(vec_length(exec.dv_remaining()), 2.0, 1e-9,
+                    "C: half the node delta-v is delivered at the node time");
+        check(!sim.state().crashed && !sim.state().landed,
+              "C: the run stays healthy");
+    }
+
+    // (D) The final partial step: 0 < applied < 1, and the plume source
+    // equals the applied fraction. A 4.11 m/s node needs 123 full steps
+    // plus one ~30 % partial step.
+    {
+        lander::ManeuverNode node{};
+        node.time = 100.0;
+        node.dv_prograde = 4.11;
+        const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, node.time - 0.5, cfg);  // armed at ignition
+
+        lander::State before{};
+        before.fuel = 1000.0;
+        before.angle = 0.0;
+        double now = node.time - 0.5;
+        int burn_steps = 0;
+        double last_throttle = -1.0;
+        bool partial_ok = true;
+        for (int i = 0; i < 240 && exec.active(); ++i) {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            lander::State after = before;
+            after.fuel = std::max(
+                0.0, before.fuel - (input.main_throttle > 0.0
+                                       ? cfg.fuel_burn * dt
+                                       : 0.0));
+            now += dt;
+            if (input.main_throttle > 0.0) {
+                ++burn_steps;
+                last_throttle = input.main_throttle;
+                if (std::abs(
+                        lander::presentation_thrust_level(
+                            after, input.main_throttle) -
+                        input.main_throttle) > 1e-12) {
+                    partial_ok = false;
+                }
+            }
+            exec.after_step(before, after, input, now, cfg);
+            before = after;
+        }
+        check(exec.state() == lander::ExecutorState::Complete,
+              "D: the partial-step node completes");
+        check(burn_steps == 124, "D: 123 full steps plus one partial step");
+        check(last_throttle > 0.0 && last_throttle < 1.0,
+              "D: the final step is a 0 < applied < 1 partial throttle");
+        check_close(last_throttle, 0.3, 1e-2,
+                    "D: the final step burns ~30 % (the 0.01 m/s remainder)");
+        check(partial_ok, "D: the plume source equals the applied fraction");
+    }
+
+    // (E) Terminal states leave no residual thrust, applied or rendered.
+    {
+        lander::ManeuverNode node{};
+        node.time = 100.0;
+        node.dv_prograde = 4.0;
+        const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+        // After COMPLETE, repeated inputs stay silent.
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, node.time - 0.5, cfg);
+        lander::State before{};
+        before.fuel = 1000.0;
+        before.angle = 0.0;
+        double now = node.time - 0.5;
+        while (exec.active()) {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            lander::State after = before;
+            after.fuel = std::max(
+                0.0, before.fuel - (input.main_throttle > 0.0
+                                       ? cfg.fuel_burn * dt
+                                       : 0.0));
+            now += dt;
+            exec.after_step(before, after, input, now, cfg);
+            before = after;
+        }
+        for (int i = 0; i < 3; ++i) {
+            const lander::Input idle =
+                exec.make_input(before, now + i * dt, cfg, false, false);
+            check(idle.main_throttle == 0.0,
+                  "E: a completed executor leaves no latent thrust");
+            check(lander::presentation_thrust_level(before,
+                                                    idle.main_throttle) == 0.0,
+                  "E: a completed executor renders no plume");
+        }
+
+        // After ABORT mid-burn, the executor goes silent immediately.
+        lander::NodeExecutor abort_exec;
+        abort_exec.arm(node, basis, node.time - 0.5, cfg);
+        lander::State ab{};
+        ab.fuel = 1000.0;
+        ab.angle = 0.0;
+        const lander::Input first =
+            abort_exec.make_input(ab, node.time - 0.5, cfg, false, false);
+        lander::State ab2 = ab;
+        ab2.fuel -= cfg.fuel_burn * dt;
+        abort_exec.after_step(ab, ab2, first, node.time - 0.5 + dt, cfg);
+        abort_exec.abort();
+        for (int i = 0; i < 2; ++i) {
+            const lander::Input in =
+                abort_exec.make_input(ab2, node.time - 0.5 + dt + i * dt,
+                                      cfg, false, false);
+            check(in.main_throttle == 0.0,
+                  "E: an aborted executor leaves no latent thrust");
+            check(lander::presentation_thrust_level(ab2, in.main_throttle) ==
+                      0.0,
+                  "E: an aborted executor renders no plume");
+        }
+
+        // Suppression gates: even with a stale non-zero applied value, a
+        // crashed or landed ship (or an empty tank) renders no plume.
+        lander::State crashed{};
+        crashed.fuel = 500.0;
+        crashed.crashed = true;
+        check(lander::presentation_thrust_level(crashed, 1.0) == 0.0,
+              "E: a crashed ship renders no plume");
+        lander::State landed{};
+        landed.fuel = 500.0;
+        landed.landed = true;
+        check(lander::presentation_thrust_level(landed, 1.0) == 0.0,
+              "E: a landed ship renders no plume");
+        lander::State empty{};
+        empty.fuel = 0.0;
+        check(lander::presentation_thrust_level(empty, 1.0) == 0.0,
+              "E: an empty tank renders no plume");
+    }
+}
+
 void test_determinism() {
     lander::Config cfg{};
     const double dt = cfg.fixed_dt;
@@ -1158,6 +1462,7 @@ int main() {
     test_planners();
     test_attitude_controller();
     test_node_executor();
+    test_node_executor_presentation();
     test_determinism();
 
     if (failures == 0) {

@@ -1950,6 +1950,40 @@ static void draw_attitude_debug_axes(SDL_Renderer* renderer,
               static_cast<int>(center.y) - 34, 1, label);
 }
 
+// M06-R18: draw the node-executor scene visualization at the drawn ship,
+// ONLY in the `--debug-subsystem node-executor` isolation (both paused and
+// running): (a) a fixed screen-length ACT ray along the canonical thrust
+// axis, (b) a fixed screen-length VGO ray along the executor's remaining
+// delta-v (omitted once the remainder is ~zero), and (c) a compact executor
+// state label near the ship. Directions come from the pure
+// `node_executor_overlay` geometry (camera rotation only, fixed pixel
+// length, matching the drawn nose). Read-only: it only reads the supplied
+// geometry and executor state.
+static void draw_node_executor_debug_axes(
+    SDL_Renderer* renderer, const lander::State& ship,
+    const lander::Camera& cam,
+    const lander::NodeExecutorOverlay& overlay,
+    lander::ExecutorState es) {
+    const Color act = make_color(96, 224, 255);     // cyan : ACTUAL thrust axis
+    const Color vgo = make_color(255, 196, 64);     // amber: VGO remaining
+    const Color label = make_color(228, 233, 244);  // white: state label
+    const Vec2 center = to_screen(ship.x, ship.y, cam);
+    const Vec2 act_tip{overlay.act_tip.x, overlay.act_tip.y};
+    const Vec2 vgo_tip{overlay.vgo_tip.x, overlay.vgo_tip.y};
+
+    draw_thick_line(renderer, center, act_tip, 2.0f, act, 230);
+    draw_text(renderer, "ACT", static_cast<int>(act_tip.x) + 4,
+              static_cast<int>(act_tip.y) - 4, 1, act);
+    if (overlay.vgo_present) {
+        draw_thick_line(renderer, center, vgo_tip, 1.5f, vgo, 200);
+        draw_text(renderer, "VGO", static_cast<int>(vgo_tip.x) + 4,
+                  static_cast<int>(vgo_tip.y) - 4, 1, vgo);
+    }
+    draw_text(renderer, lander::executor_state_name(es),
+              static_cast<int>(center.x) + 10,
+              static_cast<int>(center.y) + 22, 1, label);
+}
+
 // M06-R15: the node-edit scene overlay, drawn ONLY in the `node-edit`
 // isolation. Read-only: it reads the prediction / node / basis / dv_world and
 // the selected display frame, then renders fixed-screen geometry (the NODE
@@ -2964,6 +2998,15 @@ int main(int argc, char** argv) {
     // integer simulation tick counter, so the flame is smooth at any display
     // refresh rate.
     double flame_clock = 0.0;
+    // M06-R18: the presentation source of truth for the drawn plume. It is
+    // the actual main-engine input the authoritative simulation last
+    // received (the `Input.main_throttle` composed for the last
+    // `sim.step_once`), NOT the player's manual throttle knob: an
+    // autonomous source (node executor, transfer midcourse, landing
+    // autopilot) burning while the knob is at 0 must still show its plume,
+    // and an idle knob must not show a plume while nothing is applied. It
+    // is display-only; the simulation is never fed back from it.
+    double actual_thrust = 0.0;
 
     // M06-R2-11: opt-in per-frame development diagnostic (set the
     // LL_FRAME_DEBUG environment variable to a non-"0" value). Prints frame
@@ -3121,6 +3164,7 @@ int main(int argc, char** argv) {
         throttle = 0.0;
         paused = false;
         flame_clock = 0.0;
+        actual_thrust = 0.0;  // M06-R18: no stale plume across a reset
         tap_guard.reset();
         reaction_wheels.reset();
         last_completed_seen = sim.last_completed();
@@ -3174,6 +3218,17 @@ int main(int argc, char** argv) {
             // normal run; every other debug mode and normal gameplay stay
             // running exactly as before.
             if (debug_mode == lander::DebugSubsystem::NodeEdit) {
+                paused = true;
+            }
+            // M06-R18: the node-executor fixture starts PAUSED so the developer
+            // can study the still scene (ship, ACT / VGO rays, state label,
+            // numeric panel) before the burn timeline advances. The executor
+            // stays ARMED (it is armed at t0 by the fixture): its ignition
+            // timing is absolute sim-time based, so pausing only freezes the
+            // world and the burn still begins at the same absolute sim time
+            // once P resumes. No physics / timing / node change; every other
+            // debug mode and normal gameplay stay running exactly as before.
+            if (debug_mode == lander::DebugSubsystem::NodeExecutor) {
                 paused = true;
             }
         }
@@ -3800,6 +3855,9 @@ int main(int argc, char** argv) {
                 // M06-R8 (R8-05..R8-15): remember the last composed per-step
                 // input for the debug panels (display only).
                 panel_ctx.last_step_input = step_input;
+                // M06-R18: remember the exact main-engine command this step
+                // applies (display only; the plume's source of truth).
+                actual_thrust = step_input.main_throttle;
 
                 (void)sim.step_once(step_input);
 
@@ -3976,12 +4034,17 @@ int main(int argc, char** argv) {
         pending_wheel = 0;
         pending_cam_toggle = false;
 
-        // The flame is only present when the engine can actually burn, and
-        // its size follows the throttle rather than a binary on/off state.
+        // M06-R18: the flame is only present when the engine can actually
+        // burn, and its size follows the ACTUAL main-engine command the
+        // authoritative simulation last received (the applied
+        // `Input.main_throttle`), not the player's manual throttle knob:
+        // this is the same value for manual thrust, the node executor, the
+        // transfer midcourse, and the landing autopilot, so an autonomous
+        // burn always shows its plume and an idle knob never fakes one.
+        // The landed / crashed / empty-tank suppression is preserved
+        // inside the mapping.
         const double thrust_level =
-            (s.fuel > 0.0 && !s.landed && !s.crashed)
-                ? std::clamp(throttle, 0.0, 1.0)
-                : 0.0;
+            lander::presentation_thrust_level(s, actual_thrust);
 
         // A new contract completion shows its banner for a few seconds.
         const auto& last_completed = sim.last_completed();
@@ -4235,6 +4298,30 @@ int main(int argc, char** argv) {
                 lander::attitude_debug_axes(render_state.angle, target_dir);
             draw_attitude_debug_axes(renderer, render_state, cam, axes,
                                      attitude_mode);
+        }
+        // M06-R18: node-executor scene visualization. Drawn ONLY in the
+        // `node-executor` isolation, in BOTH paused and running states, on
+        // top of the bare scene (the nav / predictor overlays are already
+        // suppressed in this mode): the fixed ACT thrust-axis ray, the fixed
+        // VGO ray from the executor's remaining delta-v, and the executor
+        // state label at the drawn ship. Read-only: it never mutates the
+        // simulation, the executor, or the camera.
+        if (debug_mode == lander::DebugSubsystem::NodeExecutor) {
+            const Vec2 center = to_screen(render_state.x, render_state.y, cam);
+            const lander::NodeExecutorOverlay overlay =
+                lander::node_executor_overlay(
+                    lander::Vec2{center.x, center.y}, render_state.angle,
+                    node_executor.dv_remaining(), cam.angle(), 46.0);
+            draw_node_executor_debug_axes(renderer, render_state, cam,
+                                          overlay, node_executor.state());
+            // M06-R18: while the node-executor fixture is paused, say so, so
+            // the developer knows the scene is frozen on purpose (not stuck)
+            // and how to resume.
+            if (paused) {
+                const Color pause_c(255, 205, 90);
+                draw_center_text(renderer, "PAUSED FOR NODE EXECUTOR   [P] RUN",
+                                  118, 1, pause_c);
+            }
         }
         // M06-R15: node-edit scene overlay. Drawn ONLY in the `node-edit`
         // isolation, in the same branch the pre/post arc is visible, so the

@@ -71,6 +71,15 @@ void check_close(double a, double b, double eps, const char* message) {
     }
 }
 
+void check_close_vec(const Vec2& a, const Vec2& b, double eps,
+                     const char* message) {
+    if (std::hypot(a.x - b.x, a.y - b.y) > eps) {
+        ++failures;
+        std::printf("FAIL: %s ((%.9g, %.9g) != (%.9g, %.9g))\n", message,
+                    a.x, a.y, b.x, b.y);
+    }
+}
+
 // A full, comparable record of a freshly-set-up scenario: the authoritative
 // state plus every subsystem's engaged flag and the transfer cold-solve
 // telemetry. Two runs of the same mode must produce identical snapshots.
@@ -750,6 +759,97 @@ void test_node_edit_label_placement() {
     check(degenerate == anchor, "zero-length arrow -> label at the tip");
 }
 
+// M06-R18 (V06): the pure, headless node-executor overlay geometry the
+// `--debug-subsystem node-executor` scene visualization is built from:
+// fixed on-screen ray length (pixels, camera-zoom independent),
+// camera-rotated directions (reusing cam_rotate_dir / screen_arrow_tip),
+// the ACT ray from thrust_hat(ship angle), the VGO ray from the executor's
+// remaining delta-v (present only while its magnitude exceeds eps), and
+// purity (same inputs -> same output).
+void test_node_executor_overlay() {
+    const Vec2 anchor{500.0, 300.0};
+    const double kLen = 46.0;
+
+    // Camera 0, ship angle 0: the thrust axis is world +y, which the
+    // screen-y inversion maps to screen -y, so the ACT tip sits exactly
+    // kLen pixels above the anchor.
+    {
+        const auto o = lander::node_executor_overlay(
+            anchor, 0.0, Vec2{0.0, 3.0}, 0.0, kLen);
+        check_close_vec(o.act_tip, Vec2{anchor.x, anchor.y - kLen}, 1e-12,
+                        "camera 0: ACT tip is kLen along screen -y");
+    }
+
+    // Ship nose along world +x (angle -pi/2) with a +x VGO: at camera 0 both
+    // rays point screen +x; a 90-degree camera rotation carries both to
+    // screen +y (camera rotation only, never the map scale).
+    {
+        const auto o = lander::node_executor_overlay(anchor, -0.5 * M_PI,
+                                                     Vec2{4.0, 0.0}, 0.0, kLen);
+        check_close_vec(o.act_tip, Vec2{anchor.x + kLen, anchor.y}, 1e-12,
+                        "ACT follows the thrust axis (world +x) at camera 0");
+        check(o.vgo_present, "a non-negligible VGO is present");
+        check_close(o.vgo_mps, 4.0, 1e-12, "the VGO magnitude is reported");
+        check_close_vec(o.vgo_tip, o.act_tip, 1e-12,
+                        "the VGO ray points along the remaining delta-v");
+
+        const auto rc = lander::node_executor_overlay(anchor, -0.5 * M_PI,
+                                                      Vec2{4.0, 0.0},
+                                                      0.5 * M_PI, kLen);
+        check_close_vec(rc.act_tip, Vec2{anchor.x, anchor.y + kLen}, 1e-12,
+                        "camera rotation carries the ACT ray");
+        check_close_vec(rc.vgo_tip, rc.act_tip, 1e-12,
+                        "camera rotation carries the VGO ray");
+    }
+
+    // Fixed length: the same VGO direction at a different magnitude gives
+    // the same tip (the ray encodes direction only).
+    {
+        const auto big = lander::node_executor_overlay(
+            anchor, 0.0, Vec2{0.0, 3.0}, 0.0, kLen);
+        const auto small = lander::node_executor_overlay(
+            anchor, 0.0, Vec2{0.0, 0.4}, 0.0, kLen);
+        check_close_vec(small.vgo_tip, big.vgo_tip, 1e-12,
+                        "fixed length regardless of the VGO magnitude");
+        check(small.vgo_present, "a 0.4 m/s VGO is still present");
+    }
+
+    // Zero or below-eps VGO: no ray, the tip falls back to the anchor, and
+    // the magnitude is still reported.
+    {
+        const auto o = lander::node_executor_overlay(
+            anchor, 0.3, Vec2{0.0, 0.0}, 0.0, kLen);
+        check(!o.vgo_present, "zero VGO -> no VGO ray");
+        check_close_vec(o.vgo_tip, anchor, 1e-12, "zero VGO -> tip == anchor");
+        check_close(o.vgo_mps, 0.0, 1e-12, "zero VGO magnitude reported");
+        const auto tiny = lander::node_executor_overlay(
+            anchor, 0.3, Vec2{2.0e-4, 0.0}, 0.0, kLen);
+        check(!tiny.vgo_present, "a VGO below eps -> no ray");
+    }
+
+    // Non-finite VGO: no ray, anchor fallback, and no NaN anywhere.
+    {
+        const auto o = lander::node_executor_overlay(
+            anchor, 0.3, Vec2{std::nan(""), 0.0}, 0.0, kLen);
+        check(!o.vgo_present, "non-finite VGO -> no ray");
+        check_close_vec(o.vgo_tip, anchor, 1e-12,
+                        "non-finite VGO -> tip == anchor");
+        check(std::isfinite(o.act_tip.x) && std::isfinite(o.act_tip.y),
+              "the ACT tip stays finite");
+    }
+
+    // Purity: identical inputs give identical geometry.
+    {
+        const auto a = lander::node_executor_overlay(
+            anchor, 1.2, Vec2{2.0, -3.0}, 0.7, kLen);
+        const auto b = lander::node_executor_overlay(
+            anchor, 1.2, Vec2{2.0, -3.0}, 0.7, kLen);
+        check(a.act_tip == b.act_tip && a.vgo_tip == b.vgo_tip &&
+                  a.vgo_present == b.vgo_present && a.vgo_mps == b.vgo_mps,
+              "same inputs -> same output");
+    }
+}
+
 // M06-R17 (V02): the node-edit event state resolves the node's effective
 // epoch from the CURRENT ship state with the exact rule predict_trajectory
 // uses (max(t_now, snap(node.time, fixed_dt))), and agrees with the
@@ -870,6 +970,7 @@ int main() {
     test_attitude_debug_axes();
     test_node_edit_debug_geometry();
     test_node_edit_label_placement();
+    test_node_executor_overlay();
     test_node_event_overdue_matches_predictor();
     test_node_event_future_matches_predictor();
 

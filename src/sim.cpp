@@ -281,6 +281,17 @@ double flame_length(double thrust_level, double t) {
     return thrust_level * full_len;
 }
 
+double presentation_thrust_level(const State& state,
+                                 double applied_main_throttle) {
+    // Presentation only: the plume mirrors the actually-applied engine
+    // command. A crashed or landed ship never shows a plume (the existing
+    // suppression, preserved), and an empty tank cannot burn.
+    if (state.crashed || state.landed || state.fuel <= 0.0) {
+        return 0.0;
+    }
+    return std::clamp(applied_main_throttle, 0.0, 1.0);
+}
+
 Simulation::Simulation() { reset(0); }
 
 Simulation::Simulation(const Config& config) : config_(config) { reset(0); }

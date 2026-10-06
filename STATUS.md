@@ -4,14 +4,59 @@
 
 M06 — Flight computer and maneuver planning
 
-State: ACTIVE
+State: AWAITING HUMAN VERIFICATION
 
-Phase: M06-R17 (R16 correction: node-edit RUNNING jitter / stair-step —
-presentation cadence) — COMPLETE (2026-10-06): diagnosis confirmed, fix
-implemented, automated verification complete, and the human gate
-M06-R17-H01 was a PASS (all R15/R16 checks plus RUNNING stability; no
-node-edit defect remains); the node-edit cell (R15 + R16 + R17) is committed.
-The M06-R16 human
+Phase: M06-R18 (node-executor observability / presentation prep) — AWAITING
+HUMAN VERIFICATION at M06-R18-H01 (implementation + automated verification
+complete 2026-10-06; STOPPED UNCOMMITTED until human acceptance). Work
+shipped in this phase: (1) the "magic force" observation is CONFIRMED from
+the code as a PRESENTATION defect — the physics is genuine engine (the
+authoritative sim consumes the executor's applied `Input.main_throttle`:
+real acceleration + real fuel spend), while the drawn plume was sourced from
+the player's manual throttle knob (no plume while the executor burns); the
+same latent defect exists for the transfer midcourse and the landing
+autopilot; (2) the rendered thrust source is now the actual applied
+main-throttle input — one narrow presentation source of truth
+(`actual_thrust` in gui.cpp fed from the exact `step_input` beside
+`panel_ctx.last_step_input`; pure gate
+`presentation_thrust_level(state, applied)` in sim.hpp/sim.cpp; correct for
+manual, node executor, transfer midcourse, and landing autopilot; no
+controller change; flame never inferred from acceleration); (3) a minimal
+node-executor scene visualization at the drawn ship (fixed ACT thrust-axis
+ray via `thrust_hat(angle)`, fixed VGO ray from the executor's
+`dv_remaining()` omitted when ~zero, compact state label; numeric panel
+kept) — new delimited region "node-executor debug display geometry" in
+debug_subsystem.hpp + `draw_node_executor_debug_axes` in gui.cpp; (4) the
+node-executor debug fixture starts PAUSED with a "PAUSED FOR NODE EXECUTOR
+[P] RUN" banner, executor remaining armed (no default-node-time / delta-v /
+engine-acceleration / executor-timing / physical-state change). Strict scope
+held: NO executor redesign or retune (bang-bang, alignment thresholds,
+ignition, burn time, VGO accounting, final partial throttle, node planning,
+maneuver basis, transfer midcourse, landing autopilot, physics, prediction,
+camera, M07 all untouched). Automated results 2026-10-06: build clean;
+`lander_flight_computer_tests` PASS (new
+test_node_executor_presentation, checks A-E incl. real-simulation physicality:
+per-step dv == main_accel x applied x dt, fuel 1000 -> 952, VGO 4 -> 2 m/s,
+final-partial-throttle 0.29-0.31, no residual post-COMPLETE/ABORT);
+`lander_debug_subsystem_tests` PASS (new test_node_executor_overlay: camera
+rotation only, fixed length, zero/eps/non-finite VGO omission, purity); full
+`ctest` 11/12 (sole failure = pre-existing, unrelated V14-C cross-body
+soft-land in lander_landing_tests, NOT fixed, reported separately); headless
+smokes: `--debug-subsystem node-executor --frames 300` -> ticks=0, fuel
+1000.00, rc=0 (paused fixture); `--seed 1 --frames 120` -> ticks=237,
+state=landed, rc=0 (baseline unchanged); paused-scene screenshot artifact at
+/tmp/opencode/r18_node_executor_paused.ppm for the human run. GATE: human
+re-run `./build/lander_gui --debug-subsystem node-executor`, press P, verify
+the 8 checks in M06-R18-H01 (ALIGN/WAIT no flame, BURN flame along actual
+axis with THR/fuel/VGO moving, final partial step, COMPLETE, ABORT,
+off-axis safety, physicality). No commit until human acceptance.
+Historical phase record below (node-edit cell M06-R17 + R16 + R15; all
+COMPLETE, committed as c2114f3 on 2026-10-06): M06-R17 (R16 correction:
+node-edit RUNNING jitter / stair-step — presentation cadence) — COMPLETE
+(2026-10-06): diagnosis confirmed, fix implemented, automated verification
+complete, and the human gate M06-R17-H01 was a PASS (all R15/R16 checks plus
+RUNNING stability; no node-edit defect remains); the node-edit cell
+(R15 + R16 + R17) is committed. The M06-R16 human
 re-run (2026-10-06) was a PARTIAL PASS: everything passed (paused fixture +
 banner, marker on the PRE/POST junction through all edits, de-collided
 labels, H/J/K/L/C/DEL, F5-F9, pause/resume) EXCEPT one defect — while the
@@ -153,9 +198,28 @@ time. `M06-R7-H01` (the consolidated M06 playtest) stays OPEN as the acceptance
 gate; this tool supports that playtest one subsystem at a time. M06-R6 / M06-R7
 remain code-complete (see `TASKS.md`).
 
-Test status (current for M06-R17, which kept all R16 work and added its
-regressions; the R13 automated baseline below is unchanged): M06-R17 — full
-build clean (2026-10-06); new `tests/test_debug_subsystem.cpp` regressions
+Test status (current for M06-R18, which kept all R17/R16/R15 work and added
+its regressions; the R13 automated baseline below is unchanged): M06-R18 —
+full build clean (2026-10-06); new `tests/test_flight_computer.cpp`
+`test_node_executor_presentation` passes (check A: manual=0 / applied=1 /
+plume=1; check B: WAIT and ALIGN no-thrust, no plume; check C: real
+`Simulation` run of the fixture, 60 wait + 60 burn steps — per-step dv vs the
+identical zero-input reference run matches `main_accel x applied x dt` within
+1e-3, fuel 1000 -> 952, VGO 4 -> 2 m/s at the node; check D: 4.11 m/s node ->
+124 burn steps, final partial throttle 0.29-0.31 with plume == applied every
+step; check E: zero applied + plume post-COMPLETE and post-ABORT, plus
+crashed/landed/empty-fuel suppression gates); new
+`tests/test_debug_subsystem.cpp` `test_node_executor_overlay` passes (camera
+rotation only, fixed screen length, zero/below-eps/non-finite VGO omitted,
+pure function); `ctest` = 11/12 (sole failure = the pre-existing, unrelated
+V14-C cross-body soft-land in `lander_landing_tests`, NOT introduced by R18);
+headless smokes: `--debug-subsystem node-executor --frames 300` exits 0 with
+`ticks=0` and fuel 1000.00 (fixture starts PAUSED), `--seed 1 --frames 120`
+exits 0 with `ticks=237` / `state=landed` (normal baseline unchanged);
+paused-scene screenshot artifact written to
+/tmp/opencode/r18_node_executor_paused.ppm for human inspection. M06-R17 —
+full build clean (2026-10-06); new `tests/test_debug_subsystem.cpp`
+regressions
 `test_node_event_overdue_matches_predictor` / `test_node_event_future_matches_
 predictor` pass (node-event state from the current ship state equals the ship
 state exactly when overdue and equals `predict_trajectory` for the same
@@ -202,7 +266,21 @@ tests now document/expect the deferred behavior and pass); headless GUI smoke
 (incl. `--debug-predictor-body 0/1/2`) exits 0. The only source change this
 session was the purely additive `tests/test_predictor.cpp` (V18).
 
-Human-verification status: the M06-R13 closeout gates `M06-R13-H01` (normal
+Human-verification status: the CURRENT gate is `M06-R18-H01` (AWAITING HUMAN
+VERIFICATION — do not self-complete; work uncommitted until accepted): human
+re-run `./build/lander_gui --debug-subsystem node-executor` (fixture starts
+PAUSED with the banner), press P, then verify: (1) ALIGN — ACT axis
+physically rotates toward the VGO, throttle 0, no flame; (2) WAIT — alignment
+held, throttle 0, no flame; (3) BURN — begins only when aligned and at/after
+ignition, visible flame along the actual craft thrust axis, panel THR > 0,
+fuel decreases, VGO decreases; (4) FINAL STEP — partial throttle visible /
+reported, no obvious overshoot; (5) COMPLETE — VGO ~0, throttle 0, flame
+gone, no latent force; (6) ABORT — fresh run, Shift+Enter or X during
+ALIGN/WAIT/BURN -> ABORTED, throttle immediately and permanently zero, no
+latent force or flame; (7) OFF-AXIS SAFETY — no burn while substantially
+misaligned merely because the node time has passed; (8) PHYSICALITY —
+acceleration matches the actual thrust / fuel spend, no velocity snap /
+"magic force" look. Earlier gates: the M06-R13 closeout gates `M06-R13-H01` (normal
 play: three bodies render, contract loop undisturbed, F9 works),
 `M06-R13-H02` (predictor + body-2 fixture: AUTO MOONLET, F9, body-2 readouts),
 and `M06-R13-H03` (predictor + body-1 fixture unchanged from R12 — regression
