@@ -6,14 +6,32 @@ M06 — Flight computer and maneuver planning
 
 State: AWAITING HUMAN VERIFICATION
 
-Phase: M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET) is COMPLETE and
-committed/pushed (2026-10-05; H01/H02/H03 passed). M06 is now awaiting the
-still-open human visual passes M06-R12-H01/H02, M06-R11-H01, M06-R7-H01 (no
-implementation in flight). R13 was the first M06 hardening pass that
-intentionally changes the canonical gravity / ephemeris model (R8-R12 kept the
-physics frozen; R13 SUPERSEDED the frozen-physics scope of those passes,
-notably M06-R12-P09, per the explicit user request — the supersession is
-preserved in `TASKS.md`). The two-body system becomes a fixed three-body
+Phase: M06-R14 (attitude debug visualization) — a bounded R8 debug-harness
+follow-up adding a compact, READ-ONLY attitude visualization drawn ONLY in the
+`--debug-subsystem attitude` isolation: at the drawn spacecraft, a fixed
+screen-length ACT ray along the actual thrust axis (`thrust_hat(angle)`), a
+fixed screen-length TGT ray along the canonical `attitude_target_direction()`
+target (absent when none), an optional error arc between them, and the mode
+name. It reuses the exact target direction the panel/controller already use via
+a single shared resolution (no duplicated target calculation), is display-only
+(no control / physics / camera change), and is guarded to the attitude mode.
+AUTOMATED WORK COMPLETE (2026-10-05): code implemented; the headless
+pure-geometry regression (`test_attitude_debug_axes`) added and passing; build +
+full ctest (11/12, sole failure = the pre-existing V14-C cross-body landing, NOT
+from R14) + headless attitude / predictor / normal smokes all exit 0. The human
+visual gate M06-R14-H01 PASSed (2026-10-05, USER: ACT tracks the thrust axis, TGT
+matches the commanded aim, Off removes the target ray without mutating attitude,
+PROGRADE / RETROGRADE / RADIAL OUT / RADIAL IN / TARGET / ANTI-TARGET all correct,
+the controller rotates toward target and settles, the error viz is coherent, and
+the overlay is useful and readable); committed and pushed to origin.
+M06 is still awaiting the other open human passes M06-R12-H01/H02,
+M06-R11-H01, M06-R7-H01 (unchanged by R14). The most recently completed pass,
+M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET), is COMPLETE and
+committed/pushed (2026-10-05; H01/H02/H03 passed). R13 was the first M06
+hardening pass that intentionally changes the canonical gravity / ephemeris
+model (R8-R12 kept the physics frozen; R13 SUPERSEDED the frozen-physics scope
+of those passes, notably M06-R12-P09, per the explicit user request — the
+supersession is preserved in `TASKS.md`). The two-body system becomes a fixed three-body
 hierarchical (Jacobi) system:
 - body 2 = OUTER MOONLET, same scale as the companion (`R2 = R1 = R0/9`,
   `mu2 = mu1 = mu0/81`), distinct salted terrain seed (a new pure function of
@@ -86,7 +104,12 @@ time. `M06-R7-H01` (the consolidated M06 playtest) stays OPEN as the acceptance
 gate; this tool supports that playtest one subsystem at a time. M06-R6 / M06-R7
 remain code-complete (see `TASKS.md`).
 
-Test status (current for M06-R13): ALL NON-HUMAN VERIFICATION COMPLETE.
+Test status (current for M06-R14; R14 is display-only so the R13 automated
+baseline below is unchanged): M06-R14 — `ctest` = 11/12 (sole failure = the
+pre-existing V14-C body-2 cross-body landing, NOT introduced by R14);
+`lander_debug_subsystem_tests` (incl. the new `test_attitude_debug_axes`) pass;
+headless `--debug-subsystem attitude` / `predictor` / normal smokes all exit 0.
+M06-R13 baseline (all non-human verification complete):
 `lander_pred_frame_tests` (all pass): V19 `gate_moonlet` PASSES (~99.8% MOONLET,
 final MOONLET); V20 3-body via-WORLD PASSES (P->M = WPWM, M->P = WMWP, no direct
 P<->M adjacency; P<->C still WPWC/WCWP); the R12 `gate_primary` /
@@ -114,7 +137,8 @@ Human-verification status: the M06-R13 closeout gates `M06-R13-H01` (normal
 play: three bodies render, contract loop undisturbed, F9 works),
 `M06-R13-H02` (predictor + body-2 fixture: AUTO MOONLET, F9, body-2 readouts),
 and `M06-R13-H03` (predictor + body-1 fixture unchanged from R12 — regression
-check) all PASSed (2026-10-05). The still-open gates from earlier passes
+check) all PASSed (2026-10-05). The M06-R14 attitude-visualization gate
+`M06-R14-H01` also PASSed (2026-10-05, USER). The still-open gates from earlier passes
 remain: `M06-R12-H01` (static frame + legend + debug-panel visual pass),
 `M06-R12-H02` (AUTO frame visual pass — segmented arc, transition markers, no
 cross-frame connector), `M06-R11-H01` (the Pass 1 diagnostics visual pass),
@@ -129,8 +153,11 @@ architecture) is committed and pushed to `origin` (2026-10-04, commit
 `e968d1c`) at its human-verification blocker so the game could be shown /
  reviewed. M06-R13 (this three-body hierarchical pass) is COMPLETE: all 23
  automated tests + the M06-R13-09 supersession are implemented and passing
- (no new ctest failures), and the H01/H02/H03 human gates PASSed (2026-10-05);
- it is now committed and pushed to `origin`. A non-blocking deferred camera/UI
+  (no new ctest failures), and the H01/H02/H03 human gates PASSed (2026-10-05);
+  it is now committed and pushed to `origin`. M06-R14 (the attitude debug
+  visualization) is also COMPLETE: code + headless regression implemented,
+  M06-R14-H01 human-accepted (2026-10-05), and it is committed and pushed to
+  `origin`. A non-blocking deferred camera/UI
  polish note is recorded (the SYSTEM-view auto-fit zooms somewhat too far out
  now that body 2 expands the system bounds; not fixed in R13). M06 as a whole
  is NOT closed / accepted; the human items above (R12-H01/H02, R11-H01,

@@ -2,8 +2,17 @@
 
 Milestone: M06 — Flight computer and maneuver planning
 State: AWAITING HUMAN VERIFICATION
-Active request group: none in flight — M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET) is COMPLETE and committed/pushed (2026-10-05; H01/H02/H03 passed). M06-R12 is complete/committed (commit `e968d1c`); M06-R11 (Pass 1) and M06-R7 are code-complete. The remaining M06 work is the still-OPEN human visual passes `M06-R12-H01` / `M06-R12-H02`, `M06-R11-H01`, and `M06-R7-H01`, plus the deferred predictor / transfer defects (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2). R13 acceptance does NOT close M06.
-Current phase: none in flight (M06 awaiting the remaining human visual passes above). The most recently completed pass, M06-R13, extended the two-body moon system into a fixed three-body hierarchical (Jacobi) system (outer moonlet; inner 0/1 pair preserved EXACTLY as the M05 relative solution; per-body tidal locking; all-three-bodies gravity in the one global inertial frame; F9 MOONLET frame; 3-body AUTO classifier; `--debug-predictor-body 0|1|2`) and is committed. It was the first M06 hardening pass that intentionally changed the canonical gravity / ephemeris model (R8-R12 kept physics frozen); M06-R13 SUPERSEDED M06-R12-P09 (the "no binary-ephemeris change" constraint of the frozen-physics passes) per the explicit user request — that supersession is preserved in the R13 section below, not deleted.
+Active request group: NONE active — M06 is idle awaiting its remaining open
+human gates (no new implementation group started this pass).
+Current phase: M06-R14 (attitude debug visualization) COMPLETE and
+committed/pushed (2026-10-05; M06-R14-H01 human-accepted). Prior state preserved:
+M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET) is COMPLETE and
+committed/pushed (2026-10-05; its H01/H02/H03 human gates all PASSed); M06-R12
+is complete/committed (commit `e968d1c`); M06-R11 (Pass 1) and M06-R7 are
+code-complete. The still-OPEN human visual passes `M06-R12-H01` / `M06-R12-H02`,
+`M06-R11-H01`, `M06-R7-H01`, and the deferred predictor / transfer defects
+(PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) all remain open. R14 acceptance does
+NOT close M06.
 R11 automated verification is COMPLETE (awaiting its human visual pass,
 M06-R11-H01); R12 automated verification is also now COMPLETE (awaiting
 M06-R12-H01 / H02). R11 was a bounded
@@ -5066,3 +5075,160 @@ fixture invariance)
   active-project paths and pushed to `origin/main` via the tracked post-commit
   hook. M06 is NOT closed: R12-H01/H02, R11-H01, R7-H01 and the deferred
   PRED-01..08 / SIM-COLL-01 / TFD-1 / TFD-2 remain open.
+
+## M06-R14 — M06 DEBUG PHASE follow-up: attitude debug visualization (visual observability)
+
+Source: USER (2026-10-05, "ATTITUDE VISUAL OBSERVABILITY ONLY"). Bounded
+follow-up to the R8 subsystem-isolation debug harness. Add a compact,
+read-only attitude visualization to the scene that is drawn ONLY in the
+`--debug-subsystem attitude` isolation mode: at the drawn spacecraft, show the
+actual attitude direction, the target attitude direction, and (optionally) the
+error between them as fixed screen-length rays + a MODE label. Reuse the exact
+`attitude_target_direction()` direction already used by the panel and
+controller — do NOT add a second, differently-defined attitude-target
+calculation. A focused headless/pure-geometry regression guards the ray math.
+Do NOT commit; STOP for human attitude visual verification when visible.
+Scope boundary (preserve, do not cross): this is DISPLAY ONLY — no change to
+the bang-bang attitude control law, its deadbands, `attitude_target_direction()`,
+the physics, or the camera behavior; no change to any other debug mode or to
+normal (non-debug) gameplay; no normal HUD / nav / predictor clutter is added;
+the visualization is read-only and never mutates the simulation.
+State: COMPLETE.
+Outcome (2026-10-05): all automated work complete and evidenced (pure geometry
+D01; shared panel/scene target resolution + scene draw D02-D04; headless
+regression D05; build/test/smoke D06; preservation constraints P01-P04 hold —
+git diff is display-only). Human gate M06-R14-H01 PASSed (evidence below).
+Committed and pushed to origin (see the R14 commit in git log). M06 is NOT closed
+by R14; the other open M06 human gates (R12-H01/H02, R11-H01, R7-H01) and the
+deferred defects (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) remain open.
+
+### M06-R14-01 — Actual attitude ray (ACT)
+
+- [x] M06-R14-01-01 Draw a fixed screen-length ray from the drawn spacecraft
+  along the ACTUAL attitude / thrust axis, `thrust_hat(ship.angle)` =
+  `(-sin a, cos a)` (the canonical convention shared with the drawn nose and
+  the system-view marker triangle).
+  Files: src/gui.cpp; include/lander/debug_subsystem.hpp
+  Evidence: M06-R14-V01 (headless pure-geometry: actual ray direction equals
+  `thrust_hat(angle)` for sampled angles); H01 (human: ACT ray tracks the
+  visible nose in LOCAL and aligns with the marker triangle in SYSTEM).
+
+### M06-R14-02 — Target attitude ray (TGT)
+
+- [x] M06-R14-02-01 Draw a fixed screen-length ray from the drawn spacecraft
+  along the TARGET attitude direction, resolved by the SAME
+  `attitude_target_direction(mode, basis, pos, pad, maneuver_dv)` call the
+  panel and controller use (identical inputs → identical direction). When the
+  resolution returns `std::nullopt` (no target for that mode / not applicable),
+  draw NO target ray and show `N/A` in the panel context.
+  Files: src/gui.cpp
+  Evidence: M06-R14-V01 (target ray direction equals the supplied target for
+  sampled modes; no ray when the target is absent/zero); H01 (human: TGT ray
+  points where the craft is commanded to aim; Off shows none).
+
+### M06-R14-03 — Mode label near the craft
+
+- [x] M06-R14-03-01 Show the current attitude mode name near the spacecraft
+  (e.g. `Off`, `Prograde`, `Target`, …) via `attitude_mode_name(mode)`, kept
+  clear of the two rays.
+  Files: src/gui.cpp
+  Evidence: H01 (human: the correct mode name is visible near the craft).
+
+### M06-R14-04 — Optional error arc
+
+- [x] M06-R14-04-01 Optionally draw a small screen-space arc between the ACT
+  and TGT rays near the craft while a target exists and the craft is not yet
+  aligned; omitted when there is no target or when already aligned.
+  Files: src/gui.cpp
+  Evidence: H01 (human: the gap arc shrinks as the craft rotates onto target).
+
+### M06-R14-05 — Fixed screen-length (zoom-independent)
+
+- [x] M06-R14-05-01 Both rays keep a constant pixel length regardless of camera
+  zoom / map scale (rotate by the camera, never scale by the map). The visual
+  must stay legible in both the local (near) view and the system (far) view.
+  Files: src/gui.cpp
+  Evidence: H01 (human: rays stay the same on-screen size when zooming out to
+  the system view); M06-R14-V01 (the screen-direction helper is
+  unit-length/zoom-free by construction).
+
+### M06-R14-P — Preservation constraints
+
+- [x] M06-R14-P01 Read-only: the visualization reads the live state / prediction
+  and the already-resolved target direction only; it never mutates the
+  simulation, the flight computer, or the camera.
+  Files: src/gui.cpp
+  Evidence: code inspection; headless debug smoke exits 0 with the scene
+  unchanged across a frame.
+- [x] M06-R14-P02 No change to the bang-bang attitude control law, its
+  deadbands, `attitude_target_direction()`, the physics, or the camera.
+  Evidence: `git diff` touches only the visualization additions (new helpers +
+  scene block) and the single shared target-resolution refactor; no control /
+  physics / camera edits.
+- [x] M06-R14-P03 No duplicated attitude-target calculation with different
+  semantics: a single shared `resolve_attitude_target(...)` is used by BOTH the
+  panel's Attitude readout and the new scene visualization, so the two can
+  never disagree.
+  Evidence: `git diff` shows the panel Attitude case now calls the shared
+  helper (same as the scene); M06-R14-V02 (panel and scene use one code path).
+- [x] M06-R14-P04 Attitude mode only: nothing is added for any other
+  `--debug-subsystem` value or in normal gameplay; no normal HUD / nav /
+  predictor clutter is introduced.
+  Evidence: the scene block is guarded by
+  `debug_mode == lander::DebugSubsystem::Attitude`; headless smoke of a
+  non-attitude mode and of normal play is unchanged.
+
+### M06-R14-V — Automated verification
+
+- [x] M06-R14-V01 Focused headless pure-geometry regression
+  (`tests/test_debug_subsystem.cpp`): `thrust_hat(angle)` matches
+  `(-sin a, cos a)`; `attitude_debug_axes(angle, target)` returns the actual
+  direction, the (normalized) target direction, and a correct `has_target`
+  flag (true for a nonzero target, false for absent/zero).
+  Evidence (2026-10-05, executed): `./build/lander_debug_subsystem_tests` →
+  "All lander_debug_subsystem_tests passed" (new `test_attitude_debug_axes`
+  covers thrust_hat, unit-normalization of a non-unit target, and has_target
+  for nonzero / nullopt / zero targets).
+- [x] M06-R14-V02 Full build + existing `lander_debug_subsystem_tests` (and
+  headless debug smoke) still pass; panel/scene share the one resolution.
+  Evidence (2026-10-05, executed): `cmake --build build --target
+  lander_debug_subsystem_tests lander_gui` clean (only pre-existing narrowing
+  warnings, none in R14 code); full `ctest` = 11/12 (sole failure = pre-existing
+  V14-C cross-body landing, not from R14 — R14 is display-only); headless
+  smokes all exit 0: `--debug-subsystem attitude --frames 240`, `--debug-subsystem
+  predictor --frames 120`, and normal `--seed 12345 --frames 120` (state=landed).
+
+### M06-R14-H — Human verification
+
+- [x] M06-R14-H01 Human: in `--debug-subsystem attitude`, the ACT ray tracks the
+  visible nose (LOCAL) / marker triangle (SYSTEM), the TGT ray points where the
+  craft is commanded to aim (absent for Off), the mode name is shown, both rays
+  stay a fixed on-screen size when zooming to the system view, and the error
+  arc shrinks as the craft rotates onto target.
+  Evidence (2026-10-05, USER, PASS): ACT matches the spacecraft thrust axis;
+  TGT matches the commanded attitude direction; OFF removes the target ray
+  without mutating physical attitude; PROGRADE / RETROGRADE, RADIAL OUT / IN,
+  and TARGET / ANTI-TARGET all behave correctly; the controller physically
+  rotates toward the target and settles; the error visualization is coherent;
+  manual/automatic attitude behavior is acceptable; the overlay is useful and
+  readable.
+
+### M06-R14-D — Derived implementation tasks
+
+- [x] M06-R14-D01 Add pure geometry to `include/lander/debug_subsystem.hpp`:
+  `#include <cmath>`, an `AttitudeDebugAxes` struct, inline `thrust_hat(angle)`
+  and inline `attitude_debug_axes(angle, target)`.
+- [x] M06-R14-D02 In `src/gui.cpp` add file-static `resolve_attitude_target(...)`
+  (single target-resolution used by the panel + scene) and
+  `draw_attitude_debug_axes(...)` (fixed-length ACT/TGT rays + error arc + mode
+  label at the drawn spacecraft).
+- [x] M06-R14-D03 Refactor the panel Attitude case to call `resolve_attitude_target`
+  (panel text output unchanged).
+- [x] M06-R14-D04 Insert the attitude-mode-only scene call in the render loop
+  (after the nav/predictor overlay chain, before the panel).
+- [x] M06-R14-D05 Add the focused headless test + register it in `main()`.
+- [x] M06-R14-D06 Build + run tests + headless smoke; do NOT commit; stop for
+  human attitude visual verification.
+  Evidence (2026-10-05): build + `lander_debug_subsystem_tests` + full `ctest`
+  (11/12; sole failure = pre-existing V14-C) + headless attitude/predictor/normal
+  smokes all exit 0. Human gate H01 PASSed; committed and pushed to origin.

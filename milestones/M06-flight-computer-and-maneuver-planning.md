@@ -224,6 +224,36 @@ AWAITING HUMAN VERIFICATION on the still-open `M06-R12-H01` / `M06-R12-H02`,
 `M06-R11-H01`, and `M06-R7-H01`; the deferred predictor / transfer defects
 (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) also remain open.
 
+`M06-R14` is a bounded R8 debug-harness follow-up that adds a compact, READ-ONLY
+attitude visualization drawn ONLY in the `--debug-subsystem attitude` isolation
+mode: at the drawn spacecraft, a fixed screen-length ACT ray along the actual
+thrust axis (`thrust_hat(angle)` = `(-sin a, cos a)`, the canonical convention
+shared with the drawn nose and the system-view marker triangle), a fixed
+screen-length TGT ray along the exact `attitude_target_direction()` target the
+panel and controller already use (absent when the mode has no target), a small
+error arc between the two, and the current mode name. Both rays are rotated by
+the camera but never scaled by the map, so they stay a constant on-screen size in
+the local and system views. The target is resolved once by a single shared
+`resolve_attitude_target(...)` used by both the debug-panel Attitude readout and
+the scene overlay, so the two can never disagree. It is display-only: it never
+mutates the simulation / flight computer / camera, changes no bang-bang control
+law / deadband / physics, adds no normal-HUD / nav / predictor clutter, and is
+guarded to the attitude mode only.
+
+**M06-R14 outcome (2026-10-05):** implemented, automated-verification complete,
+human-verified, and committed/pushed to `origin`. New pure geometry in
+`include/lander/debug_subsystem.hpp` (`AttitudeDebugAxes`, `thrust_hat`,
+`attitude_debug_axes`) plus file-static `resolve_attitude_target` /
+`draw_attitude_debug_axes` in `src/gui.cpp` (panel + scene share one resolution).
+Automated: a new headless `test_attitude_debug_axes` in
+`lander_debug_subsystem_tests` passes; full `ctest` = 11/12 (sole failure = the
+pre-existing V14-C cross-body landing, not from R14 — a display-only change);
+headless `--debug-subsystem attitude` / `predictor` / normal smokes all exit 0.
+Human gate `M06-R14-H01` PASSed (2026-10-05, USER: ACT tracks the thrust axis, TGT
+matches the commanded aim, Off removes the target ray without mutating attitude,
+all eight SAS modes correct, controller rotates toward target and settles, error
+viz coherent, overlay useful/readable). M06 remains NOT closed.
+
 All M06 flight-computer additions follow the canonical HOT / WARM / COLD
 computational rate tiers:
 
@@ -235,12 +265,13 @@ practical, never blocking or advancing simulation time.)
 
 `M06` remains open: `M06-R8` (subsystem-isolation harness), `M06-R9` (predictor
 overlay), `M06-R10` (record-only), `M06-R11` (diagnostics), `M06-R12` (prediction
-reference-frame architecture), and `M06-R13` (three-body hierarchical system /
-outer moonlet) are code-complete and committed (R13 human-verified 2026-10-05).
-The outstanding work is the still-open human verification items
-(`M06-R12-H01` / `M06-R12-H02`, `M06-R11-H01`, `M06-R7-H01`) plus the deferred
-predictor / transfer defects (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2).
-`M06-R2`..`M06-R7` are code-complete (see `TASKS.md`).
+reference-frame architecture), `M06-R13` (three-body hierarchical system / outer
+moonlet), and `M06-R14` (attitude debug visualization) are code-complete and
+committed (R13 and R14 human-verified 2026-10-05). The outstanding work is the
+still-open human verification items (`M06-R12-H01` / `M06-R12-H02`,
+`M06-R11-H01`, `M06-R7-H01`) plus the deferred predictor / transfer defects
+(PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2). `M06-R2`..`M06-R7` are code-complete
+(see `TASKS.md`).
 
 `M07` is not active.
 

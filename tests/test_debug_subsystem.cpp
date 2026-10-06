@@ -24,6 +24,7 @@
 
 namespace {
 
+using lander::AttitudeDebugAxes;
 using lander::AttitudeMode;
 using lander::BallisticState;
 using lander::DebugSubsystem;
@@ -39,6 +40,8 @@ using lander::TransferDebugResult;
 using lander::TransferMidcourse;
 using lander::Vec2;
 using lander::altitude_at;
+using lander::attitude_debug_axes;
+using lander::thrust_hat;
 using lander::ZeroEffortQuery;
 using lander::debug_scenario_seed;
 using lander::debug_subsystem_description;
@@ -515,6 +518,50 @@ void test_orbit_fixture_companion() {
     check(r < 100.0, "companion orbit radius is on the companion's scale");
 }
 
+// M06-R14: the pure attitude-visualization geometry. The ACT axis must equal the
+// canonical thrust_hat convention (angle 0 -> +y, positive -> CCW); the TGT axis
+// is the normalized supplied direction; has_target reflects whether a usable
+// target exists (nullopt or a zero-length vector both mean "no ray").
+void test_attitude_debug_axes() {
+    // thrust_hat: the canonical nose / thrust axis.
+    check_close(thrust_hat(0.0).x, 0.0, 1e-12, "thrust_hat(0).x == 0");
+    check_close(thrust_hat(0.0).y, 1.0, 1e-12, "thrust_hat(0).y == 1");
+    for (const double a : {0.3, 1.1, -0.7, 2.5, 3.0}) {
+        check_close(thrust_hat(a).x, -std::sin(a), 1e-12, "thrust_hat x");
+        check_close(thrust_hat(a).y, std::cos(a), 1e-12, "thrust_hat y");
+    }
+
+    // A nonzero, non-unit target is normalized into a unit target_dir.
+    {
+        const double a = 0.5;
+        const Vec2 target{3.0, -4.0};  // length 5
+        const AttitudeDebugAxes ax = attitude_debug_axes(a, target);
+        check(ax.has_target, "nonzero target -> has_target");
+        check_close(ax.actual_dir.x, -std::sin(a), 1e-12, "actual x");
+        check_close(ax.actual_dir.y, std::cos(a), 1e-12, "actual y");
+        check_close(ax.target_dir.x, 0.6, 1e-12, "target x normalized (3/5)");
+        check_close(ax.target_dir.y, -0.8, 1e-12, "target y normalized (-4/5)");
+        const double tl = std::hypot(ax.target_dir.x, ax.target_dir.y);
+        check_close(tl, 1.0, 1e-12, "target_dir is unit length");
+    }
+
+    // nullopt target -> no TGT ray, zero target_dir.
+    {
+        const AttitudeDebugAxes ax = attitude_debug_axes(0.2, std::nullopt);
+        check(!ax.has_target, "nullopt -> !has_target");
+        check_close(ax.target_dir.x, 0.0, 1e-12, "nullopt -> target x 0");
+        check_close(ax.target_dir.y, 0.0, 1e-12, "nullopt -> target y 0");
+        check_close(ax.actual_dir.y, std::cos(0.2), 1e-12, "nullopt actual y");
+    }
+
+    // A zero-length target is treated as "no target".
+    {
+        const AttitudeDebugAxes ax =
+            attitude_debug_axes(0.9, Vec2{0.0, 0.0});
+        check(!ax.has_target, "zero target -> !has_target");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -529,6 +576,7 @@ int main() {
     test_body_relative_altitude();
     test_orbit_fixture_primary();
     test_orbit_fixture_companion();
+    test_attitude_debug_axes();
 
     if (failures == 0) {
         std::printf("All lander_debug_subsystem_tests passed\n");

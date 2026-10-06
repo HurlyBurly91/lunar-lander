@@ -1783,6 +1783,124 @@ static double nose_angle_for(const lander::Vec2& d) {
 // minimum readout (subsystem name, sim time, body / target, flight state,
 // position / altitude, velocity / relative velocity) and then the full
 // mode-specific detail section for the isolated subsystem (R8-05..R8-15).
+// M06-R14: single source of truth for the attitude target direction, shared by
+// the debug panel's Attitude readout and the on-scene attitude visualization so
+// the two can never disagree. It mirrors the panel's existing resolution exactly
+// (same ref / basis / pad / maneuver_dv, same canonical call) and returns
+// std::nullopt when the mode has no attitude target (Off) or the target is
+// degenerate. It is pure: it only reads the simulation / prediction; it never
+// mutates anything.
+static std::optional<lander::Vec2> resolve_attitude_target(
+    const lander::Simulation& sim, lander::AttitudeMode mode,
+    const std::optional<lander::ManeuverNode>& maneuver_node,
+    const DebugPanelCtx& ctx) {
+    const double t = sim.sim_time();
+    const lander::BinarySystem& bin = sim.binary();
+    const int ref = sim.reference_body();
+    const lander::State s = sim.state();
+    const int dest = sim.contract().destination_body;
+    const lander::NodeBasis basis = lander::compute_node_basis(
+        bin, t, ref, {s.x, s.y}, {s.vx, s.vy});
+    const lander::Vec2 pad = bin.surface_point(
+        dest, bin.body(dest).terrain.angle_at_arc(0.0),
+        bin.body(dest).terrain.surface_radius_at_arc(0.0), t)
+        .position;
+    lander::Vec2 maneuver_dv{};
+    if (mode == lander::AttitudeMode::Maneuver && maneuver_node &&
+        ctx.prediction_valid && ctx.prediction && ctx.prediction->basis_valid) {
+        maneuver_dv = ctx.prediction->dv_world;
+    }
+    return lander::attitude_target_direction(
+        mode, basis, {s.x, s.y}, pad, maneuver_dv);
+}
+
+// M06-R14: draw the compact attitude visualization at the drawn spacecraft.
+// It draws (a) a fixed screen-length ACT ray along the actual thrust axis,
+// (b) a fixed screen-length TGT ray along the canonical target direction (only
+// when one exists), (c) a small error arc between them while off-target, and
+// (d) the mode name. Directions are rotated by the camera (rotation only,
+// never the map scale) so the rays keep a constant, legible pixel length at any
+// zoom and stay aligned with the drawn nose (local view) and the marker
+// triangle (system view). Read-only: it only reads the supplied state / axes.
+static void draw_attitude_debug_axes(SDL_Renderer* renderer,
+                                     const lander::State& ship,
+                                     const lander::Camera& cam,
+                                     const lander::AttitudeDebugAxes& axes,
+                                     lander::AttitudeMode mode) {
+    const Color act = make_color(96, 224, 255);   // cyan : ACTUAL thrust axis
+    const Color tgt = make_color(255, 196, 64);   // amber: TARGET direction
+    const Color err_c = make_color(255, 92, 80);  // red  : error arc (when off)
+    const Color label = make_color(228, 233, 244); // white: mode label
+    const double kRayPx = 46.0;                   // fixed screen-space ray length
+
+    const Vec2 center = to_screen(ship.x, ship.y, cam);
+    const double c = std::cos(cam.angle());
+    const double s = std::sin(cam.angle());
+    // world direction -> unit screen direction (camera rotation only, matching
+    // the drawn nose / marker triangle); a zero input gives a zero output.
+    auto screen_dir = [&](double wx, double wy) -> Vec2 {
+        const double dx = wx * c + wy * s;
+        const double dy = wx * s - wy * c;
+        const double len = std::hypot(dx, dy);
+        if (len < 1.0e-9) {
+            return Vec2{};
+        }
+        return Vec2{dx / len, dy / len};
+    };
+
+    const Vec2 act_dir = screen_dir(axes.actual_dir.x, axes.actual_dir.y);
+    if (act_dir.x != 0.0 || act_dir.y != 0.0) {
+        const Vec2 tip{center.x + act_dir.x * kRayPx,
+                       center.y + act_dir.y * kRayPx};
+        draw_thick_line(renderer, center, tip, 2.0f, act, 230);
+        draw_text(renderer, "ACT", static_cast<int>(tip.x) + 4,
+                  static_cast<int>(tip.y) - 4, 1, act);
+    }
+
+    Vec2 tgt_dir{};
+    if (axes.has_target) {
+        tgt_dir = screen_dir(axes.target_dir.x, axes.target_dir.y);
+        if (tgt_dir.x != 0.0 || tgt_dir.y != 0.0) {
+            const Vec2 tip{center.x + tgt_dir.x * kRayPx,
+                           center.y + tgt_dir.y * kRayPx};
+            draw_thick_line(renderer, center, tip, 1.5f, tgt, 200);
+            draw_text(renderer, "TGT", static_cast<int>(tip.x) + 4,
+                      static_cast<int>(tip.y) - 4, 1, tgt);
+        }
+    }
+
+    // Small error arc between the ACT and TGT directions (screen space), drawn
+    // only while a target exists and the craft is not yet aligned.
+    if (axes.has_target && (tgt_dir.x != 0.0 || tgt_dir.y != 0.0) &&
+        (act_dir.x != 0.0 || act_dir.y != 0.0)) {
+        const double a0 = std::atan2(act_dir.y, act_dir.x);
+        const double a1 = std::atan2(tgt_dir.y, tgt_dir.x);
+        double delta = a1 - a0;
+        while (delta > M_PI) {
+            delta -= 2.0 * M_PI;
+        }
+        while (delta < -M_PI) {
+            delta += 2.0 * M_PI;
+        }
+        if (std::abs(delta) > 0.02) {
+            const double r = kRayPx * 0.5;
+            const int segs = 20;
+            Vec2 prev{center.x + std::cos(a0) * r, center.y + std::sin(a0) * r};
+            for (int i = 1; i <= segs; ++i) {
+                const double ang = a0 + delta * (i / static_cast<double>(segs));
+                const Vec2 cur{center.x + std::cos(ang) * r,
+                               center.y + std::sin(ang) * r};
+                draw_thick_line(renderer, prev, cur, 1.0f, err_c, 150);
+                prev = cur;
+            }
+        }
+    }
+
+    const char* mname = lander::attitude_mode_name(mode);
+    draw_text(renderer, mname, static_cast<int>(center.x) - 54,
+              static_cast<int>(center.y) - 34, 1, label);
+}
+
 // Read-only: it never drives or mutates the simulation; it only reads the
 // live subsystems, the common readout, and the debug-layer context.
 void draw_debug_subsystem_panel(
@@ -2123,21 +2241,11 @@ void draw_debug_subsystem_panel(
             // R8-07: the requested mode, target vs actual angle, angular
             // error / spin, the stop angle, the commanded wheel direction,
             // and alignment.
-            const int dest = sim.contract().destination_body;
-            const lander::NodeBasis basis = lander::compute_node_basis(
-                bin, t, ref, {st.x, st.y}, {st.vx, st.vy});
-            const lander::Vec2 pad = bin.surface_point(
-                dest, bin.body(dest).terrain.angle_at_arc(0.0),
-                bin.body(dest).terrain.surface_radius_at_arc(0.0), t)
-                .position;
-            lander::Vec2 maneuver_dv{};
-            if (attitude_mode == lander::AttitudeMode::Maneuver &&
-                maneuver_node && ctx.prediction_valid && ctx.prediction &&
-                ctx.prediction->basis_valid) {
-                maneuver_dv = ctx.prediction->dv_world;
-            }
-            const auto dir = lander::attitude_target_direction(
-                attitude_mode, basis, {st.x, st.y}, pad, maneuver_dv);
+            // M06-R14: the target direction is resolved once by the shared
+            // resolve_attitude_target (the same call the on-scene attitude
+            // visualization uses), so the panel and the scene never disagree.
+            const auto dir =
+                resolve_attitude_target(sim, attitude_mode, maneuver_node, ctx);
             std::snprintf(buffer, sizeof buffer,
                           "  MODE  %-10s   [1-8 select]",
                           lander::attitude_mode_name(attitude_mode));
@@ -3845,6 +3953,21 @@ int main(int argc, char** argv) {
         lander::DebugCommonReadout debug_common{};
         if (debug_active) {
             debug_common = lander::make_common_readout(sim);
+        }
+        // M06-R14: attitude debug visualization. Drawn ONLY in the `attitude`
+        // isolation, on top of the bare scene (the nav / predictor overlays are
+        // suppressed in this mode), showing the compact ACT / TGT axes and the
+        // mode at the drawn spacecraft. The target direction is resolved by the
+        // same shared resolve_attitude_target the panel uses, so the scene and
+        // the panel never disagree. Read-only: it never mutates the simulation.
+        if (debug_mode == lander::DebugSubsystem::Attitude) {
+            const std::optional<lander::Vec2> target_dir =
+                resolve_attitude_target(sim, attitude_mode, maneuver_node,
+                                        panel_ctx);
+            const lander::AttitudeDebugAxes axes =
+                lander::attitude_debug_axes(render_state.angle, target_dir);
+            draw_attitude_debug_axes(renderer, render_state, cam, axes,
+                                     attitude_mode);
         }
         if (debug_active && !debug_ui) {
             draw_debug_subsystem_panel(

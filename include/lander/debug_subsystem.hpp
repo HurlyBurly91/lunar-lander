@@ -19,6 +19,7 @@
 #include "lander/predictor.hpp"     // RecedingHorizonPredictor, FlightPolicy
 #include "lander/sim.hpp"           // Simulation, State, Config
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -161,5 +162,51 @@ struct DebugSubsystems {
 // It is consulted only in `Predictor` mode; every other mode ignores it.
 void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
                           int predictor_body = 0);
+
+// ---------------------------------------------------------------------------
+// M06-R14 -- attitude debug visualization (pure geometry, headless-testable).
+//
+// These helpers describe the compact attitude overlay drawn ONLY in the
+// `--debug-subsystem attitude` isolation. They are pure: they take the ship's
+// current attitude angle and the already-resolved target direction and return
+// the two screen-independent unit direction vectors to draw. No simulation,
+// camera, or SDL is involved, so the ray math can be regression-tested
+// headlessly. They deliberately reuse the canonical attitude convention and the
+// same target direction the flight computer / panel use -- they never compute
+// an attitude target of their own.
+//
+// Reference: docs/flight-guidance-attitude-bang-bang-control-and-velocity-to-
+// be-gained-node-execution.md (thrust_hat / nose convention).
+struct AttitudeDebugAxes {
+    Vec2 actual_dir{};        // unit: ACTUAL thrust axis = thrust_hat(angle)
+    Vec2 target_dir{};        // unit: TARGET direction (zero when no target)
+    bool has_target = false;  // false => no target ray should be drawn
+};
+
+// The canonical thrust / nose axis for an attitude angle: angle 0 points along
+// +y and positive angles rotate counter-clockwise, matching the drawn ship
+// nose, the system-view marker triangle, and the autopilot's thrust
+// application. thrust_hat(a) == (-sin a, cos a).
+inline Vec2 thrust_hat(double angle) {
+    return Vec2{-std::sin(angle), std::cos(angle)};
+}
+
+// Build the two unit direction vectors for the attitude overlay from the
+// ship's attitude angle and the already-resolved (optional) target direction.
+// The target is normalized here; a missing (nullopt) or zero-length target
+// yields has_target == false with a zero target_dir (draw no TGT ray).
+inline AttitudeDebugAxes attitude_debug_axes(double actual_angle,
+                                             const std::optional<Vec2>& target) {
+    AttitudeDebugAxes axes;
+    axes.actual_dir = thrust_hat(actual_angle);
+    if (target.has_value()) {
+        const double len = std::hypot(target->x, target->y);
+        if (len > 1.0e-12) {
+            axes.target_dir = Vec2{target->x / len, target->y / len};
+            axes.has_target = true;
+        }
+    }
+    return axes;
+}
 
 }  // namespace lander
