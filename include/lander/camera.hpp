@@ -31,13 +31,15 @@ struct CameraParams {
     double lander_top_fraction = 0.30;
     double window_width = 1280.0;
     double window_height = 720.0;
-    // SYSTEM view (M05): an inertial, unrotated view of the whole binary.
-    // The default 0.04 gives 0.56 px/m at base_scale 14, enough to see the
-    // 600 m separation inside a 1280 px viewport. M05-R3 allows zooming up
-    // to 2.0 (28 px/m) so the ship itself can become readable without
-    // leaving the inertial system view.
-    double system_zoom = 0.04;
-    double system_zoom_min = 0.01;
+    // SYSTEM view (M05 / M06-R13): an inertial, unrotated view of the whole
+    // system. The default 0.02 gives 0.28 px/m at base_scale 14, so the
+    // three-body system (the outer moonlet orbits ~1186 m from the origin)
+    // fits inside the 1280x720 viewport. M05-R3 allows zooming up to 2.0
+    // (28 px/m) so the ship itself can become readable; M06-R13 extends the
+    // wide minimum to 0.008 so the full system (and margin) is always
+    // reachable without leaving the inertial system view.
+    double system_zoom = 0.02;
+    double system_zoom_min = 0.008;
     double system_zoom_max = 2.0;
     double angle_transition_time = 0.35;
     double angle_jump_threshold = 0.4;

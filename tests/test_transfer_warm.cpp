@@ -209,24 +209,31 @@ void test_bounded_failure() {
         BinarySystem::canonical(lander::Config{}.mu, 503ULL,
                                 companion_seed(503ULL));
 
-    // (a) differential_correction on an unreachable goal stops at the
-    // iteration bound with a finite velocity, and is deterministic.
+    // (a) differential_correction on a far goal with a one-step budget and a
+    // tight gate stops at the iteration bound with a finite velocity, and is
+    // deterministic. From a cold (0,0) seed a single Newton step reaches ~4.6 m
+    // here; that is well short of the 0.1 m gate, so the correction must respect
+    // the one-step bound and stop (not converged) rather than diverge. (Two or
+    // more steps polish the same goal to <1e-3 m, so the bound is what makes
+    // this a bounded failure, not an unreachable goal.)
     {
         const double t0 = 0.0;
         const Vec2 x0 = surface_departure(bin, 0, t0, 120.0, 0.0);
         const int steps = 500;
-        const Vec2 goal{1000.0, 1000.0};  // far beyond a plausible arc
+        const Vec2 goal{1000.0, 1000.0};  // far goal, polished by >=2 Newton steps
         const Vec2 seed{0.0, 0.0};
-        const int max_iters = 3;
+        const int max_iters = 1;
+        const double gate = 0.1;
         const NewtonCorrectionResult a =
             differential_correction(bin, kDt, x0, t0, steps, goal, seed,
-                                    max_iters, 8.0, 0.25);
+                                    max_iters, gate, 0.25);
         const NewtonCorrectionResult b =
             differential_correction(bin, kDt, x0, t0, steps, goal, seed,
-                                    max_iters, 8.0, 0.25);
+                                    max_iters, gate, 0.25);
         check(a.iterations <= max_iters, "bounded: did not exceed max iterations");
         check(finite(a.v0), "bounded: corrected velocity is finite");
-        check(!a.converged, "bounded: an unreachable goal does not converge");
+        check(!a.converged,
+              "bounded: a one-step budget against a tight gate does not converge");
         check(a.v0.x == b.v0.x && a.v0.y == b.v0.y &&
                   a.iterations == b.iterations,
               "bounded: the correction is deterministic");
@@ -254,6 +261,51 @@ void test_bounded_failure() {
         check_close_vec(fb, cold.departure_velocity, 1e-6,
                         "cold fallback reproduces the cold solve (deterministic)");
     }
+}
+
+// ---- M06-R13: independent free-flight differential-correction regression.
+// A zero-mass BinarySystem makes propagate an exact free flight: with zero
+// acceleration the integrator keeps velocity constant, so
+//     p_final = p0 + v0*T
+// exactly (no gravity, no curvature). The terminal error
+//     F(v0) = p0 + v0*T - goal
+// is therefore exactly linear in v0 with Jacobian J = T*I. A deliberately
+// wrong seed must be driven to the known exact targeting velocity
+// v_target = (goal - p0)/T in a single Newton step.
+//
+// This is an independent oracle for the finite-difference convention: a
+// reversed derivative sign makes the damped update step the wrong way (the
+// trial miss grows, every backtrack is rejected, and the correction stalls on
+// the seed), and a transposed Jacobian is exposed by the 48-phase real-field
+// sweep (whose gravity Jacobian is not symmetric). Neither defect can be
+// hidden by retuning kAcceptMiss, because here the exact answer is known.
+void test_free_flight_linear_correction() {
+    const BinarySystem bin{};  // every body massless -> zero field everywhere
+    const double t0 = 0.0;
+    const int steps = 600;  // T = 5.0 s at the 1/120 s fixed step
+    const double T = steps * kDt;
+    const Vec2 x0{10.0, 20.0};
+    const Vec2 v_target{3.0, -4.0};
+    const Vec2 goal{x0.x + v_target.x * T, x0.y + v_target.y * T};
+    const Vec2 v_seed{v_target.x + 1.5, v_target.y + 0.75};  // deliberately wrong
+
+    const NewtonCorrectionResult r =
+        differential_correction(bin, kDt, x0, t0, steps, goal, v_seed, 8,
+                                1.0e-9, 0.25);
+    check(r.converged, "free flight: a wrong seed converges to the target");
+    check(!r.singular_jacobian, "free flight: the T*I Jacobian is not singular");
+    check(r.iterations <= 2,
+          "free flight: an exactly-linear F converges in one Newton step");
+    check(r.final_miss < 1.0e-9, "free flight: terminal miss reaches ~zero");
+    check_close_vec(r.v0, v_target, 1.0e-9,
+                    "free flight: corrected velocity equals the exact target");
+
+    // Independent of the correction path: propagating the corrected velocity
+    // as a free flight must land exactly on the goal (p0 + v0*T).
+    const BallisticState end =
+        propagate_ballistic(bin, BallisticState{x0, r.v0, t0}, steps, kDt);
+    check_close_vec(end.p, goal, 1.0e-9,
+                    "free flight: p0 + v0*T lands on the goal exactly");
 }
 
 // ---- M06-R5-V04: solving and warm-replanning never mutate live state.
@@ -675,6 +727,7 @@ int main() {
     test_warm_matches_cold();
     test_warm_fewer_propagations();
     test_bounded_failure();
+    test_free_flight_linear_correction();
     test_no_mutation();
     test_bidirectional();
     test_multi_phase();

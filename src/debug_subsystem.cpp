@@ -87,6 +87,19 @@ std::optional<DebugSubsystem> parse_debug_subsystem(const std::string& name) {
     return std::nullopt;
 }
 
+std::optional<int> parse_debug_predictor_body(const std::string& value) {
+    if (value == "0") {
+        return 0;  // primary
+    }
+    if (value == "1") {
+        return 1;  // companion
+    }
+    if (value == "2") {
+        return 2;  // outer moonlet
+    }
+    return std::nullopt;
+}
+
 const char* debug_subsystem_name(DebugSubsystem mode) {
     switch (mode) {
         case DebugSubsystem::None:
@@ -180,7 +193,7 @@ DebugCommonReadout make_common_readout(const Simulation& sim) {
     // tidal-frame rotation altitude_at expects). The value stays signed so a
     // sub-surface reading is not silently clamped to zero or blanked.
     const Terrain& ref_terrain = bin.body(r.reference_body).terrain;
-    const double rot = bin.body_rotation(t);
+    const double rot = bin.body_rotation(r.reference_body, t);
     r.altitude = altitude_at(ref_terrain, st, ref_pos, rot);
     const LocalVelocity lv = local_velocity(st, ref_pos, ref_vel);
     r.radial_velocity = lv.radial;
@@ -225,7 +238,8 @@ std::uint64_t debug_scenario_seed(DebugSubsystem mode) {
     return 0;
 }
 
-void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s) {
+void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
+                          int predictor_body) {
     if (mode == DebugSubsystem::None) {
         return;
     }
@@ -249,9 +263,15 @@ void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s) {
             break;
 
         case DebugSubsystem::Predictor:
-            // A clean orbit so the live predictor (driven in the main loop)
-            // has a moving target to keep receding-horizon predictions of.
-            place_in_orbit(s.sim, 0);
+            // A clean orbit around the selected body (M06-R13: default primary,
+            // --debug-predictor-body 1 / 2 for companion / outer moonlet) so
+            // the live predictor (driven in the main loop) has a moving target
+            // to keep receding-horizon predictions of.
+            place_in_orbit(s.sim,
+                           predictor_body < 0 ? 0
+                                              : (predictor_body > 2
+                                                     ? 2
+                                                     : predictor_body));
             break;
 
         case DebugSubsystem::Attitude:

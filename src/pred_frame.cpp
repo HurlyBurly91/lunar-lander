@@ -24,25 +24,32 @@ double wrap_pi(double a) {
     return a - M_PI;
 }
 
-// Internal target encoding for the hysteresis automaton: HOLD keeps the current
-// committed segment; 0 / 1 are the two bodies; 2 is the world (transfer)
-// segment.
+// Internal target encoding for the hysteresis automaton (M06-R13: three
+// bodies). HOLD keeps the current committed segment; the non-negative values
+// 0 / 1 / 2 are the three bodies (primary / companion / moonlet); the
+// negative kWorld is the world (transfer) segment. Using a negative sentinel
+// for the world segment avoids colliding with the moonlet's body index 2.
 constexpr int kHold = -1;
-constexpr int kPrimary = 0;
-constexpr int kCompanion = 1;
-constexpr int kWorld = 2;
+constexpr int kWorld = -2;
+constexpr int kBodyCount = 3;
 
 int target_of(RefSegment s) {
-    return s == RefSegment::Primary ? kPrimary
-         : s == RefSegment::Companion ? kCompanion
-                                      : kWorld;
+    switch (s) {
+        case RefSegment::Primary: return 0;
+        case RefSegment::Companion: return 1;
+        case RefSegment::Moonlet: return 2;
+        case RefSegment::World: default: return kWorld;
+    }
 }
 RefSegment segment_of(int t) {
-    return t == kPrimary ? RefSegment::Primary
-         : t == kCompanion ? RefSegment::Companion
-                           : RefSegment::World;
+    switch (t) {
+        case 0: return RefSegment::Primary;
+        case 1: return RefSegment::Companion;
+        case 2: return RefSegment::Moonlet;
+        default: return RefSegment::World;
+    }
 }
-bool is_body(int t) { return t == kPrimary || t == kCompanion; }
+bool is_body(int t) { return t >= 0 && t < kBodyCount; }
 
 // Per-body classifier metrics for sample `i`, including the window statistics
 // (E1-E2) and the raw bound/dominant/winding/ratio test inputs (E3).
@@ -66,12 +73,18 @@ BodyMetrics body_metrics(const std::vector<TimedTrajectorySample>& samples,
     BodyMetrics m;
     m.epsilon = 0.5 * v2 - b.mu / rho;
     const double a_self = b.mu / (rho * rho);
-    // Tidal = the other body's field difference between the ship and body's
-    // centre (the relative acceleration that a one-body orbit cannot absorb).
-    const int other = 1 - body;
-    const Vec2 g_ship = bin.gravity_from(other, s.position_world, t);
-    const Vec2 g_body = bin.gravity_from(other, bpos, t);
-    const double a_tidal = std::hypot(g_ship.x - g_body.x, g_ship.y - g_body.y);
+    // Tidal (M06-R13) = the sum, over every other body, of that body's field
+    // difference between the ship and this body's centre (the relative
+    // acceleration that a one-body orbit about `body` cannot absorb).
+    Vec2 tidal_diff{};
+    for (int j = 0; j < kBodyCount; ++j) {
+        if (j == body) continue;
+        const Vec2 g_ship = bin.gravity_from(j, s.position_world, t);
+        const Vec2 g_body = bin.gravity_from(j, bpos, t);
+        tidal_diff.x += g_ship.x - g_body.x;
+        tidal_diff.y += g_ship.y - g_body.y;
+    }
+    const double a_tidal = std::hypot(tidal_diff.x, tidal_diff.y);
     m.dominance = a_self / (a_tidal > 1e-9 ? a_tidal : 1e-9);
 
     // E1: analysis window W from the local (Keplerian) period at this sample.
@@ -119,7 +132,7 @@ BodyMetrics body_metrics(const std::vector<TimedTrajectorySample>& samples,
 // |delta_theta|), breaking ties toward the previous committed state, then body 0.
 int pick_winner(const BodyMetrics* m, const bool* cand, int state_body) {
     int best = -1;
-    for (int b = 0; b < 2; ++b) {
+    for (int b = 0; b < kBodyCount; ++b) {
         if (!cand[b]) continue;
         if (best < 0) {
             best = b;
@@ -145,6 +158,7 @@ const char* pred_frame_name(PredFrame frame) {
     switch (frame) {
         case PredFrame::Primary: return "PRIMARY";
         case PredFrame::Companion: return "COMPANION";
+        case PredFrame::Moonlet: return "MOONLET";
         case PredFrame::Auto: return "AUTO";
         case PredFrame::World: default: return "WORLD";
     }
@@ -154,12 +168,18 @@ const char* ref_segment_name(RefSegment s) {
     switch (s) {
         case RefSegment::Primary: return "PRIMARY";
         case RefSegment::Companion: return "COMPANION";
+        case RefSegment::Moonlet: return "MOONLET";
         case RefSegment::World: default: return "WORLD";
     }
 }
 
 int ref_segment_body(RefSegment s) {
-    return s == RefSegment::Primary ? 0 : s == RefSegment::Companion ? 1 : -1;
+    switch (s) {
+        case RefSegment::Primary: return 0;
+        case RefSegment::Companion: return 1;
+        case RefSegment::Moonlet: return 2;
+        case RefSegment::World: default: return -1;
+    }
 }
 
 FrameSample transform_to_frame(const TimedTrajectorySample& s,
@@ -170,7 +190,10 @@ FrameSample transform_to_frame(const TimedTrajectorySample& s,
     if (frame == PredFrame::World) {
         return FrameSample{s.position_world, s.velocity_world, s.time};
     }
-    const int body = (frame == PredFrame::Primary) ? 0 : 1;
+    // Here frame is Primary / Companion / Moonlet (Auto -> World is handled
+    // above and World returned early).
+    const int body = (frame == PredFrame::Primary) ? 0
+                     : (frame == PredFrame::Companion) ? 1 : 2;
     const Vec2 bpos = bin.position(body, s.time);
     const Vec2 bvel = bin.velocity(body, s.time);
     return FrameSample{s.position_world - bpos, s.velocity_world - bvel, s.time};
@@ -190,14 +213,15 @@ void classify_auto(const std::vector<TimedTrajectorySample>& samples,
     double pending_since = -1e300;
 
     for (int i = 0; i < n; ++i) {
-        double avail[2];
-        const BodyMetrics m0 = body_metrics(samples, i, 0, bin, p, &avail[0]);
-        const BodyMetrics m1 = body_metrics(samples, i, 1, bin, p, &avail[1]);
-        BodyMetrics m[2] = {m0, m1};
+        double avail[kBodyCount];
+        BodyMetrics m[kBodyCount];
+        for (int b = 0; b < kBodyCount; ++b) {
+            m[b] = body_metrics(samples, i, b, bin, p, &avail[b]);
+        }
 
         // E3 raw candidate per body (also requires the window to be usable).
-        bool cand[2] = {false, false};
-        for (int b = 0; b < 2; ++b) {
+        bool cand[kBodyCount] = {false, false, false};
+        for (int b = 0; b < kBodyCount; ++b) {
             cand[b] = avail[b] >= p.min_available_frac &&
                       m[b].epsilon < 0.0 &&
                       m[b].dominance >= p.dominance_min &&
@@ -206,12 +230,15 @@ void classify_auto(const std::vector<TimedTrajectorySample>& samples,
                       m[b].radial_ratio <= p.radial_ratio_max;
         }
 
-        const bool window_ok = avail[0] >= p.min_available_frac ||
-                               avail[1] >= p.min_available_frac;
+        bool window_ok = false;
+        for (int b = 0; b < kBodyCount; ++b) {
+            window_ok = window_ok || avail[b] >= p.min_available_frac;
+        }
 
         SampleMetrics& rec = out.metrics[i];
-        rec.body[0] = m[0];
-        rec.body[1] = m[1];
+        for (int b = 0; b < kBodyCount; ++b) {
+            rec.body[b] = m[b];
+        }
         rec.window_ok = window_ok;
 
         int target = kHold;

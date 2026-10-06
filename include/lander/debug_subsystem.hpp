@@ -92,6 +92,7 @@ DebugCommonReadout make_common_readout(const Simulation& sim);
 inline std::string debug_body_label(int index) {
     if (index == 0) return "PRIMARY";
     if (index == 1) return "COMPANION";
+    if (index == 2) return "MOONLET";  // M06-R13 outer moonlet
     if (index < 0) return "NONE";
     return "BODY" + std::to_string(index);
 }
@@ -100,6 +101,11 @@ inline std::string debug_body_label(int index) {
 // reproducible and independent of `--seed` (M06-R8-04 / D04). `None` returns 0
 // (the caller uses the normal seed for None).
 std::uint64_t debug_scenario_seed(DebugSubsystem mode);
+
+// M06-R13: parse a `--debug-predictor-body 0|1|2` selector for the predictor
+// isolation's startup fixture. Returns the body index (0 primary, 1 companion,
+// 2 outer moonlet) and std::nullopt for any value outside [0, 2].
+std::optional<int> parse_debug_predictor_body(const std::string& value);
 
 // Observation of the (one-shot) COLD inter-moon transfer solve used by the
 // transfer-cold and transfer-warm debug modes. The COLD solve is the seed for
@@ -149,6 +155,11 @@ struct DebugSubsystems {
 // on the armed subsystem runs through the normal simulation / control paths,
 // which is what lets a developer watch a subsystem defect (TFD-1 / TFD-2) or
 // healthy behavior emerge.
-void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s);
+//
+// M06-R13: `predictor_body` selects which body the predictor isolation's
+// startup fixture orbits (0 primary [default], 1 companion, 2 outer moonlet).
+// It is consulted only in `Predictor` mode; every other mode ignores it.
+void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
+                          int predictor_body = 0);
 
 }  // namespace lander

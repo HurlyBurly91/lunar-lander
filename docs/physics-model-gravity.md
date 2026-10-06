@@ -329,3 +329,97 @@ circular condition.
 The other body's gravitational field remains active and may perturb the orbit.
 
 Do not add hidden stabilization to preserve an ideal circular orbit.
+
+## M06-R13 three-body hierarchical system (canonical extension)
+
+M06-R13 extends the M05 binary into a fixed three-body hierarchical (Jacobi)
+system by adding body 2 = OUTER MOONLET. For the three-body system this
+section supersedes the two-body statements in "M05 binary geometry",
+"Circular binary mechanics", "Tidal locking", and "Spacecraft gravity"; the
+M04 primary constants and the derived-body scaling law are unchanged.
+
+Bodies:
+
+    body 0 = PRIMARY:        R0 = 332.384 m,  mu0 = 178976.334 m^3/s^2
+    body 1 = COMPANION:      R1 = R0/9,       mu1 = mu0/81        (M05)
+    body 2 = OUTER MOONLET:  R2 = R1,         mu2 = mu1          (M06-R13)
+                             (same scale as the companion)
+
+Each terrain is a distinct pure function of the primary seed (the primary
+seed, the M05 companion seed, and a new moonlet seed derived by a separate
+salt).
+
+Hierarchy — all analytic, no N-body integration of the bodies.
+
+Inner pair (bodies 0 and 1): the unchanged M05 relative motion about the
+inner-pair barycentre `B01`:
+
+    mu_inner        = mu0 + mu1
+    omega_inner     = sqrt(mu_inner / D01^3)
+    theta_inner(t)  = omega_inner * t          (theta = 0 at t = 0)
+    D01             = 600.0 m                  (unchanged)
+    a0_inner        = D01 * mu1 / mu_inner     ~= 7.317 m
+    a1_inner        = D01 * mu0 / mu_inner     ~= 592.683 m
+
+    P0 = B01 - a0_inner * (cos(theta_inner), sin(theta_inner))
+    P1 = B01 + a1_inner * (cos(theta_inner), sin(theta_inner))
+
+`omega_inner` equals the M05 binary angular rate, so the relative motion of
+(0,1) is bit-for-bit the M05 two-body solution (T_inner ~= 216.94244 s).
+
+Outer pair (inner-pair barycentre `B01` and body 2): a fixed circle about the
+total barycentre, which stays at the origin:
+
+    mu_outer_system = mu_inner + mu2
+    omega_outer     = sqrt(mu_outer_system / D_OUTER^3)
+    theta_outer(t)  = pi/2 + omega_outer * t   (starts at pi/2)
+    D_OUTER         = 1200.0 m
+    a_inner_outer   = D_OUTER * mu2 / mu_outer_system      ~= 14.40 m
+    a2_outer        = D_OUTER * mu_inner / mu_outer_system ~= 1185.60 m
+
+    P2  = +a2_outer * (cos(theta_outer), sin(theta_outer))
+    B01 = -a_inner_outer * (cos(theta_outer), sin(theta_outer))
+
+Invariants, for all t:
+
+    |P2 - B01| = D_OUTER
+    mu0*P0 + mu1*P1 + mu2*P2 = 0        (total barycentre at the origin)
+
+    T_outer = 2*pi/omega_outer ~= 610.13 s
+
+Derivatives of a circular component `r = A*(cos(theta), sin(theta))`:
+
+    v = A * omega * (-sin(theta), cos(theta))
+    a = -omega^2 * r
+
+Bodies 0 and 1 each carry both the inner and the outer component (their
+centre translates with `B01` and orbits about it); body 2 carries only the
+outer component.
+
+Tidal locking is per-body:
+
+    body_rotation(0, t) = body_rotation(1, t) = omega_inner * t
+    body_rotation(2, t) = omega_outer * t
+
+The "Tidal locking" surface-point velocity, contact, and landing rules apply
+per body with that body's own spin rate.
+
+Spacecraft gravity — all three fields always active, in the one global
+inertial frame:
+
+    a = sum over i = 0..2 of
+          -mu_i * (r_ship - P_i) / |r_ship - P_i|^3
+      + thrust
+
+Do not implement sphere-of-influence switching, nearest-body-only gravity,
+patched conics, hidden capture forces, or orbit stabilization (as before).
+"Reference body" / "target body" stay presentation or gameplay logic; they
+never disable a gravitational field.
+
+The reference body generalizes to three candidates with the same rule as
+M05: dominance by `mu_i / distance^2` with the same 1.2 hysteresis margin.
+
+Contract / transfer scope: the repeating contract loop remains exactly
+0 <-> 1; body 2 is never a contract origin or destination. One-shot developer
+routes from a body-2 source (transfer / sync orbit) fail safely rather than
+inventing a three-body transfer algorithm.

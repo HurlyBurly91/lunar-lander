@@ -49,7 +49,7 @@ bool inside_terrain(const BinarySystem& bin, int body, const Vec2& p,
         return true;
     }
     const double theta = std::atan2(ry, rx);
-    const double arc = ter.arc_at_angle(theta - bin.body_rotation(t));
+    const double arc = ter.arc_at_angle(theta - bin.body_rotation(body, t));
     return rho <= ter.surface_radius_at_arc(arc);
 }
 
@@ -109,14 +109,14 @@ double snap_time(double t, double dt) {
 ManeuverNode default_node(double t0, int frame_body, double dt) {
     ManeuverNode node{};
     node.time = snap_time(t0 + 5.0, dt);
-    node.frame_body = frame_body < 0 ? 0 : (frame_body > 1 ? 1 : frame_body);
+    node.frame_body = frame_body < 0 ? 0 : (frame_body > 2 ? 2 : frame_body);
     return node;
 }
 
 NodeBasis compute_node_basis(const BinarySystem& bin, double t,
                              int frame_body, const Vec2& p_pre,
                              const Vec2& v_pre) {
-    const int index = frame_body < 0 ? 0 : (frame_body > 1 ? 1 : frame_body);
+    const int index = frame_body < 0 ? 0 : (frame_body > 2 ? 2 : frame_body);
     const Vec2 bpos = bin.position(index, t);
     const Vec2 bvel = bin.velocity(index, t);
     const Vec2 r = p_pre - bpos;
@@ -173,8 +173,8 @@ TrajectoryPrediction predict_trajectory(
     const std::optional<ManeuverNode>& node, double horizon_seconds,
     int target_samples) {
     TrajectoryPrediction out{};
-    const int ref = reference_body < 0 ? 0 : (reference_body > 1 ? 1 : reference_body);
-    const int dest = destination_body < 0 ? 0 : (destination_body > 1 ? 1 : destination_body);
+    const int ref = reference_body < 0 ? 0 : (reference_body > 2 ? 2 : reference_body);
+    const int dest = destination_body < 0 ? 0 : (destination_body > 2 ? 2 : destination_body);
     const double dt = config.fixed_dt;
     const double t_end = t0 + horizon_seconds;
 
@@ -206,7 +206,7 @@ TrajectoryPrediction predict_trajectory(
 
     auto update_world = [&](const BallisticState& st) {
         if (!out.impact.valid) {
-            for (int i = 0; i < 2; ++i) {
+            for (int i = 0; i < 3; ++i) {
                 if (inside_terrain(bin, i, st.p, st.t)) {
                     out.impact = {true, i, st.t, st.p};
                     break;
@@ -303,11 +303,11 @@ std::optional<ManeuverNode> plan_circularize(
     const BinarySystem& bin, const Config& config, const State& start,
     double t0, int reference_body,
     const std::optional<ManeuverNode>& existing) {
-    const int ref = reference_body < 0 ? 0 : (reference_body > 1 ? 1 : reference_body);
+    const int ref = reference_body < 0 ? 0 : (reference_body > 2 ? 2 : reference_body);
     ManeuverNode node = existing ? *existing
-                                 : default_node(t0, ref, config.fixed_dt);
+                                  : default_node(t0, ref, config.fixed_dt);
     const int frame = node.frame_body < 0 ? 0
-                     : (node.frame_body > 1 ? 1 : node.frame_body);
+                     : (node.frame_body > 2 ? 2 : node.frame_body);
     node.frame_body = frame;
     const double t = std::max(t0, snap_time(node.time, config.fixed_dt));
     if (t < t0) {
@@ -354,15 +354,20 @@ std::optional<ManeuverNode> plan_transfer(
     double t0, int reference_body,
     const std::optional<ManeuverNode>& existing, TransferSolution* cache) {
     const int source = start.landed ? start.landed_body : reference_body;
-    const int safe_source =
-        source < 0 ? 0 : (source > 1 ? 1 : source);
+    // M06-R13: the legacy two-body transfer route is strictly 0<->1. The outer
+    // moonlet is neither a source nor a destination: an out-of-route source
+    // fails safe (nullopt, no state change) instead of silently re-routing.
+    if (source < 0 || source > 1) {
+        return std::nullopt;
+    }
+    const int safe_source = source;
     const int target = 1 - safe_source;
 
     ManeuverNode node = existing ? *existing
-                                 : default_node(t0, safe_source,
-                                                config.fixed_dt);
+                                  : default_node(t0, safe_source,
+                                                 config.fixed_dt);
     const int frame = node.frame_body < 0 ? 0
-                     : (node.frame_body > 1 ? 1 : node.frame_body);
+                     : (node.frame_body > 2 ? 2 : node.frame_body);
     node.frame_body = frame;
     const double t = std::max(t0, snap_time(node.time, config.fixed_dt));
 
@@ -410,11 +415,11 @@ std::optional<ManeuverNode> plan_match_target(
     const BinarySystem& bin, const Config& config, const State& start,
     double t0, int reference_body, int destination_body,
     const std::optional<ManeuverNode>& existing) {
-    const int ref = reference_body < 0 ? 0 : (reference_body > 1 ? 1 : reference_body);
-    const int dest = destination_body < 0 ? 0 : (destination_body > 1 ? 1 : destination_body);
+    const int ref = reference_body < 0 ? 0 : (reference_body > 2 ? 2 : reference_body);
+    const int dest = destination_body < 0 ? 0 : (destination_body > 2 ? 2 : destination_body);
 
     ManeuverNode node = existing ? *existing
-                                 : default_node(t0, ref, config.fixed_dt);
+                                  : default_node(t0, ref, config.fixed_dt);
     if (!existing) {
         // Place a brand-new node near the predicted closest approach to the
         // moving destination pad.
@@ -426,14 +431,14 @@ std::optional<ManeuverNode> plan_match_target(
         }
     }
     const int frame = node.frame_body < 0 ? 0
-                     : (node.frame_body > 1 ? 1 : node.frame_body);
+                     : (node.frame_body > 2 ? 2 : node.frame_body);
     node.frame_body = frame;
     const double t = std::max(t0, snap_time(node.time, config.fixed_dt));
 
     const BallisticState initial{{start.x, start.y}, {start.vx, start.vy}, t0};
     const int steps = ballistic_steps(t0, t, config.fixed_dt);
     const BallisticState pre = propagate_ballistic(bin, initial, steps,
-                                                   config.fixed_dt);
+                                                    config.fixed_dt);
 
     const auto pad = destination_pad(bin, dest, t);
     const Vec2 dv_world = pad.velocity - pre.v;

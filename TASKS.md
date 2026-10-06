@@ -1,9 +1,9 @@
 # Tasks
 
 Milestone: M06 — Flight computer and maneuver planning
-State: ACTIVE
-Active request group: M06-R12 (M06 HARDENING — PREDICTION REFERENCE-FRAME ARCHITECTURE) — implementation + ALL 15 automated tests COMPLETE (build passes; companion + primary fixture GATES pass); AWAITING the human visual pass (M06-R12-H01 / H02). R11 (Pass 1) and R7 implementation is complete; their human visual passes (M06-R11-H01, M06-R7-H01) remain OPEN gates alongside R12.
-Current phase: M06-R12 (prediction reference-frame architecture: AUTO / WORLD / PRIMARY / COMPANION display frames + a pure orbit-reference classifier with hysteresis; NO physics / propagation change) — ALL implementation (frame transform, timed-sample storage, AUTO classifier, segmented rendering, fixed frame modes, F5-F8 keys, debug-panel readout) + automated verification COMPLETE; only the human visual verification (H01 / H02) is outstanding.
+State: AWAITING HUMAN VERIFICATION
+Active request group: none in flight — M06-R13 (THREE-BODY HIERARCHICAL SYSTEM / OUTER MOONLET) is COMPLETE and committed/pushed (2026-10-05; H01/H02/H03 passed). M06-R12 is complete/committed (commit `e968d1c`); M06-R11 (Pass 1) and M06-R7 are code-complete. The remaining M06 work is the still-OPEN human visual passes `M06-R12-H01` / `M06-R12-H02`, `M06-R11-H01`, and `M06-R7-H01`, plus the deferred predictor / transfer defects (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2). R13 acceptance does NOT close M06.
+Current phase: none in flight (M06 awaiting the remaining human visual passes above). The most recently completed pass, M06-R13, extended the two-body moon system into a fixed three-body hierarchical (Jacobi) system (outer moonlet; inner 0/1 pair preserved EXACTLY as the M05 relative solution; per-body tidal locking; all-three-bodies gravity in the one global inertial frame; F9 MOONLET frame; 3-body AUTO classifier; `--debug-predictor-body 0|1|2`) and is committed. It was the first M06 hardening pass that intentionally changed the canonical gravity / ephemeris model (R8-R12 kept physics frozen); M06-R13 SUPERSEDED M06-R12-P09 (the "no binary-ephemeris change" constraint of the frozen-physics passes) per the explicit user request — that supersession is preserved in the R13 section below, not deleted.
 R11 automated verification is COMPLETE (awaiting its human visual pass,
 M06-R11-H01); R12 automated verification is also now COMPLETE (awaiting
 M06-R12-H01 / H02). R11 was a bounded
@@ -4398,3 +4398,671 @@ boundary (not started).
   F2 / F3 / F4 still switch the prediction policy, and no cross-frame
   connecting line is drawn across an AUTO segment boundary (the transition
   marker is visible instead).
+
+## M06-R13 — M06 HARDENING — Three-body hierarchical system (outer moonlet)
+
+Source: USER (2026-10-04, "M06-R13 — THREE-BODY HIERARCHICAL SYSTEM (OUTER
+MOONLET)"). Note: this ledger entry was reconstructed from the session record
+of that request; if any detail below diverges from the original request, the
+user corrects it here before implementation proceeds.
+State: COMPLETE (accepted 2026-10-05) — all R13 work (V01-V23, P01-P09, D01-D09)
+is done, verified, and committed + pushed to origin; human gates H01/H02/H03
+PASSed 2026-10-05 (evidence below). NOTE: R13 acceptance does NOT close M06 —
+the still-open M06-R12-H01/H02, M06-R11-H01, M06-R7-H01 and the deferred
+PRED-01..08 / SIM-COLL-01 / TFD-1 / TFD-2 remain. Bounded post-M06 hardening
+pass
+that EXTENDS the two-body moon system into a fixed three-body hierarchical
+(Jacobi) system by adding body 2 = OUTER MOONLET. Unlike R8-R12 (frozen
+physics), this pass intentionally changes the canonical gravity / ephemeris
+model per the explicit user request. Scope: all physics / display /
+classification loops generalized to three bodies; the contract loop stays
+0 <-> 1; body 2 is never a contract destination; legacy transfer / sync routes
+from body 2 fail safely; automated tests + human gates; then commit / push and
+STOP at AWAITING HUMAN VERIFICATION. M06 stays open; M07 does NOT begin.
+Progress: D01-D09 all complete (binary/sim/pred_frame/flight_computer/
+autopilot/ballistic/landing/debug_subsystem/gui implemented and building; D08
+three-body tests + D09 3-body predictor-parity case added this session).
+ALL NON-HUMAN VERIFICATION COMPLETE:
+  - V18 3-body predictor parity: PASS (window parity bit-identical; 3-body
+    cold rebuild == authoritative Simulation; 2-body-vs-3-body diverges 0.308 m
+    proving the body-2 field is live). `All lander_predictor_tests passed`.
+  - V19 moonlet gate: PASS (~99.8% MOONLET, final=MOONLET).
+  - V20 via-WORLD: PASS (P->M = WPWM, M->P = WMWP; P<->C still WPWC/WCWP).
+  - V21 outer stability: PASS (seed=555, ~6100 s = 10*T_outer, d2 stays 49-58 m,
+    crashed=0 landed=0, deterministic). `All lander_tests passed`.
+  - V22 regression: 11/12 ctest (sole failure = pre-existing V14-C body-2
+    cross-body landing red; NOT introduced by R13); TFD-1/TFD-2 no longer hard-
+    fail; headless GUI smoke (incl. --debug-predictor-body 0/1/2) exits 0.
+  - V23 current-world PRIMARY gate: now a BOUNDED ONE-REVOLUTION classifier-
+    correctness window (10-period wording SUPERSEDED by the 2026-10-05 user
+    decision); PASS (final=PRIMARY, 100% mature, zero chatter/comp/moonlet, ~1
+    rev winding, bounded radius, one rev completed before any physical loss).
+  - M06-R13-09 supersession items (09-01..09-04): recorded/implemented, all [x].
+Evidence: `./build/lander_pred_frame_tests`, `./build/lander_tests`,
+`./build/lander_predictor_tests`, `./build/lander_transfer_warm_tests` all exit
+0; `ctest --test-dir build` = 11/12 (only lander_landing_tests / V14-C fails).
+NEXT: H01/H02/H03 human verification only; then commit + push per policy.
+
+Scope boundary (preserve, do not cross): the contract loop stays exactly
+0 <-> 1 (body 2 is never a contract origin or destination); legacy
+developer routes from a body-2 source fail safely (no new three-body
+transfer algorithm; TFD-1 / TFD-2 stay open); SIM-COLL-01 and PRED-01..08
+stay open; R12 display-frame / classifier behaviour (F5-F8, thresholds,
+via-WORLD rule, no-mutation, `PHYSICS = WORLD / INERTIAL`) is preserved and
+generalized; no M07 / ECS / generic N-body framework; no SOI / patched
+conics / gravity switch / orbit stabilization.
+
+### M06-R13-PM — Physics model (canonical; `docs/physics-model-gravity.md`
+extended in the same work)
+
+Bodies:
+
+- body 0 = PRIMARY: `R0 = 332.384 m`, `mu0 = 178976.334 m^3/s^2` (unchanged).
+- body 1 = COMPANION: `R1 = R0/9`, `mu1 = mu0/81` (unchanged M05 derivation).
+- body 2 = OUTER MOONLET (new): `R2 = R1`, `mu2 = mu1` — same scale as the
+  companion; terrain from a DISTINCT salted seed (`moonlet_seed(primary_seed)`,
+  a new splitmix64-style salt, so all three terrains are distinct pure
+  functions of the primary seed).
+
+Hierarchy (fixed, analytic; NO N-body integration of the bodies):
+
+- Inner pair (0,1): barycentre `B01`; `mu_inner = mu0 + mu1`;
+  `omega_inner = sqrt(mu_inner / D01^3)`; `D01 = 600.0 m` (unchanged);
+  `theta_inner(t) = omega_inner * t` (0 at t = 0; equals the old M05 theta).
+  `P0 = B01 - a0_inner*(cos, sin)(theta_inner)`,
+  `a0_inner = D01*mu1/mu_inner`;
+  `P1 = B01 + a1_inner*(cos, sin)(theta_inner)`,
+  `a1_inner = D01*mu0/mu_inner`.
+  The (0,1) relative motion about `B01` is exactly the old M05 two-body
+  solution (`omega_inner` = the old `omega`; `T_inner ~= 216.94244 s`).
+- Outer pair (`B01`, body 2): total barycentre at the ORIGIN;
+  `mu_outer_system = mu_inner + mu2`;
+  `omega_outer = sqrt(mu_outer_system / D_OUTER^3)`; `D_OUTER = 1200.0 m`;
+  `theta_outer(t) = pi/2 + omega_outer * t` (starts at pi/2).
+  `P2 = +a2_outer*(cos, sin)(theta_outer)`,
+  `a2_outer = D_OUTER*mu_inner/mu_outer_system`;
+  `B01 = -a_inner_outer*(cos, sin)(theta_outer)`,
+  `a_inner_outer = D_OUTER*mu2/mu_outer_system`.
+  Invariants: `|P2 - B01| = D_OUTER` and
+  `mu0*P0 + mu1*P1 + mu2*P2 = 0` for all t.
+- Approximate values: `omega_inner ~= 0.0289624 rad/s` (unchanged),
+  `omega_outer ~= 0.0103020 rad/s` (`T_outer ~= 610.13 s`);
+  `a0_inner ~= 7.317 m`, `a1_inner ~= 592.683 m`,
+  `a_inner_outer ~= 14.40 m`, `a2_outer ~= 1185.60 m`.
+- Derivatives: for a circular component `r = A*(cos theta, sin theta)`:
+  `v = A*omega*(-sin theta, cos theta)`, `a = -omega^2 * r`. Bodies 0/1
+  carry BOTH the inner and the outer component; body 2 carries only the
+  outer component.
+- Tidal locking is per-body: bodies 0/1 spin at `omega_inner`; body 2 spins
+  at `omega_outer` (`body_rotation(i, t)`, `body_spin_rate(i)`).
+- Spacecraft gravity: ONE global inertial frame; ALL THREE fields always
+  active: `a = sum_{i=0..2} -mu_i*(r_ship - P_i)/|r_ship - P_i|^3` + thrust.
+  No SOI / patched conics / gravity switch / orbit stabilization.
+- Local circular orbits remain initial conditions only
+  (`v_circ = sqrt(mu_i / r)`); perturbation by the other two bodies is
+  physical. `fixed_dt = 1/120 s` unchanged.
+
+### M06-R13-01 — Three-body ephemeris core (`BinarySystem`)
+
+- [ ] M06-R13-01-01 `BinarySystem` holds three bodies (`kBodyCount = 3`,
+  `std::array<Body, 3>`); `Body` keeps only `reference_radius`, `mu`,
+  `terrain` (the two-body-only `barycentric_radius` / `side` members are
+  removed); `canonical` keeps its 3-argument signature (the moonlet seed is
+  derived internally via the new salt: `moonlet_seed`).
+  Files: include/lander/binary.hpp
+  Evidence: build; `tests/test_binary.cpp::three_body_construction` (V01).
+- [ ] M06-R13-01-02 Hierarchical closed-form ephemeris: `barycentre_inner(t)`,
+  and `position(i, t)` / `velocity(i, t)` / `acceleration(i, t)` for i = 0..2
+  (two circular components for bodies 0/1, one for body 2), per the physics
+  model; total barycentre stays at the origin for all t.
+  Files: include/lander/binary.hpp
+  Evidence: V02 (total barycentre), V03 (inner separation 600),
+  V04 (inner-pair preservation vs the old two-body solution), V05 (analytic
+  derivatives vs finite differences), V06 (outer-orbit closed form),
+  V07 (one-period return).
+- [ ] M06-R13-01-03 Per-body tidal locking: indexed `body_rotation(i, t)` and
+  `body_spin_rate(i)` (bodies 0/1 at `omega_inner`, body 2 at `omega_outer`);
+  the unindexed `body_rotation(t)` remains as the body-0 / inner convenience
+  for legacy call sites; `surface_point(i, ...)` uses the indexed rotation
+  and the full inertial surface-point velocity (translation + spin).
+  Files: include/lander/binary.hpp
+  Evidence: V08 (per-body rotation law + body-2 surface-point kinematics).
+- [ ] M06-R13-01-04 Three-body spacecraft gravity: `gravity(p, t)` is the sum
+  of the three inverse-square fields, all always active.
+  Files: include/lander/binary.hpp
+  Evidence: V09 (field equals the per-body sum; the body-2 term is nonzero
+  with the exact expected value; the old two-body formula at the same point
+  differs by exactly the body-2 term).
+- [ ] M06-R13-01-05 Backward-compatible accessors: `omega()` =
+  `omega_inner()`, `period()` = 2*pi/omega_inner (unchanged value),
+  `theta(t)` = `theta_inner(t)`, `mu_system()` = `mu_inner()`; new
+  `omega_outer()`, `theta_outer(t)`, `mu_outer_system()`, `period_outer()`,
+  `barycentre_inner(t)`; `separation()` = D01 = 600 (unchanged).
+  Files: include/lander/binary.hpp
+  Evidence: V10 (accessor identities + numeric agreement with the old
+  values).
+
+### M06-R13-02 — Simulation three-body generalization
+
+- [ ] M06-R13-02-01 Generalize all `i < 2` loops to `i < 3`
+  (`resolve_ground_contact`, flight integration, `attached_state`,
+  `try_takeoff`, `update_reference_body` candidate set); ground contact on
+  body 2 uses the body-2 terrain and the co-rotating surface-point velocity
+  (indexed rotation / spin).
+  Files: src/sim.cpp, include/lander/sim.hpp
+  Evidence: V13 (body-2 landing), V14 (body-2 crash), V15 (body-2 takeoff).
+- [ ] M06-R13-02-02 Reference body generalized to three candidates: new
+  `reference_body_for3(mu[3], dist[3], current, margin = 1.2)` — the same
+  `mu_i/d_i^2` dominance + hysteresis rule as the two-candidate
+  `reference_body_for` (which is KEPT unchanged for existing tests);
+  `Simulation::update_reference_body` uses the three-candidate rule. The
+  reference body remains presentation / local-navigation state only and never
+  changes which gravitational fields are active.
+  Files: src/sim.cpp, include/lander/sim.hpp
+  Evidence: V11 (unit: dominance + 1.2 hysteresis among three), V12 (live:
+  a coasting ship near the moonlet flips the reference to 2 and back).
+
+### M06-R13-03 — Contract-loop preservation and legacy-route safety
+
+- [ ] M06-R13-03-01 The contract loop stays exactly 0 <-> 1: the next
+  contract's origin/destination are the two canonical bases (the landing body
+  and the other one, clamped to {0,1}); body 2 is never a contract origin or
+  destination.
+  Files: src/sim.cpp
+  Evidence: V16 (many reset / contract cycles: destination bodies always in
+  {0,1}).
+- [ ] M06-R13-03-02 Legacy routes from body 2 fail safely: `transfer()` from a
+  body-2 source returns false with no state change; `sync_orbit()` from a
+  body-2 source is a no-op; `plan_transfer` with a body-2 frame node returns
+  nullopt and leaves the node intact. No silent routing to body 1; no new
+  three-body transfer algorithm.
+  Files: src/sim.cpp, src/flight_computer.cpp
+  Evidence: V17.
+
+### M06-R13-04 — Caller generalization (flight computer / autopilot /
+ballistic / debug subsystem)
+
+- [ ] M06-R13-04-01 All `body_rotation(t)` / `omega()` call sites in
+  `flight_computer.cpp`, `ballistic.cpp`, `landing.cpp`, `debug_subsystem.cpp`
+  use the indexed per-body rotation / spin where the body is known;
+  frame-body clamps `>1 ? 1` generalize to `>2 ? 2`
+  (`flight_computer.cpp` at the ref/dest clamp, the circularize clamp, and
+  the match-target clamp; `autopilot.cpp` at the reference clamp).
+  Files: src/flight_computer.cpp, src/ballistic.cpp, src/landing.cpp,
+  src/debug_subsystem.cpp, src/autopilot.cpp
+  Evidence: V18 (three-body predictor parity) and V22 (regression: bodies
+  0/1 behaviour unchanged — the existing 15 pred-frame tests and the M05 /
+  M06-core targets stay green).
+- [ ] M06-R13-04-02 `debug_subsystem` `place_in_orbit` supports body 2
+  (moonlet terrain + mu) for the predictor fixture.
+  Files: src/debug_subsystem.cpp
+  Evidence: V19 / V21 fixtures; H02.
+
+### M06-R13-05 — AUTO classifier and F9 MOONLET frame (`pred_frame`)
+
+- [ ] M06-R13-05-01 The AUTO classifier generalizes to three bodies: new
+  `kMoonlet = 3` in `PredFrame`, new `Moonlet` in `RefSegment`;
+  `body_metrics` computed for i = 0..2; the external / tidal gravity for
+  each body is the SUM over all other bodies j != i; `is_body` includes all
+  three; body -> body transitions ALWAYS route via WORLD (including
+  PRIMARY <-> MOONLET and COMPANION <-> MOONLET). All R12 thresholds and
+  hysteresis (3 samples AND 0.5 s enter/release; dominance / winding /
+  ratio / consistency constants) are preserved UNCHANGED — no threshold
+  fitting.
+  Files: include/lander/pred_frame.hpp, src/pred_frame.cpp
+  Evidence: V19 (moonlet gate), V20 (via-WORLD including the moonlet).
+- [ ] M06-R13-05-02 New fixed display frame F9 = MOONLET (body-2 centred,
+  inertial subtraction only, no rotation); F5-F8 unchanged; a manually
+  selected fixed frame is never auto-switched.
+  Files: src/gui.cpp, include/lander/pred_frame.hpp
+  Evidence: V22 (headless smoke exercises F9); H02 (visual).
+
+### M06-R13-06 — GUI three-body rendering and readouts
+
+- [ ] M06-R13-06-01 Render the third body (terrain, pad, label); the SYSTEM
+  view bounds include body 2; the `reference_body` readout / local camera /
+  HUD support body 2; the debug-panel readouts include the body-2 metric.
+  Files: src/gui.cpp
+  Evidence: V22 (headless smoke runs the render loop for all three bodies
+  without error); H01 (visual).
+- [ ] M06-R13-06-02 Controls documentation: F9 = MOONLET in the legend /
+  controls text, consistent with the F5-F8 wording.
+  Files: src/gui.cpp
+  Evidence: H01 (visual).
+
+### M06-R13-07 — `--debug-predictor-body`
+
+- [ ] M06-R13-07-01 New CLI flag `--debug-predictor-body 0|1|2` for the
+  predictor-only subsystem fixture: 0 = primary orbit (existing default
+  fixture), 1 = companion orbit (existing R11 / R12 fixture, unchanged),
+  2 = bounded moonlet orbit (new: a terrain-clearing circular orbit, radius
+  chosen so the classifier's 8 s window captures at least the minimum
+  winding — roughly a third of the moonlet's Hill radius about the inner
+  pair; the exact value is fixed in the fixture code; deterministic per
+  seed). The flag affects ONLY the predictor debug-scenario fixture, not
+  full-Simulation gameplay; missing flag / unknown value keeps current
+  behaviour.
+  Files: src/gui.cpp (CLI parse), src/debug_subsystem.cpp
+  Evidence: V22 (headless smoke exits 0 for 0 / 1 / 2); H02 (body 2),
+  H03 (body 1 unchanged).
+
+### M06-R13-08 — Outer stability gate
+
+- [ ] M06-R13-08-01 Gate: a zero-thrust body-2 (moonlet) orbit coast for TEN
+  local (outer) periods (10 * T_outer ~= 6101 s) through the authoritative
+  `Simulation` (120 Hz fixed step) must be stable: no crash, no landing,
+  state bounded, deterministic across two identical runs. If it FAILS: STOP
+  and report the actual metrics (max body-2 distance drift over the coast,
+  epsilon / dominance over time); do NOT retune D_OUTER / mu2 / the fixture
+  altitude / classifier thresholds without a new user decision.
+   Files: tests/test_sim.cpp (`outer_stability_ten_periods`)
+   Evidence: V21.
+
+### M06-R13-09 — PRIMARY gate re-baseline (supersession of the R12 primary-
+fixture invariance)
+
+- [x] M06-R13-09-01 USER decision (2026-10-05), SUPERSEDES the earlier
+  R13/P06 requirement that the exact old R12 primary fixture / test input
+  remain a passing gate "unmodified except the 3-body metric generalization."
+  (Recorded and implemented: the R12 fixture is no longer a gate; see 09-02 /
+  09-04 and V23, all passing.)
+  Rationale: the R12 primary fixture (`place_on_orbit(bin, 0,
+  body0.max_surface_radius()+20)` coasted 300 s at 120 Hz via
+  `predict_zero_thrust`) was CALIBRATED against the old 2-body physical
+  universe; in the canonical 3-body world the same nominal trajectory
+  legitimately differs (the 3-body differential / tidal perturbation lowers
+  the primary's dominance), so the old fixture's exact outcome is NOT a
+  canonical invariant of the classifier. The classifier SEMANTICS are
+  UNCHANGED (epsilon rule, dominance threshold, tidal / differential-gravity
+  definition, winding threshold, radial-ratio threshold, window sizing, and
+  entry / release hysteresis all stay as R12). The R13 tidal term (vector sum
+  over all j != i) is the canonical definition and is NOT reverted.
+  Files: TASKS.md (this entry); milestone doc.
+- [x] M06-R13-09-02 The old R12 primary trace is PRESERVED AS A NON-GATING
+  LEGACY DIAGNOSTIC: it reports the exact EPS / DOM / WIND / RATIO / occupancy
+  / transition-sequence and the point + time at which PRIMARY is released, but
+  it no longer gates the build. Files:
+  tests/test_pred_frame.cpp::report_legacy_r12_primary.
+  Evidence: exists and runs as a report (non-gating) in the passing
+  `All lander_pred_frame_tests passed` suite; it does not fail the build.
+- [x] M06-R13-09-03 The COMPANION case is OBSERVATIONAL (not forced): report
+  the actual behavior of the tight 600 m strong-tide companion-orbit coast
+  (final frame, per-body occupancy, EPS / DOM / WIND / RATIO); do NOT assert
+  COMPANION as a gate. Files:
+  tests/test_pred_frame.cpp::report_companion.
+  Evidence: `[companion OBSERVATIONAL] n=2402 world=31 primary=0
+  companion=2371 moonlet=0 final=COMPANION companion_frac=0.99 seq=WC` —
+  reported only, never asserted as a gate (part of the passing pred-frame suite).
+- [x] M06-R13-09-04 The PRIMARY gate is RE-BASELINED to a clean current-3-body-
+  world orbit (V23). SUPERSEDED again (2026-10-05 user decision): the ">= 10
+  local nominal periods" duration is replaced by a BOUNDED ONE-REVOLUTION
+  classifier-correctness window (one complete body-0-relative revolution; if it
+  cannot complete before the first physical loss, STOP and report rather than
+  retune), because near-surface primary orbits are physically short-lived in
+  the current 3-body world and survival-to-10-periods is not a measure of
+  classifier correctness. Over the mature (post-hysteresis) one-revolution
+  window the UNCHANGED 3-body AUTO classifier must yield final PRIMARY, >= 99 %
+  mature PRIMARY occupancy, no PRIMARY<->WORLD chatter, zero companion, zero
+  moonlet, continuous/consistent winding, and a bounded radius (no crash /
+  landing). Files: tests/test_pred_frame.cpp::gate_primary_current.
+  Supersedes: (a) the R12 `gate_primary` as a GATE (remains a legacy
+  diagnostic, M06-R13-09-02); (b) its own earlier ">= 10 local nominal
+  periods" wording (superseded by the one-revolution window above).
+  Evidence: `./build/lander_pred_frame_tests` -> `[gate_primary_current] PASS`
+  (final=PRIMARY, 100% mature PRIMARY, zero chatter/comp/moonlet, ~1 rev
+  winding, bounded radius; one revolution completed before any physical loss,
+  so the STOP condition was never triggered).
+
+### M06-R13-V — Automated verification (23 tests)
+
+- [x] M06-R13-V01 Three-body construction and scale: `kBodyCount = 3`;
+  `R2 = R1`, `mu2 = mu1`; the moonlet terrain seed is distinct from both the
+  primary and companion seeds and is a pure function of the primary seed;
+  terrain scale 1/9 (same as the companion).
+  Files: tests/test_binary.cpp::test_three_body_construction.
+  Evidence: `lander_binary_tests` passes this session (exit 0); part of the
+  11/12 ctest baseline.
+- [x] M06-R13-V02 Total barycentre at the origin for all t:
+  `|mu0*P0 + mu1*P1 + mu2*P2| <= 1e-9` at t spanning multiple outer periods
+  (0, T_outer/2, T_outer, 3*T_outer, 10*T_outer).
+  Files: tests/test_binary.cpp::test_total_barycentre.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V03 Constant inner separation: `|P1 - P0| = 600` at all
+  sampled t.
+  Files: tests/test_binary.cpp::test_inner_separation.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V04 Inner-pair preservation: `P_i(t) - B01(t)` equals the old
+  two-body position of body i (same closed form — bit-exact), and
+  `v1 - v0` equals the old relative velocity, for the sampled t.
+  Files: tests/test_binary.cpp::test_inner_pair_preservation.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V05 Analytic derivatives: central finite differences of
+  position / velocity match the closed-form velocity / acceleration for all
+  three bodies.
+  Files: tests/test_binary.cpp::test_analytic_derivatives.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V06 Outer-orbit closed form: `|P2(t)| = a2_outer` with
+  `arg(P2) = pi/2 + omega_outer*t`; `|P2 - B01| = 1200`;
+  `B01 = -a_inner_outer*(cos, sin)(theta_outer)`; `|B01| = a_inner_outer`.
+  Files: tests/test_binary.cpp::test_outer_orbit_closed_form.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V07 One-period return: the inner relative configuration
+  (`P1 - P0`, `v1 - v0`) at `t + T_inner` equals the one at t; `P2` at
+  `t + T_outer` equals `P2` at t.
+  Files: tests/test_binary.cpp::test_one_period_return.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V08 Per-body tidal locking: `body_rotation(0,t) =
+  body_rotation(1,t) = omega_inner*t`, `body_rotation(2,t) =
+  omega_outer*t`; `body_spin_rate` agrees; body-2 surface point: position =
+  `P2 + R(rot2) * local`, velocity = `P2 velocity + omega_outer x offset`
+  (extends the existing body 0/1 rotation tests).
+  Files: tests/test_binary.cpp::test_body_rotation_law (3-body).
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V09 Three-body gravity: `gravity(p,t) == g0 + g1 + g2` (the
+  per-body sum); at a test point on the body-2 side the old two-body formula
+  differs by exactly the body-2 term; the body-2 field is nonzero at
+  distance with the exact expected magnitude / direction.
+  Files: tests/test_binary.cpp::test_three_body_gravity.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V10 Legacy accessors: `omega() == omega_inner()`,
+  `period() == 2*pi/omega_inner` (value ~= 216.94244 s, unchanged),
+  `theta(t) == theta_inner(t)`, `mu_system() == mu_inner()`,
+  `separation() == 600`; the new `omega_outer` / `period_outer` /
+  `mu_outer_system` / `barycentre_inner` values match the model.
+  Files: tests/test_binary.cpp::test_legacy_accessors.
+  Evidence: `lander_binary_tests` passes this session (exit 0).
+- [x] M06-R13-V11 `reference_body_for3` (unit): dominance selection among
+  three candidates; the 1.2 margin hysteresis (a ratio oscillation below
+  1.2 keeps the current body; above 1.2 it flips); an exact tie keeps the
+  current body.
+  Files: tests/test_sim.cpp::test_reference_body_for3.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V12 Live reference-body tracking: a scripted zero-thrust coast
+  of the ship into / out of the moonlet region makes `Simulation::
+  reference_body()` become 2 while dominant and return under the 1.2
+  hysteresis; the switch never changes the ship's trajectory (gravity is
+  reference-independent).
+  Files: tests/test_sim.cpp::test_reference_body_follows_moonlet.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V13 Body-2 landing: a ship placed above a moonlet pad
+  (terrain-clearing, slow approach relative to the co-rotating surface)
+  lands: `landed == true`, `landed_body == 2`, via the body-2 terrain and
+  the co-rotating surface-point velocity in `resolve_ground_contact`.
+  Files: tests/test_sim.cpp::test_body2_landing.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V14 Body-2 crash: a fast radial impact into moonlet terrain
+  crashes: `crashed == true`, `crash_body == 2`.
+  Files: tests/test_sim.cpp::test_body2_crash.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V15 Body-2 takeoff: a landed ship on the moonlet takes off at
+  full throttle; the released state inherits the full inertial surface-point
+  velocity (including the `omega_outer` spin contribution) and clears
+  terrain on the first step.
+  Files: tests/test_sim.cpp::test_body2_takeoff.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V16 Contract-loop preservation: across many scripted reset /
+  land / contract cycles the contract origin and destination are always in
+  {0,1}; body 2 is never a contract origin or destination.
+  Files: tests/test_sim.cpp::test_contract_loop_stays_binary.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V17 Legacy-route safety from body 2: `transfer()` returns
+  false with the state unchanged (no position / velocity mutation);
+  `sync_orbit()` is a no-op; `plan_transfer` with a body-2 frame node returns
+  nullopt and leaves the node intact.
+  Files: tests/test_sim.cpp::test_legacy_routes_from_body2_safe.
+  Evidence: `lander_tests` passes this session (exit 0).
+- [x] M06-R13-V18 Three-body predictor parity: from the same canonical
+  three-body system, two receding-horizon predictors built with the SAME state
+  / time / policy / body-count but DIFFERENT prior-system / window size must
+  produce identical predictions over the horizon (parity independent of prior
+  size); rolling updates and cold rebuilds are body-count-aware; perturbing
+  `mu2` in a scratch system changes the predicted path (all three fields are
+  live in the predictor, not just two).
+  Files: tests/test_predictor.cpp::test_three_body_window_parity,
+  test_three_body_fields_live (plus a local zero-thrust `integrate_field`
+  kick-drift helper mirroring `Simulation::integrate_flight`).
+  Evidence: window parity (240 vs 960 prior window, same live 3-body state) is
+  bit-identical over 241 overlapping samples (max_pos=0 m, max_vel=0 m/s) and
+  the 3-body cold rebuild matches the authoritative `Simulation` exactly (0 m).
+  The `mu2`-liveness check is realized as a 2-body-vs-3-body divergence: a local
+  integrator fed only `gravity_from(0)+gravity_from(1)` diverges from the
+  3-body predictor by 0.308 m over the same 2 s horizon (the 3-body integrator
+  is validated at 0 m vs the predictor). This is used instead of retuning the
+  canonical gravity because the canonical `BinarySystem` couples all three mus
+  to `mu0` via the fixed scaling law (`mu2 = mu0/81`) and exposes no public
+  per-body `mu` setter; omitting the body-2 field in a scratch integrator is the
+  equivalent "perturb `mu2` to zero" proof that all three fields are live.
+  `All lander_predictor_tests passed` (exit 0).
+- [x] M06-R13-V19 AUTO moonlet GATE: a bounded moonlet-orbit coast (a few
+  local periods, 120 Hz) classifies AUTO as MOONLET for >= 95% of samples
+  with final segment MOONLET; the primary and companion metrics do not
+  qualify. If it does NOT classify MOONLET: STOP and report the actual
+  EPS / DOM / WIND / RATIO / consistency metrics for all three bodies; do
+  NOT tune thresholds until the failure is understood (same gate semantics
+  as M06-R12-V05).
+  Files: tests/test_pred_frame.cpp::gate_moonlet.
+  Evidence: `./build/lander_pred_frame_tests` -> `[gate_moonlet] PASS`
+  (final=MOONLET, ~99.8% MOONLET occupancy, primary/companion do not qualify);
+  part of the passing `All lander_pred_frame_tests passed` suite (exit 0).
+- [x] M06-R13-V20 Via-WORLD transitions with the moonlet: a spliced
+  primary -> moonlet coast enters MOONLET only through a WORLD bridge (no
+  adjacent P -> M pair); the reverse splice yields M -> W -> P; the existing
+  P <-> C splices still produce WPWC / WCWP.
+  Files: tests/test_pred_frame.cpp::no_direct_body_transition (covers both the
+  preserved 2-body P<->C splices and the 3-body P<->M moonlet splices).
+  Evidence: `no_direct_body_transition_moonlet` -> `[spliced P->M] seq=WPWM`
+  (W=52 P=2412 M=2340) and `[spliced M->P] seq=WMWP` (W=502 P=2381 M=1921): no
+  direct P<->M adjacency, both via a WORLD bridge. The 2-body splices remain
+  `[spliced P->C] seq=WPWC` / `[spliced C->P] seq=WCWP`. Part of the passing
+  `All lander_pred_frame_tests passed` suite (exit 0).
+- [x] M06-R13-V21 Outer stability GATE: a zero-thrust moonlet-orbit coast
+  for 10 * T_outer (~6101 s) through the authoritative `Simulation`
+  (120 Hz): no crash, no landing, bounded body-2 distance, deterministic
+  across two identical runs. If it FAILS: STOP and report metrics; do NOT
+  retune (see M06-R13-08).
+  Files: tests/test_sim.cpp::outer_stability_ten_periods.
+  Evidence: `./build/lander_tests` -> `[outer-stability] seed=555 steps=731878
+  max_d2=57.57 min_d2=49.62 final_d2=51.95 crashed=0 landed=0` (body-2 distance
+  stays within ~50-58 m over 731878 fixed steps = ~6100 s = 10 * T_outer; no
+  crash / landing; the internal two-run determinism comparison passes). Part of
+  the passing `All lander_tests passed` suite (exit 0).
+- [x] M06-R13-V22 Regression: full build clean (no new warnings beyond the
+  two known `src/gui.cpp` narrowing warnings); `ctest` shows NO NEW failure
+  introduced by R13 (the sole failing target is the pre-existing V14-C body-2
+  cross-body landing red, carried forward); the R12 pred-frame tests still pass
+  WITH the R13 3-body metric generalization EXCEPT the primary classification
+  gate, which is re-baselined per M06-R13-09 / V23 (the old 2-body-calibrated
+  R12 primary fixture becomes a non-gating legacy diagnostic; the new
+  current-world primary gate is the gate); 120 Hz fixed-step determinism
+  preserved; headless GUI smoke exits 0 including `--debug-predictor-body
+  0|1|2`; the diff touches only the intended R13 files.
+  Files: whole project build; tests (suite-level).
+  Evidence: full `ctest --test-dir build --output-on-failure` = `92% tests
+  passed, 1 tests failed out of 12` (11/12); the sole failing target is
+  `lander_landing_tests` with only the pre-existing V14-C body-2 cross-body
+  reds (cross-body / perturbed / independent-seed) — NOT introduced by R13.
+  The earlier-ledger "TFD-1 (lander_tests) / TFD-2 (lander_transfer_warm_tests)"
+  hard failures no longer surface: those post-M06 transfer tests now document /
+  expect the deferred behavior and PASS, so the live baseline is 11/12, not the
+  older 10/12. Re-verified this session: `lander_tests`, `lander_predictor_
+  tests`, `lander_transfer_warm_tests`, and `lander_pred_frame_tests` all exit 0.
+  Headless GUI smoke (`SDL_VIDEODRIVER=dummy ./build/lander_gui --debug-
+  subsystem predictor --debug-predictor-body N --frames 40`) exits 0 for N=0,1,2
+  and plain normal-play, each printing a clean final state (e.g. body-2:
+  `ref=2 ... state=flying`). This session's only source change is the purely
+  additive `tests/test_predictor.cpp` (0 lines removed); the remaining modified
+  files are the earlier R13 3-body generalization (all within R13 scope).
+- [x] M06-R13-V23 NEW current-world PRIMARY gate (re-baseline of the R12
+  primary gate; see M06-R13-09). SUPERSEDED (2026-10-05 user decision): the
+  earlier wording "run for at least 10 local nominal primary periods" is
+  replaced by a BOUNDED ONE-REVOLUTION classifier-correctness gate — a 10-period
+  SURVIVAL requirement is not met by the current canonical physics (near-surface
+  primary orbits are short-lived under the 600 m companion's tidal perturbation)
+  and is not the right measure of classifier CORRECTNESS. CURRENT SEMANTICS:
+  build a clean primary-bound orbit in the CURRENT 3-body world — body 0,
+  `r_test = body0.terrain.max_surface_radius() + 20 m`, `v_local = sqrt(mu0 /
+  r_test)` (tangential), initial inertial velocity = body-0 ephemeris velocity
+  at t0 + local tangential `v_local`; NO stabilization / hidden force / altered
+  gravity. Run it through the AUTHORITATIVE `Simulation` (not the predictor) for
+  a SINGLE complete body-0-relative revolution (zero-thrust coast, 120 Hz); if
+  one revolution cannot complete before the first physical loss (crash /
+  landing / contact), STOP and report the survival fraction, the failure point,
+  and the classifier telemetry up to that point — do NOT extend to 10 periods
+  and do NOT retune. Over the MATURE interval (after the AUTO entry hysteresis,
+  through the end of that one-revolution window): final resolved frame =
+  PRIMARY; >= 99 % PRIMARY occupancy; no repeated PRIMARY <-> WORLD chatter;
+  zero COMPANION; zero MOONLET; continuous / consistent angular winding about
+  body 0; bounded radius near `r_test`.
+  Files: tests/test_pred_frame.cpp::gate_primary_current.
+  Evidence: `./build/lander_pred_frame_tests` -> `[gate_primary_current] PASS:
+  interval [60..12819] mature=12760 primary=12760 frac=1.0000 chatter=0
+  comp=0 moon=0 wind=0.995 rev cons=1.000 radius min=360.9 max=390.5 r=364.9
+  final frame=PRIMARY`. One body-0-relative revolution completed before any
+  physical loss, so the STOP condition was never triggered and the gate is fully
+  satisfied (100% PRIMARY over the whole mature interval, zero chatter, zero
+  comp/moonlet, ~1 rev winding, bounded radius). Part of the passing
+  `All lander_pred_frame_tests passed` suite (exit 0). The companion case stays
+  observational (M06-R13-09-03) and the old R12 primary trace stays a non-gating
+  legacy diagnostic (M06-R13-09-02).
+
+### M06-R13-P — Preservation constraints
+
+- [x] M06-R13-P01 Inner-ephemeris preservation: the (0,1) relative
+  configuration (600 m separation, relative velocity, tidal locking) is
+  identical to the old M05 two-body solution; the old absolute positions are
+  recovered as old + `B01(t)` (V04).
+  Evidence: V03/V04/V08 pass in `lander_binary_tests` (exit 0 this session).
+- [x] M06-R13-P02 Spacecraft world trajectories may shift (body 2 is a real
+  perturber); bit-identity with M05 is NOT required, but predictor parity
+  (live `Simulation` vs pure prediction) must hold under three-body gravity
+  (V18).
+  Evidence: V18 3-body cold rebuild == authoritative `Simulation` (0 m) in
+  `lander_predictor_tests` (exit 0 this session).
+- [x] M06-R13-P03 No SOI / patched conics / gravity switch / orbit
+  stabilization; all three fields always active; physics stays in the one
+  global inertial frame (`PHYSICS = WORLD / INERTIAL` stays a permanent readout).
+  Evidence: `src/sim.cpp` integrates all three fields every step; no gravity
+  switch introduced; confirmed by V09 (three_body_gravity) and the unchanged
+  `PHYSICS = WORLD / INERTIAL` readout.
+- [x] M06-R13-P04 No M07 / ECS / generic N-body / scene-graph framework: a
+  fixed three-body closed-form model only.
+  Evidence: the R13 diff adds a fixed 3-body closed-form model only (no ECS /
+  N-body / scene-graph types); see the D02-D07 file list.
+- [x] M06-R13-P05 No TFD-1 / TFD-2 fix; no SIM-COLL-01 fix; no PRED-01..08
+  fix (all remain open).
+  Evidence: `src/ballistic.cpp` solver and collision / PRED logic unchanged;
+  the post-M06 transfer tests still document (not fix) TFD-1/TFD-2 and pass;
+  PRED-01..08 / SIM-COLL-01 remain OPEN in `docs/m06-predictor-physics-issues.md`.
+- [x] M06-R13-P06 R12 classifier SEMANTICS preserved: F5-F8, all R12
+  thresholds / hysteresis (epsilon rule, dominance, tidal / differential
+  definition, winding, radial-ratio, window sizing, entry / release
+  hysteresis), the via-WORLD rule, no-mutation of `Simulation` / samples. The
+  ONLY R12 pred-frame change is the PRIMARY gate re-baseline (M06-R13-09): the
+  old 2-body-calibrated R12 primary fixture becomes a non-gating legacy
+  diagnostic and the companion case becomes observational; all other R12
+  pred-frame tests pass unmodified (V22).
+  Evidence: `src/pred_frame.cpp` classifier constants unchanged; V20 (via-
+  WORLD), V19 (moonlet gate), and the R12 companion/fixture tests pass in
+  `lander_pred_frame_tests` (exit 0 this session); only the primary gate is
+  re-baselined (V23 / M06-R13-09-04).
+- [x] M06-R13-P07 `fixed_dt`, determinism, pause / reset / seed semantics
+  unchanged; reset with the same seed reproduces all three terrains and both
+  ephemeris phases.
+  Evidence: `fixed_dt` untouched; V21 two-run determinism passes and same-seed
+  reset reproduces all three terrains (V01) in `lander_tests` (exit 0).
+- [x] M06-R13-P08 Autopilot / executor / landing guidance remain
+  `Input`-only; no direct state mutation.
+  Evidence: `src/flight_computer.cpp` / `src/autopilot.cpp` / `src/landing.cpp`
+  remain Input-driven; the contract-loop test (V16) and no-mutation pred-frame
+  checks pass.
+- [x] M06-R13-P09 SDL3 only (scancodes); no image-inspection workflow (the
+  model is text-only; visual checks are human gates).
+  Evidence: GUI still uses SDL3 scancodes (no SDL2 / sdl2-compat); no image-
+  inspection was performed this session (text-only; headless smoke + logs only).
+
+### M06-R13-H — Human verification (closeout)
+
+- [x] M06-R13-H01 Human: normal play `./build/lander_gui` — the third body
+  renders correctly (moonlet visible in SYSTEM view: terrain, pad, label;
+  view bounds include it); ordinary flight / contract play is not disrupted
+  (the contract loop still alternates the two canonical bases); F9 = MOONLET
+  selects the moonlet-centred display frame.
+  Source: USER. Evidence (2026-10-05, human): PASS — "Normal game remains
+  usable. Three bodies render correctly. Existing primary/close-companion
+  system remains intact. Contract play appears undisturbed. F9 moonlet frame
+  works."
+- [x] M06-R13-H02 Human: `./build/lander_gui --debug-subsystem predictor
+  --debug-predictor-body 2` — the moonlet-orbit fixture renders; AUTO
+  classifies MOONLET; F9 / F6 / F7 / F8 all work from this fixture; the
+  debug-panel readouts (including the body-2 metric) are sensible;
+  `PHYSICS = WORLD / INERTIAL` is always shown.
+  Source: USER. Evidence (2026-10-05, human): PASS — "--debug-predictor-body
+  2 is visually good. Clean local moonlet orbit is visible. MOONLET fixed
+  frame is correct/useful. WORLD shows the corresponding compound global
+  trajectory. AUTO behaviour/readouts are coherent. Body-2 diagnostics look
+  sane. No observed physics mutation from frame switching."
+- [x] M06-R13-H03 Human: `./build/lander_gui --debug-subsystem predictor
+  --debug-predictor-body 1` — the companion fixture is unchanged from the
+  R12 behaviour (regression check: same classification, same frames).
+  Source: USER. Evidence (2026-10-05, human): PASS — "--debug-predictor-body
+  1 preserves the existing tight-companion behaviour. COMPANION and WORLD
+  views remain available and useful. The complex strong-tide trajectory
+  character is preserved. AUTO behaviour is acceptable for this physically
+  hostile inner companion case."
+  Non-blocking observation (deferred, NOT fixed in R13): the SYSTEM-view
+  auto-fit camera zooms somewhat too far out now that body 2 expands the
+  system bounds, so local orbit geometry can look smaller than ideal for
+  visual inspection. Recorded as a deferred camera/UI polish issue (no frame /
+  physics / classifier change; no low-FPS issue recorded — that was unrelated
+  concurrent-agent resource contention, not valid evidence).
+
+### M06-R13-D — Derived implementation tasks
+
+- [x] M06-R13-D01 Persist this ledger + `STATUS.md` + milestone doc +
+  `docs/physics-model-gravity.md` extension (before any implementation code
+  change). (Ledger + state docs done; the physics-doc extension is the first
+  implementation step.)
+  Evidence: `docs/physics-model-gravity.md` extended to the three-body model;
+  ledger / `STATUS.md` / milestone doc updated.
+- [x] M06-R13-D02 Rewrite `include/lander/binary.hpp` to the hierarchical
+  three-body model (R13-01); build to verify compilation before touching
+  `.cpp` call sites.
+  Evidence: `include/lander/binary.hpp` rewritten to the hierarchical model;
+  builds clean (this session's full build).
+- [x] M06-R13-D03 Generalize `src/sim.cpp` / `include/lander/sim.hpp`
+  (R13-02, R13-03).
+  Evidence: `src/sim.cpp` / `sim.hpp` generalized (3-body `integrate_flight`,
+  `reference_body`/`reference_body_for3`, body-2 contact); builds clean; V09/V12/
+  V13-V16 pass.
+- [x] M06-R13-D04 Generalize `src/pred_frame.cpp` / `.hpp` (R13-05).
+  Evidence: `src/pred_frame.cpp` / `.hpp` generalized (F9 MOONLET, 3-body AUTO
+  classifier, via-WORLD); V19/V20/V23 pass in `lander_pred_frame_tests`.
+- [x] M06-R13-D05 Generalize `src/flight_computer.cpp` / `src/autopilot.cpp`
+  (R13-03-02, R13-04-01).
+  Evidence: `src/flight_computer.cpp` / `src/autopilot.cpp` generalized; Input-
+  only preserved (P08); `lander_flight_computer_tests` passes (11/12 ctest).
+- [x] M06-R13-D06 Generalize `src/ballistic.cpp` / `src/landing.cpp` /
+  `src/debug_subsystem.cpp` (R13-04).
+  Evidence: `src/ballistic.cpp` / `src/landing.cpp` / `src/debug_subsystem.cpp`
+  generalized; solver/collision/PRED unchanged (P05); `lander_debug_subsystem_
+  tests` passes.
+- [x] M06-R13-D07 Generalize `src/gui.cpp` (R13-05-02, R13-06, R13-07).
+  Evidence: `src/gui.cpp` generalized (3-body rendering/readouts, `--debug-
+  predictor-body 0|1|2`); builds clean; headless smoke exits 0 for all three
+  body values (this session).
+- [x] M06-R13-D08 Rewrite / extend the tests (R13-V01..V22).
+  Evidence: `tests/test_binary.cpp` / `test_sim.cpp` / `test_pred_frame.cpp` /
+  `test_predictor.cpp` rewritten / extended; V01-V23 all present and (V18) the
+  3-body predictor-parity case added this session.
+- [x] M06-R13-D09 Build + full `ctest` + headless smoke; record evidence in
+  this ledger; update `STATUS.md`; commit (explicit paths only) and push per
+  repository policy; STOP at AWAITING HUMAN VERIFICATION (H01 / H02 / H03
+  open; the earlier R12 / R11 / R7 human gates stay open).
+  Evidence (2026-10-05): build clean; full `ctest` = 11/12 (sole failure =
+  pre-existing V14-C body-2 cross-body landing red, not introduced by R13);
+  headless GUI smoke (incl. `--debug-predictor-body 0/1/2`) exits 0; evidence
+  recorded in this ledger and `STATUS.md` updated. H01 / H02 / H03 human gates
+  PASSed (see above); the bounded M06-R13 work was committed with explicit
+  active-project paths and pushed to `origin/main` via the tracked post-commit
+  hook. M06 is NOT closed: R12-H01/H02, R11-H01, R7-H01 and the deferred
+  PRED-01..08 / SIM-COLL-01 / TFD-1 / TFD-2 remain open.

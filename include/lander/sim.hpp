@@ -148,7 +148,15 @@ NavCues navigation_cues(const State& state, const BinarySystem& system,
 // unless the other body's influence exceeds `margin *` the current influence;
 // at an exact crossover the current body is kept.
 int reference_body_for(double mu0, double mu1, double distance0,
-                       double distance1, int current, double margin = 1.2);
+                        double distance1, int current, double margin = 1.2);
+
+// M06-R13: three-body generalization of reference_body_for: candidates are
+// the primary, the companion, and the outer moonlet; the current body is
+// kept unless some other body's influence exceeds `margin *` the current
+// influence; at an exact crossover the current body is kept.
+int reference_body_for3(double mu0, double mu1, double mu2, double d0,
+                        double d1, double d2, int current,
+                        double margin = 1.2);
 
 // Presentation only: the state of a ship attached to `body_index` at the
 // body-local surface arc `landed_arc`, at ephemeris time `t`. The position

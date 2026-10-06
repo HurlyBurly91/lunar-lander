@@ -5,18 +5,20 @@
 //
 // This is a pure, SDL-free analysis / display layer over the shared
 // zero-thrust prediction. It never changes physics: every sample is propagated
-// in WORLD / inertial coordinates (the canonical two-body field, both bodies
-// always active, no SOI), and the only transformation applied here is an
+// in WORLD / inertial coordinates (the canonical three-body field, all three
+// bodies always active, no SOI), and the only transformation applied here is an
 // inertial frame shift (position -= body position, velocity -= body velocity)
-// with NO rotation and no body-fixed / rotating frame. The four display modes
-// (WORLD / PRIMARY / COMPANION / AUTO) therefore differ only by the analysis
-// and transform applied to the same world-space samples (M06-R12-P01).
+// with NO rotation and no body-fixed / rotating frame. The display modes
+// (WORLD / PRIMARY / COMPANION / MOONLET / AUTO) therefore differ only by the
+// analysis and transform applied to the same world-space samples
+// (M06-R12-P01, extended to three bodies by M06-R13).
 //
 // AUTO is a bounded orbit-reference classifier: over a short analysis window
 // it decides whether the ship is bound to the primary, bound to the companion,
-// or in a world (inter-orbit) transfer, using a small hysteresis so the label
-// is stable. It is driven entirely by the stored samples and the ephemeris and
-// never touches the simulation, the samples, or any physics.
+// bound to the outer moonlet, or in a world (inter-orbit) transfer, using a
+// small hysteresis so the label is stable. It is driven entirely by the stored
+// samples and the ephemeris and never touches the simulation, the samples, or
+// any physics.
 
 #include "lander/binary.hpp"
 
@@ -35,26 +37,30 @@ struct TimedTrajectorySample {
     double time{0.0};
 };
 
-// The four display reference frames (M06-R12-01). WORLD is the inertial
-// barycentric frame (the current rosette view); PRIMARY / COMPANION are the
-// two bodies' moving centres; AUTO is the label selected by the classifier.
-// All are inertial (no rotating / body-fixed frame).
+// The display reference frames (M06-R12-01, extended to three bodies by
+// M06-R13). WORLD is the inertial barycentric frame (the current rosette
+// view); PRIMARY / COMPANION / MOONLET are the three bodies' moving centres;
+// AUTO is the label selected by the classifier. All are inertial (no rotating
+// / body-fixed frame).
 enum class PredFrame {
     World,
     Primary,
     Companion,
+    Moonlet,
     Auto,
 };
 
 // Stable short display name for a display frame.
 const char* pred_frame_name(PredFrame frame);
 
-// The orbit-reference segment a sample is labelled with (M06-R12-03): bound to
-// the primary, bound to the companion, or a world (inter-orbit) transfer.
+// The orbit-reference segment a sample is labelled with (M06-R12-03, extended
+// to three bodies by M06-R13): bound to the primary, bound to the companion,
+// bound to the outer moonlet, or a world (inter-orbit) transfer.
 enum class RefSegment {
     World,
     Primary,
     Companion,
+    Moonlet,
 };
 
 const char* ref_segment_name(RefSegment s);
@@ -111,7 +117,7 @@ struct BodyMetrics {
 
 // The per-sample diagnostics and the raw (pre-hysteresis) E4 winner.
 struct SampleMetrics {
-    BodyMetrics body[2]{};
+    BodyMetrics body[3]{};
     RefSegment raw{RefSegment::World};
     bool window_ok{true};  // at least one body has >= min_available_frac of W
 };

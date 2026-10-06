@@ -413,7 +413,7 @@ double pad_angle_error(const State& s, const BinarySystem& bin, int body,
                        double now) {
     const Vec2 c = bin.position(body, now);
     const double world = std::atan2(s.y - c.y, s.x - c.x);
-    const double ship_body = world - bin.body_rotation(now);
+    const double ship_body = world - bin.body_rotation(body, now);
     return wrap_pi(ship_body - pad_local_angle(bin.body(body)));
 }
 
@@ -679,18 +679,39 @@ void LandingAutopilot::update_phase(const State& before, const State& after,
 // and the existing APPROACH flow when it is not. Cross-body starts in ASCEND.
 void LandingAutopilot::route(const State& before, const BinarySystem& bin,
                              double now) {
-    const Vec2 c0 = bin.position(0, now);
-    const Vec2 c1 = bin.position(1, now);
-    const double d0 = std::hypot(before.x - c0.x, before.y - c0.y);
-    const double d1 = std::hypot(before.x - c1.x, before.y - c1.y);
-    source_body_ = (d0 <= d1) ? 0 : 1;
+    // M06-R13: the source is the nearest of the three bodies (two-body
+    // behaviour is unchanged: near the primary / companion region the nearest
+    // is 0 / 1; only near the moonlet does it become 2).
+    double best_d = 1e30;
+    int src = 0;
+    for (int b = 0; b < 3; ++b) {
+        const Vec2 cb = bin.position(b, now);
+        const double d = std::hypot(before.x - cb.x, before.y - cb.y);
+        if (d < best_d) {
+            best_d = d;
+            src = b;
+        }
+    }
+    source_body_ = src;
 
     const Body& target = bin.body(target_body_);
     const Vec2 pad = bin.surface_point(
         target_body_, pad_local_angle(target), pad_surface_radius(target), now)
                         .position;
     const double g_target = vec_len(bin.gravity_from(target_body_, pad, now));
-    const double g_other = vec_len(bin.gravity_from(1 - target_body_, pad, now));
+    // M06-R13: the disturbing field at the pad is the vector sum of every
+    // body other than the target. With two bodies this is exactly the old
+    // single other-body term, so R12 behaviour is preserved.
+    Vec2 g_other_sum{};
+    for (int b = 0; b < 3; ++b) {
+        if (b == target_body_) {
+            continue;
+        }
+        const Vec2 g = bin.gravity_from(b, pad, now);
+        g_other_sum.x += g.x;
+        g_other_sum.y += g.y;
+    }
+    const double g_other = vec_len(g_other_sum);
     const double ratio = g_target > 1e-9 ? g_other / g_target : 0.0;
     target_disturbed_ = ratio > config_.disturbance_ratio;
 
@@ -801,7 +822,7 @@ LandingCommand LandingAutopilot::deorbit_command(const State& state,
                                                 const Config& config, double now) {
     LandingCommand cmd{};
     const RTFrame f = target_rt_frame(state, bin, target_body_, now);
-    const double v_rot_local = bin.omega() * f.r;
+    const double v_rot_local = bin.body_spin_rate(target_body_) * f.r;
     const double dphi = pad_angle_error(state, bin, target_body_, now);
     const double align = -config_.deorbit_align_gain * f.r * dphi;
     const double damp = -config_.deorbit_align_damp * (f.v_t - v_rot_local);
@@ -868,7 +889,7 @@ LandingCommand LandingAutopilot::brake_command(const State& state,
         // instead of forcing it down to the low hover speed; below the hover
         // altitude it fades to the small hand-off value so the terminal law
         // receives a manageable pad-relative tangential error.
-        const double omega = bin.omega();
+        const double omega = bin.body_spin_rate(target_body_);
         const double alt_pos = std::max(0.0, alt);
         double target_rel;
         if (alt_pos >= config_.brake_kill_ramp_alt) {

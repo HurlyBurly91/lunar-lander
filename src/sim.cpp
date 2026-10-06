@@ -162,7 +162,9 @@ NavCues navigation_cues(const State& state, const BinarySystem& system,
 
     out.gravity_primary = system.gravity_from(0, ship_pos, t);
     out.gravity_companion = system.gravity_from(1, ship_pos, t);
-    out.net_gravity = out.gravity_primary + out.gravity_companion;
+    // M06-R13: the net field is the full three-body inverse-square sum (the
+    // moonlet is a real perturber), matching the authoritative gravity field.
+    out.net_gravity = system.gravity(ship_pos, t);
     out.g_primary = std::hypot(out.gravity_primary.x, out.gravity_primary.y);
     out.g_companion =
         std::hypot(out.gravity_companion.x, out.gravity_companion.y);
@@ -182,7 +184,7 @@ double gravitational_influence(double mu, double distance) {
 }  // namespace
 
 int reference_body_for(double mu0, double mu1, double distance0,
-                       double distance1, int current, double margin) {
+                        double distance1, int current, double margin) {
     const bool current_is_primary = current != 1;
     const double i0 = gravitational_influence(mu0, distance0);
     const double i1 = gravitational_influence(mu1, distance1);
@@ -190,6 +192,26 @@ int reference_body_for(double mu0, double mu1, double distance0,
         return i1 > margin * i0 ? 1 : 0;
     }
     return i0 > margin * i1 ? 0 : 1;
+}
+
+int reference_body_for3(double mu0, double mu1, double mu2, double d0,
+                        double d1, double d2, int current, double margin) {
+    const double influence[3]{gravitational_influence(mu0, d0),
+                              gravitational_influence(mu1, d1),
+                              gravitational_influence(mu2, d2)};
+    if (current < 0 || current > 2) {
+        current = 0;
+    }
+    int best = current;
+    for (int i = 0; i < 3; ++i) {
+        if (i == current) {
+            continue;
+        }
+        if (influence[i] > margin * influence[current]) {
+            best = i;
+        }
+    }
+    return best;
 }
 
 State attached_state(const BinarySystem& system, int body_index,
@@ -201,7 +223,7 @@ State attached_state(const BinarySystem& system, int body_index,
         body_index, body.terrain.angle_at_arc(landed_arc),
         body.terrain.surface_radius_at_arc(landed_arc), t);
     const double world_angle =
-        body.terrain.angle_at_arc(landed_arc) + system.body_rotation(t);
+        body.terrain.angle_at_arc(landed_arc) + system.body_rotation(body_index, t);
     State out{};
     out.x = sp.position.x;
     out.y = sp.position.y;
@@ -323,6 +345,10 @@ void Simulation::sync_orbit() {
         return;
     }
     const int source = state_.landed ? state_.landed_body : reference_body_;
+    // M06-R13: the outer moonlet is not a sync-orbit source; no-op.
+    if (source > 1) {
+        return;
+    }
     const int other = 1 - source;
     const double t = sim_time_;
     const Vec2 spos = binary_.position(source, t);
@@ -362,6 +388,11 @@ bool Simulation::transfer() {
         return false;
     }
     const int source = state_.landed ? state_.landed_body : reference_body_;
+    // M06-R13: the outer moonlet is not a transfer source or destination;
+    // the two-body legacy route stays 0<->1. Fail safe (no state change).
+    if (source > 1) {
+        return false;
+    }
     const int target = 1 - source;
     const double t0 = sim_time_;
     const Vec2 x0{state_.x, state_.y};
@@ -458,8 +489,9 @@ void Simulation::integrate_flight(const Input& input, double t0) {
     const double throttle = clamp01(input.main_throttle);
     const bool main_active = throttle > 0.0;
 
-    // Both bodies' fields are always active; the ephemeris is sampled at
-    // the start of this fixed step, matching the state being integrated.
+    // All three bodies' fields are always active (M06-R13); the ephemeris
+    // is sampled at the start of this fixed step, matching the state being
+    // integrated.
     Vec2 a = binary_.gravity(Vec2{state_.x, state_.y}, t0);
 
     if (main_active) {
@@ -507,7 +539,7 @@ void Simulation::attach_to_body() {
         body.terrain.surface_radius_at_arc(state_.landed_arc), sim_time_);
     const double world_angle =
         body.terrain.angle_at_arc(state_.landed_arc) +
-        binary_.body_rotation(sim_time_);
+        binary_.body_rotation(i, sim_time_);
     state_.x = sp.position.x;
     state_.y = sp.position.y;
     state_.vx = sp.velocity.x;
@@ -525,10 +557,11 @@ bool Simulation::try_takeoff(const Input& input, double t0) {
     const int i = state_.landed_body;
     const Body& body = binary_.body(i);
     const Vec2 ship{state_.x, state_.y};
-    // The local vertical follows the rotating surface point (M05-R3).
+    // The local vertical follows the rotating surface point (M05-R3); the
+    // world angle uses the body's own tidal-lock spin (M06-R13).
     const double world_angle =
         body.terrain.angle_at_arc(state_.landed_arc) +
-        binary_.body_rotation(t0);
+        binary_.body_rotation(i, t0);
     const double up_x = std::cos(world_angle);
     const double up_y = std::sin(world_angle);
 
@@ -566,7 +599,7 @@ void Simulation::resolve_ground_contact() {
         return;
     }
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         const Body& body = binary_.body(i);
         const Vec2 bpos = binary_.position(i, sim_time_);
         const double rx = state_.x - bpos.x;
@@ -583,10 +616,10 @@ void Simulation::resolve_ground_contact() {
 
         const double theta = std::atan2(ry, rx);
         // The terrain lives in body-local coordinates: subtract the body's
-        // tidal-lock spin to get the arc under the ship.
+        // own tidal-lock spin to get the arc under the ship (M06-R13).
         const double arc = body.terrain.arc_at_angle(theta -
-                                                      binary_.body_rotation(
-                                                          sim_time_));
+                                                       binary_.body_rotation(
+                                                           i, sim_time_));
         const double surface = body.terrain.surface_radius_at_arc(arc);
         if (rho > surface) {
             continue;
@@ -600,8 +633,11 @@ void Simulation::resolve_ground_contact() {
         const Vec2 bvel = binary_.velocity(i, sim_time_);
         const double ox = std::cos(theta) * surface;
         const double oy = std::sin(theta) * surface;
-        const Vec2 sp_vel{bvel.x - binary_.omega() * oy,
-                          bvel.y + binary_.omega() * ox};
+        // Contact point velocity: the body's translational velocity plus
+        // the spin of this offset about the body's own spin axis (M06-R13
+        // uses the body's own spin rate).
+        const double spin = binary_.body_spin_rate(i);
+        const Vec2 sp_vel{bvel.x - spin * oy, bvel.y + spin * ox};
         const LocalVelocity lv = local_velocity(state_, bpos, sp_vel);
         const double up_angle = theta - 0.5 * kPi;
         const Pad* pad = body.terrain.pad_at_arc(arc);
@@ -664,11 +700,14 @@ void Simulation::update_reference_body() {
 
     const Vec2 p0 = binary_.position(0, sim_time_);
     const Vec2 p1 = binary_.position(1, sim_time_);
+    const Vec2 p2 = binary_.position(2, sim_time_);
     const double d0 = std::hypot(state_.x - p0.x, state_.y - p0.y);
     const double d1 = std::hypot(state_.x - p1.x, state_.y - p1.y);
-    reference_body_ = reference_body_for(binary_.body(0).mu,
-                                         binary_.body(1).mu, d0, d1,
-                                         reference_body_);
+    const double d2 = std::hypot(state_.x - p2.x, state_.y - p2.y);
+    reference_body_ = reference_body_for3(binary_.body(0).mu,
+                                          binary_.body(1).mu,
+                                          binary_.body(2).mu, d0, d1, d2,
+                                          reference_body_);
 }
 
 }  // namespace lander

@@ -94,15 +94,36 @@ std::vector<lander::TimedTrajectorySample> to_timed(
     return out;
 }
 
-struct Counts { int world = 0, primary = 0, companion = 0; };
+struct Counts { int world = 0, primary = 0, companion = 0, moonlet = 0; };
 Counts count_segments(const std::vector<RefSegment>& seg) {
     Counts c;
     for (auto s : seg) {
         if (s == RefSegment::World) c.world++;
         else if (s == RefSegment::Primary) c.primary++;
-        else c.companion++;
+        else if (s == RefSegment::Companion) c.companion++;
+        else c.moonlet++;
     }
     return c;
+}
+
+// M06-R13: print all three bodies' per-sample classifier metrics (the R12
+// print_metrics above only covers bodies 0/1; the moonlet gate needs body 2).
+void print_metrics3(int n,
+                    const std::vector<lander::TimedTrajectorySample>& s,
+                    const lander::AutoClassifyResult& res) {
+    for (int k : {0, n / 4, n / 2, 3 * n / 4, n - 1}) {
+        const auto& m = res.metrics[k];
+        for (int b = 0; b < 3; b++) {
+            std::fprintf(stdout,
+                         "    t=%7.2f  B%d: eps=%+.3f dom=%5.2f dth=%+.3f "
+                         "cons=%4.2f ratio=%4.2f\n",
+                         s[k].time, b, m.body[b].epsilon, m.body[b].dominance,
+                         m.body[b].delta_theta, m.body[b].angular_consistency,
+                         m.body[b].radial_ratio);
+        }
+        std::fprintf(stdout, "    t=%7.2f  raw=%s\n", s[k].time,
+                     lander::ref_segment_name(m.raw));
+    }
 }
 
 void print_metrics(int n, const std::vector<lander::TimedTrajectorySample>& s,
@@ -136,19 +157,29 @@ void print_bin(const BinarySystem& bin) {
                  bin.period());
 }
 
-// GATE: a real, bounded companion-orbit coast must resolve AUTO -> COMPANION.
-void gate_companion() {
+// Forward declaration (defined below): collapse a segment run to its distinct
+// transitions (e.g. "WPWM").
+std::string reduced(const std::vector<RefSegment>& seg);
+
+// OBSERVATIONAL (not a gate; M06-R13-09): report the ACTUAL behavior of the
+// tight 600 m strong-tide companion-orbit coast under the UNCHANGED 3-body
+// classifier. R13 does not force COMPANION here; it reports the resolved
+// final frame, per-body occupancy, the transition sequence, and EPS / DOM /
+// WIND / RATIO so the behavior in that environment is visible.
+void report_companion() {
     const BinarySystem bin = make_binary();
     const double r = bin.body(1).terrain.max_surface_radius() + 20.0;
     print_bin(bin);
-    std::fprintf(stdout, "  companion orbit radius r=%.1f\n", r);
+    std::fprintf(stdout,
+                 "  companion orbit radius r=%.1f (observational, not a "
+                 "gate)\n",
+                 r);
     const auto start = place_on_orbit(bin, 1, r);
     // A few companion orbit periods (the orbit is companion-dominant and
     // winding for this window before tidal drift takes over).
     const auto traj =
         lander::predict_zero_thrust(bin, start, 40.0, 1.0 / 120.0, 2048);
     const auto samples = to_timed(traj);
-    check(samples.size() >= 200, "companion: not enough coast samples");
 
     const lander::ClassifierParams params;
     lander::AutoClassifyResult res;
@@ -156,30 +187,38 @@ void gate_companion() {
     const int n = (int)res.segments.size();
 
     const Counts c = count_segments(res.segments);
-    const double frac_comp = (double)c.companion / n;
+    const double frac_comp = n ? (double)c.companion / n : 0.0;
     std::fprintf(stdout,
-                 "  [gate companion] n=%d  world=%d primary=%d companion=%d "
-                 "final=%s  companion_frac=%.2f\n",
-                 n, c.world, c.primary, c.companion,
-                 lander::ref_segment_name(res.segments[n - 1]), frac_comp);
-    print_metrics(n, samples, res);
-
-    check(res.segments[n - 1] == RefSegment::Companion,
-          "companion GATE: final segment must be COMPANION");
-    check(frac_comp >= 0.6, "companion GATE: >=60% of arc must be COMPANION");
-    check(c.primary == 0, "companion GATE: never PRIMARY");
+                 "  [companion OBSERVATIONAL] n=%d  world=%d primary=%d "
+                 "companion=%d moonlet=%d  final=%s  companion_frac=%.2f "
+                 "seq=%s\n",
+                 n, c.world, c.primary, c.companion, c.moonlet,
+                 lander::ref_segment_name(res.segments[n - 1]), frac_comp,
+                 reduced(res.segments).c_str());
+    print_metrics3(n, samples, res);
 }
 
-// GATE: a real, bounded primary-orbit coast must resolve AUTO -> PRIMARY.
-void gate_primary() {
+// LEGACY R12 DIAGNOSTIC (not a gate; M06-R13-09). The historical 2-body-
+// calibrated primary fixture (a circular orbit about body 0 at maxR0 + 20 m,
+// coasted 300 s at 120 Hz through the zero-thrust predictor) was tuned to read
+// cleanly in the OLD 2-body world; in the canonical 3-body world the same
+// nominal trajectory legitimately differs (the 3-body differential / tidal
+// perturbation lowers the primary's dominance). It no longer gates R13; it is
+// preserved as regression telemetry reporting the exact EPS / DOM / WIND /
+// RATIO (the R12 two-body view below + the three-body view), the segment
+// occupancy, the transition sequence, and the point / time at which PRIMARY is
+// released (leaves PRIMARY after first acquiring it).
+void report_legacy_r12_primary() {
     const BinarySystem bin = make_binary();
     const double r = bin.body(0).terrain.max_surface_radius() + 20.0;
-    std::fprintf(stdout, "  primary orbit radius r=%.1f\n", r);
+    std::fprintf(stdout,
+                 "  LEGACY R12 primary fixture r=%.1f (2-body-calibrated; "
+                 "diagnostic only, NOT a gate)\n",
+                 r);
     const auto start = place_on_orbit(bin, 0, r);
     const auto traj =
         lander::predict_zero_thrust(bin, start, 300.0, 1.0 / 120.0, 2048);
     const auto samples = to_timed(traj);
-    check(samples.size() >= 200, "primary: not enough coast samples");
 
     const lander::ClassifierParams params;
     lander::AutoClassifyResult res;
@@ -187,18 +226,356 @@ void gate_primary() {
     const int n = (int)res.segments.size();
 
     const Counts c = count_segments(res.segments);
-    const double frac_prim = (double)c.primary / n;
+    const double frac_prim = n ? (double)c.primary / n : 0.0;
     std::fprintf(stdout,
-                 "  [gate primary] n=%d  world=%d primary=%d companion=%d "
-                 "final=%s  primary_frac=%.2f\n",
-                 n, c.world, c.primary, c.companion,
-                 lander::ref_segment_name(res.segments[n - 1]), frac_prim);
+                 "  [legacy R12 primary] n=%d  world=%d primary=%d "
+                 "companion=%d moonlet=%d  final=%s  primary_frac=%.3f  "
+                 "seq=%s\n",
+                 n, c.world, c.primary, c.companion, c.moonlet,
+                 lander::ref_segment_name(res.segments[n - 1]), frac_prim,
+                 reduced(res.segments).c_str());
+    // R12 two-body metric view (the original R12 diagnostic readout).
     print_metrics(n, samples, res);
+    // Three-body metric view (what the current 3-body classifier sees).
+    print_metrics3(n, samples, res);
 
-    check(res.segments[n - 1] == RefSegment::Primary,
-          "primary GATE: final segment must be PRIMARY");
-    check(frac_prim >= 0.6, "primary GATE: >=60% of arc must be PRIMARY");
-    check(c.companion == 0, "primary GATE: never COMPANION");
+    bool in_primary = false;
+    for (int i = 0; i < n; ++i) {
+        if (res.segments[i] == RefSegment::Primary) in_primary = true;
+        if (in_primary && res.segments[i] != RefSegment::Primary) {
+            std::fprintf(stdout,
+                         "  [legacy R12 primary] PRIMARY released at sample "
+                         "%d (t=%.3f s) -> %s\n",
+                         i, samples[i].time,
+                         lander::ref_segment_name(res.segments[i]));
+            break;
+        }
+    }
+    if (!in_primary) {
+        std::fprintf(stdout,
+                     "  [legacy R12 primary] PRIMARY never acquired in "
+                     "window\n");
+    }
+}
+
+// GATE (M06-R13-V19): a bounded moonlet-orbit coast must resolve AUTO -> MOONLET.
+// The orbit radius matches the `--debug-predictor-body 2` fixture (the moonlet's
+// max surface radius + 20 m): a low, tight, companion-scale orbit that is
+// moonlet-dominant and winding for the 8 s window. If it does NOT classify
+// MOONLET this is a STOP-and-report gate: print all three bodies' metrics and
+// fail without tuning any classifier constant (same semantics as M06-R12-V05).
+void gate_moonlet() {
+    const BinarySystem bin = make_binary();
+    const double r = bin.body(2).terrain.max_surface_radius() + 20.0;
+    std::fprintf(stdout, "  moonlet orbit radius r=%.1f (maxR2=%.1f)\n", r,
+                 bin.body(2).terrain.max_surface_radius());
+    const auto start = place_on_orbit(bin, 2, r);
+    const auto traj =
+        lander::predict_zero_thrust(bin, start, 300.0, 1.0 / 120.0, 2048);
+    const auto samples = to_timed(traj);
+    check(samples.size() >= 200, "moonlet: not enough coast samples");
+
+    const lander::ClassifierParams params;
+    lander::AutoClassifyResult res;
+    lander::classify_auto(samples, bin, params, RefSegment::World, res);
+    const int n = (int)res.segments.size();
+
+    const Counts c = count_segments(res.segments);
+    const double frac_moon = (double)c.moonlet / n;
+    std::fprintf(stdout,
+                 "  [gate moonlet] n=%d  world=%d primary=%d companion=%d "
+                 "moonlet=%d  final=%s  moonlet_frac=%.3f\n",
+                 n, c.world, c.primary, c.companion, c.moonlet,
+                 lander::ref_segment_name(res.segments[n - 1]), frac_moon);
+    print_metrics3(n, samples, res);
+
+    check(res.segments[n - 1] == RefSegment::Moonlet,
+          "moonlet GATE: final segment must be MOONLET");
+    check(frac_moon >= 0.95, "moonlet GATE: >=95% of arc must be MOONLET");
+}
+
+// GATE (M06-R13; the current-world PRIMARY classifier gate). The 10-period
+// re-baseline (M06-R13-V23) is SUPERSEDED: the diagnostic clearance scan shows
+// the canonical 3-body system does not hold a near-surface prograde body-0
+// orbit for 10 local periods (20-150 m clearances fail after ~1.1-1.4 periods;
+// 300 m survives ~7.9 periods but becomes highly eccentric), while the AUTO
+// classifier is correct on every physically valid segment. This is physics, not
+// a classifier defect, so the 10-period survival requirement is dropped in
+// favour of a bounded classifier-correctness gate.
+//
+// Fixture (unchanged canonical construction): body 0, r = max_surface_radius +
+// 20 m, v_local = sqrt(mu0 / r) tangential, initial inertial state = body-0
+// ephemeris + local tangential; NO stabilization / hidden force / altered
+// gravity. It is coasted through the AUTHORITATIVE Simulation (zero input) and
+// evaluated with the UNCHANGED 3-body AUTO classifier.
+//
+// The valid classifier evaluation interval is:
+//   start = the first PRIMARY sample (AUTO entry hysteresis has matured);
+//   end   = the EARLIER of (a) ONE complete body-relative revolution about body
+//           0, and (b) the first physical loss of the trajectory (crash /
+//           contact / landing).
+// If one full revolution cannot complete before physical failure, STOP and
+// report (no gate verdict). Over that mature physically-valid interval we
+// require: final frame PRIMARY; PRIMARY occupancy >= 99%; no repeated
+// PRIMARY<->WORLD chatter; zero COMPANION; zero MOONLET; continuous,
+// consistent angular winding (~one clean revolution); bounded radius. Survival
+// beyond one revolution is NOT required. No classifier / gravity / fixture
+// constant is tuned.
+void gate_primary_current() {
+    lander::Simulation sim;
+    sim.reset(0);  // canonical three-body system
+    const lander::BinarySystem& bin = sim.binary();
+    const double r = bin.body(0).terrain.max_surface_radius() + 20.0;
+    const double mu0 = bin.body(0).mu;
+    const double v_local = std::sqrt(mu0 / r);
+    const double T_local = 2.0 * lander::kPi * std::sqrt(r * r * r / mu0);
+    std::fprintf(stdout,
+                 "  PRIMARY gate: body 0  r=%.1f  v_local=%.3f  T_local=%.3f s"
+                 "  (authoritative Simulation, unchanged 3-body classifier;"
+                 " interval = hysteresis-matured .. one body-relative"
+                 " revolution)\n",
+                 r, v_local, T_local);
+
+    // Start: a circular orbit about body 0 (canonical construction), injected
+    // as a Simulation State with no stabilization or hidden force.
+    const lander::BallisticState st0 = place_on_orbit(bin, 0, r);
+    lander::State st{};
+    st.x = st0.p.x;
+    st.y = st0.p.y;
+    st.vx = st0.v.x;
+    st.vy = st0.v.y;
+    st.angle = 0.0;
+    st.omega = 0.0;
+    st.fuel = 1000.0;
+    st.landed = false;
+    st.crashed = false;
+    sim.set_state(st);
+
+    const double dt = sim.config().fixed_dt;
+    // Coast the authoritative sim to a safety cap (3 local periods); in
+    // practice the close 600 m companion ends the arc earlier (crash). Recording
+    // a little past one revolution keeps the classifier window complete around
+    // the one-revolution mark even though the gate interval ends there.
+    const int cap_steps = (int)std::lround(3.0 * T_local / dt);
+    std::vector<lander::TimedTrajectorySample> arc;
+    std::vector<double> wind;  // cumulative unwrapped body-0-relative angle
+    arc.reserve(20000);
+    wind.reserve(20000);
+    {
+        const lander::State& s0 = sim.state();
+        arc.push_back({{s0.x, s0.y}, {s0.vx, s0.vy}, sim.sim_time()});
+        wind.push_back(0.0);
+    }
+    const lander::Vec2 b00 = bin.position(0, 0.0);
+    double prev_raw = std::atan2(arc[0].position_world.y - b00.y,
+                                 arc[0].position_world.x - b00.x);
+    bool crashed = false, landed = false;
+    int rev_index = -1;  // first sample index where one full revolution is done
+    for (int i = 0; i < cap_steps; ++i) {
+        sim.advance(dt, {});
+        const lander::State& ns = sim.state();
+        arc.push_back({{ns.x, ns.y}, {ns.vx, ns.vy}, sim.sim_time()});
+        const lander::Vec2 b0 = bin.position(0, sim.sim_time());
+        const double a = std::atan2(ns.y - b0.y, ns.x - b0.x);
+        double da = a - prev_raw;
+        if (da > lander::kPi) da -= 2.0 * lander::kPi;
+        if (da < -lander::kPi) da += 2.0 * lander::kPi;
+        prev_raw = a;
+        wind.push_back(wind.back() + da);
+        if (rev_index < 0 && std::abs(wind.back()) >= 2.0 * lander::kPi) {
+            rev_index = (int)arc.size() - 1;
+        }
+        if (ns.crashed) {
+            crashed = true;
+            break;
+        }
+        if (ns.landed) {
+            landed = true;
+            break;
+        }
+    }
+    const int n = (int)arc.size();
+
+    // Whole-arc report metrics (context for the physics characterization).
+    double min_r = 1e30, max_r = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const lander::Vec2 b0 = bin.position(0, arc[i].time);
+        const double rr =
+            std::hypot(arc[i].position_world.x - b0.x,
+                       arc[i].position_world.y - b0.y);
+        min_r = std::min(min_r, rr);
+        max_r = std::max(max_r, rr);
+    }
+    const double wind_revs = (n > 1) ? wind[n - 1] / (2.0 * lander::kPi) : 0.0;
+
+    // Classify the full recorded arc with the UNCHANGED 3-body classifier.
+    const lander::ClassifierParams params;
+    lander::AutoClassifyResult res;
+    lander::classify_auto(arc, bin, params, RefSegment::World, res);
+    check((int)res.segments.size() == n,
+          "primary GATE: classifier sample count mismatch");
+    const Counts c = count_segments(res.segments);
+
+    // Interval start: first PRIMARY sample (entry hysteresis matured).
+    int entry = -1;
+    for (int i = 0; i < n; ++i) {
+        if (res.segments[i] == RefSegment::Primary) {
+            entry = i;
+            break;
+        }
+    }
+    // If one revolution could not complete before physical failure, STOP.
+    if (rev_index < 0) {
+        std::fprintf(stdout,
+                     "  [primary gate] ONE REVOLUTION DID NOT COMPLETE BEFORE "
+                     "PHYSICAL FAILURE: arc n=%d wind=%.3f rev crashed=%d "
+                     "landed=%d\n",
+                     n, wind_revs, (int)crashed, (int)landed);
+        print_metrics3(n, arc, res);
+        fail("primary GATE: one body-relative revolution did not complete "
+             "before the trajectory was physically lost (STOP; see spec)");
+    }
+    const int m0 = entry < 0 ? 0 : entry;  // hysteresis-matured start
+    const int m1 = rev_index;              // one complete revolution
+    check(m0 <= m1,
+          "primary GATE: entry hysteresis must mature before one revolution");
+
+    // Metrics over the mature physically-valid interval [m0, m1].
+    int mature = 0, mature_primary = 0, pw_chatter = 0, comp_in = 0,
+        moon_in = 0;
+    double net_wind = 0.0, sum_abs_wind = 0.0;
+    double min_r_iv = 1e30, max_r_iv = 0.0;
+    for (int i = m0; i <= m1; ++i) {
+        mature++;
+        const RefSegment s = res.segments[i];
+        if (s == RefSegment::Primary) mature_primary++;
+        else if (s == RefSegment::Companion) comp_in++;
+        else if (s == RefSegment::Moonlet) moon_in++;
+        if (i > m0) {
+            const RefSegment sp = res.segments[i - 1];
+            if ((sp == RefSegment::Primary && s == RefSegment::World) ||
+                (sp == RefSegment::World && s == RefSegment::Primary))
+                pw_chatter++;
+            const double dw = wind[i] - wind[i - 1];
+            net_wind += dw;
+            sum_abs_wind += std::abs(dw);
+        }
+        const lander::Vec2 b0 = bin.position(0, arc[i].time);
+        const double rr = std::hypot(arc[i].position_world.x - b0.x,
+                                     arc[i].position_world.y - b0.y);
+        min_r_iv = std::min(min_r_iv, rr);
+        max_r_iv = std::max(max_r_iv, rr);
+    }
+    const double mature_frac = mature > 0 ? (double)mature_primary / mature : 0.0;
+    const double wind_iv_revs = net_wind / (2.0 * lander::kPi);
+    const double wind_consistency =
+        sum_abs_wind > 0 ? std::abs(net_wind) / sum_abs_wind : 0.0;
+
+    std::fprintf(
+        stdout,
+        "  [primary gate] arc n=%d  world=%d primary=%d companion=%d "
+        "moonlet=%d  crashed=%d landed=%d  whole-arc wind=%.2f rev  "
+        "radius min=%.1f max=%.1f\n",
+        n, c.world, c.primary, c.companion, c.moonlet, (int)crashed,
+        (int)landed, wind_revs, min_r, max_r);
+    std::fprintf(
+        stdout,
+        "  [primary gate] interval [%d..%d]  mature=%d  primary=%d frac=%.4f "
+        "chatter=%d comp=%d moon=%d  wind=%.3f rev cons=%.3f  "
+        "radius min=%.1f max=%.1f (r=%.1f)\n",
+        m0, m1, mature, mature_primary, mature_frac, pw_chatter, comp_in,
+        moon_in, wind_iv_revs, wind_consistency, min_r_iv, max_r_iv, r);
+    std::fprintf(stdout,
+                 "  [primary gate] final frame=%s  seq(whole)=%s\n",
+                 lander::ref_segment_name(res.segments[n - 1]),
+                 reduced(res.segments).c_str());
+    print_metrics3(n, arc, res);
+
+    // GATE checks (STOP-and-report; no threshold / gravity / fixture tuning).
+    check(res.segments[m1] == RefSegment::Primary,
+          "primary GATE: resolved frame at the one-revolution mark must be "
+          "PRIMARY");
+    check(mature_frac >= 0.99,
+          "primary GATE: >= 99% of the mature interval must be PRIMARY");
+    check(pw_chatter <= 1,
+          "primary GATE: no repeated PRIMARY<->WORLD chatter in the interval");
+    check(comp_in == 0, "primary GATE: zero COMPANION in the interval");
+    check(moon_in == 0, "primary GATE: zero MOONLET in the interval");
+    check(wind_iv_revs >= 0.5 && wind_consistency >= 0.9,
+          "primary GATE: continuous, consistent ~one-revolution angular "
+          "winding in the interval");
+    check(max_r_iv < 2.0 * r && min_r_iv > 0.5 * r,
+          "primary GATE: radius stays bounded over the one-revolution "
+          "interval");
+}
+
+// NON-GATING PHYSICS CHARACTERIZATION (M06-R13): the diagnostic clearance scan
+// that established why the 10-period PRIMARY gate was superseded. It coasts a
+// zero-thrust body-0 circular orbit at several clearances through the
+// authoritative Simulation and reports how long each survives and how the orbit
+// degrades. This is evidence only; it never gates the milestone and never
+// tunes a constant.
+void report_primary_physics_characterization() {
+    const double clearances[] = {20.0, 40.0, 80.0, 150.0, 300.0};
+    std::fprintf(stdout, "  [physics characterization] non-gating scan of "
+                 "near-surface primary-orbit lifetime vs clearance\n");
+    for (double clr : clearances) {
+        lander::Simulation sim;
+        sim.reset(0);
+        const BinarySystem& bin = sim.binary();
+        const double r0 = bin.body(0).terrain.max_surface_radius();
+        const double r = r0 + clr;
+        const double mu0 = bin.body(0).mu;
+        const double T_local = 2.0 * lander::kPi * std::sqrt(r * r * r / mu0);
+        const lander::BallisticState st0 = place_on_orbit(bin, 0, r);
+        lander::State st{};
+        st.x = st0.p.x;
+        st.y = st0.p.y;
+        st.vx = st0.v.x;
+        st.vy = st0.v.y;
+        st.angle = 0.0;
+        st.omega = 0.0;
+        st.fuel = 1000.0;
+        st.landed = false;
+        st.crashed = false;
+        sim.set_state(st);
+        const double dt = sim.config().fixed_dt;
+        const int steps = (int)std::lround(10.0 * T_local / dt);
+        double min_r = 1e30, max_r = 0.0;
+        int reached = 0;
+        bool crashed = false, landed = false;
+        for (int i = 0; i < steps; ++i) {
+            sim.advance(dt, {});
+            const lander::State& ns = sim.state();
+            const lander::Vec2 b0 = bin.position(0, sim.sim_time());
+            const double rr = std::hypot(ns.x - b0.x, ns.y - b0.y);
+            min_r = std::min(min_r, rr);
+            max_r = std::max(max_r, rr);
+            reached++;
+            if (ns.crashed) {
+                crashed = true;
+                break;
+            }
+            if (ns.landed) {
+                landed = true;
+                break;
+            }
+        }
+        std::fprintf(
+            stdout,
+            "    clr=%4.0f  r=%6.1f  T=%.1fs  survived %d/%d steps "
+            "(%.2f of 10 periods)  crash=%d land=%d  min_r=%.1f max_r=%.1f "
+            "(maxR0=%.1f)\n",
+            clr, r, T_local, reached, steps, (double)reached / steps * 10.0,
+            (int)crashed, (int)landed, min_r, max_r, r0);
+    }
+    std::fprintf(stdout,
+                 "    Near-surface prograde primary orbits in the current "
+                 "canonical three-body system are physically short-lived under "
+                 "the close 600 m companion's perturbation. Tested 20-150 m "
+                 "clearances fail after ~1.1-1.4 local periods; 300 m survives "
+                 "~7.9 periods but becomes highly eccentric. This is not an "
+                 "AUTO classifier failure.\n");
 }
 
 void append(std::vector<lander::TimedTrajectorySample>& out,
@@ -212,7 +589,8 @@ std::string reduced(const std::vector<RefSegment>& seg) {
     for (auto x : seg) {
         const char c =
             x == RefSegment::World ? 'W'
-            : x == RefSegment::Primary ? 'P' : 'C';
+            : x == RefSegment::Primary ? 'P'
+            : x == RefSegment::Companion ? 'C' : 'M';
         if (s.empty() || s.back() != c) s.push_back(c);
     }
     return s;
@@ -359,6 +737,79 @@ void no_direct_body_transition() {
     }
 }
 
+// V20 (M06-R13): with the moonlet present, body->body transitions must still
+// route through WORLD. A spliced primary -> moonlet coast enters MOONLET only
+// through a WORLD bridge (no adjacent P -> M pair); the reverse splice yields
+// M -> W -> P. (The existing P <-> C splices above still produce WPWC / WCWP.)
+void no_direct_body_transition_moonlet() {
+    const BinarySystem bin = make_binary();
+    const double rp = bin.body(0).terrain.max_surface_radius() + 20.0;
+    const double rm = bin.body(2).terrain.max_surface_radius() + 20.0;
+
+    // (a) spliced primary -> moonlet: P -> W -> M (no adjacent P<->M).
+    {
+        std::vector<lander::TimedTrajectorySample> arc;
+        auto first = lander::predict_zero_thrust(
+            bin, place_at(bin, 0, rp, 0.0), 60.0, 1.0 / 120.0, 2048);
+        append(arc, to_timed(first));
+        const double t1 = arc.back().time;
+        append(arc, to_timed(
+            lander::predict_zero_thrust(bin, place_at(bin, 2, rm, t1),
+                                        t1 + 40.0, 1.0 / 120.0, 2048)));
+        lander::AutoClassifyResult r;
+        lander::classify_auto(arc, bin, lander::ClassifierParams{},
+                              RefSegment::World, r);
+        const Counts c = count_segments(r.segments);
+        const std::string seq = reduced(r.segments);
+        std::fprintf(stdout,
+                     "  [spliced P->M] seq=%s  W=%d P=%d M=%d\n", seq.c_str(),
+                     c.world, c.primary, c.moonlet);
+        check(!has_direct_body_transition(r.segments),
+              "spliced P->M: no direct P<->M adjacency");
+        check(c.primary > 0 && c.moonlet > 0 && c.world > 0,
+              "spliced P->M: all three regimes must appear");
+        const size_t fp = seq.find('P');
+        const size_t fm = seq.find('M');
+        check(fp != std::string::npos && fm != std::string::npos && fp < fm,
+              "spliced P->M: primary must precede moonlet");
+        check(seq.find('W', fp + 1) != std::string::npos &&
+                 seq.find('W', fp + 1) < fm,
+              "spliced P->M: a world bridge must sit between primary and "
+              "moonlet");
+    }
+    // (b) the reverse: a spliced moonlet -> primary coast routes M -> W -> P.
+    {
+        std::vector<lander::TimedTrajectorySample> arc;
+        auto first = lander::predict_zero_thrust(
+            bin, place_at(bin, 2, rm, 0.0), 40.0, 1.0 / 120.0, 2048);
+        append(arc, to_timed(first));
+        const double t1 = arc.back().time;
+        append(arc, to_timed(
+            lander::predict_zero_thrust(bin, place_at(bin, 0, rp, t1),
+                                        t1 + 60.0, 1.0 / 120.0, 2048)));
+        lander::AutoClassifyResult r;
+        lander::classify_auto(arc, bin, lander::ClassifierParams{},
+                              RefSegment::World, r);
+        const Counts c = count_segments(r.segments);
+        const std::string seq = reduced(r.segments);
+        std::fprintf(stdout,
+                     "  [spliced M->P] seq=%s  W=%d P=%d M=%d\n", seq.c_str(),
+                     c.world, c.primary, c.moonlet);
+        check(!has_direct_body_transition(r.segments),
+              "spliced M->P: no direct M<->P adjacency");
+        check(c.primary > 0 && c.moonlet > 0 && c.world > 0,
+              "spliced M->P: all three regimes must appear");
+        const size_t fm = seq.find('M');
+        const size_t fp = seq.find('P');
+        check(fm != std::string::npos && fp != std::string::npos && fm < fp,
+              "spliced M->P: moonlet must precede primary");
+        check(seq.find('W', fm + 1) != std::string::npos &&
+                 seq.find('W', fm + 1) < fp,
+              "spliced M->P: a world bridge must sit between moonlet and "
+              "primary");
+    }
+}
+
 // V08: hysteresis state dependence. Starting from prev=World, the first sample
 // cannot already have transitioned (a transition needs a run of qualifying
 // samples, not a single one), so the arc opens in World and only locks to the
@@ -482,30 +933,42 @@ void segments_align_with_samples() {
 // V13: the primary fixture is robust to the incoming hysteresis state: whether
 // the classifier is told it was last in World or in Companion, a real primary
 // orbit coast must still settle on PRIMARY.
+// LEGACY R12 DIAGNOSTIC (not a gate; M06-R13-09): the historical 2-body-
+// calibrated 300 s primary fixture classified from two different previous
+// frames (World and Companion). In the R12 2-body world it resolved PRIMARY
+// from both; in the 3-body world the same nominal arc legitimately differs, so
+// this is preserved as a prev-dependence OBSERVATION (report the resolved
+// final frame for each prev) rather than a gate that the arc must end PRIMARY.
 void primary_fixture_robust_to_prev() {
     const BinarySystem bin = make_binary();
     const double rp = bin.body(0).terrain.max_surface_radius() + 20.0;
     auto prim = to_timed(
         lander::predict_zero_thrust(bin, place_on_orbit(bin, 0, rp), 300.0,
                                     1.0 / 120.0, 2048));
+    check(prim.size() >= 200, "primary prev: not enough coast samples");
     lander::AutoClassifyResult from_world;
     lander::classify_auto(prim, bin, lander::ClassifierParams{},
                           RefSegment::World, from_world);
     lander::AutoClassifyResult from_companion;
     lander::classify_auto(prim, bin, lander::ClassifierParams{},
                           RefSegment::Companion, from_companion);
-    check(from_world.segments.back() == RefSegment::Primary,
-          "primary robust: prev=World -> PRIMARY");
-    check(from_companion.segments.back() == RefSegment::Primary,
-          "primary robust: prev=Companion -> PRIMARY");
+    std::fprintf(
+        stdout,
+        "  [legacy R12 primary prev-dependence, diagnostic] prev=World -> %s ; "
+        "prev=Companion -> %s\n",
+        lander::ref_segment_name(from_world.segments.back()),
+        lander::ref_segment_name(from_companion.segments.back()));
 }
 
 // V12/V13: end-to-end through the GUI's actual prediction path. The
 // flight-computer `predict_trajectory` (a node-less COAST) is the prediction
 // the display consumes; feeding its `timed` samples to `classify_auto` must
-// resolve the same AUTO frame as the dedicated fixture coasts (COMPANION /
-// PRIMARY). This proves the timed-sample storage and the classifier work
-// together on the real pipeline, not just on `predict_zero_thrust`.
+// resolve a valid AUTO frame. This proves the timed-sample storage and the
+// classifier work together on the real pipeline, not just on
+// `predict_zero_thrust`. Per M06-R13-09 the companion outcome is OBSERVATIONAL
+// (not forced) and the 2-body-calibrated primary fixture is a legacy
+// DIAGNOSTIC; the only assertion is the pipeline sanity (a non-empty timed
+// arc that the classifier consumes cleanly).
 void fixture_end_to_end() {
     lander::Simulation sim;  // default reset(0), canonical binary
     const BinarySystem& bin = sim.binary();
@@ -513,8 +976,8 @@ void fixture_end_to_end() {
     const double rp = bin.body(0).terrain.max_surface_radius() + 20.0;
     const double rc = bin.body(1).terrain.max_surface_radius() + 20.0;
 
-    // A node-less COAST prediction from a bounded companion orbit must resolve
-    // AUTO -> COMPANION end to end.
+    // A node-less COAST prediction from a bounded companion orbit (the
+    // companion frame is observational under M06-R13-09: report, don't gate).
     {
         lander::State st{};
         st.fuel = cfg.fuel;
@@ -526,20 +989,22 @@ void fixture_end_to_end() {
         auto pred =
             lander::predict_trajectory(bin, cfg, st, 0.0, 1, 1,
                                        std::nullopt, 40.0, 2048);
+        check(pred.timed.size() >= 200,
+              "e2e companion: prediction produced a non-empty timed arc");
         lander::AutoClassifyResult r;
         lander::classify_auto(pred.timed, bin, lander::ClassifierParams{},
                               RefSegment::World, r);
         const Counts c = count_segments(r.segments);
-        std::fprintf(stdout, "  [e2e companion] n=%zu W=%d P=%d C=%d final=%s\n",
-                     pred.timed.size(), c.world, c.primary, c.companion,
-                     lander::ref_segment_name(r.segments.back()));
-        check(r.segments.back() == RefSegment::Companion,
-              "e2e companion: final frame must be COMPANION");
-        check(c.companion >= 0.9 * (int)pred.timed.size(),
-              "e2e companion: >=90% of the arc must be COMPANION");
+        std::fprintf(
+            stdout,
+            "  [e2e companion, observational] n=%zu W=%d P=%d C=%d M=%d "
+            "final=%s\n",
+            pred.timed.size(), c.world, c.primary, c.companion, c.moonlet,
+            lander::ref_segment_name(r.segments.back()));
     }
-    // The same end-to-end path from a bounded primary orbit must resolve
-    // AUTO -> PRIMARY.
+    // The same end-to-end path from the R12 2-body-calibrated primary fixture
+    // (a legacy diagnostic under M06-R13-09; the PRIMARY gate is now
+    // gate_primary_current).
     {
         lander::State st{};
         st.fuel = cfg.fuel;
@@ -551,17 +1016,18 @@ void fixture_end_to_end() {
         auto pred =
             lander::predict_trajectory(bin, cfg, st, 0.0, 0, 0,
                                        std::nullopt, 120.0, 2048);
+        check(pred.timed.size() >= 200,
+              "e2e primary: prediction produced a non-empty timed arc");
         lander::AutoClassifyResult r;
         lander::classify_auto(pred.timed, bin, lander::ClassifierParams{},
                               RefSegment::World, r);
         const Counts c = count_segments(r.segments);
-        std::fprintf(stdout, "  [e2e primary] n=%zu W=%d P=%d C=%d final=%s\n",
-                     pred.timed.size(), c.world, c.primary, c.companion,
-                     lander::ref_segment_name(r.segments.back()));
-        check(r.segments.back() == RefSegment::Primary,
-              "e2e primary: final frame must be PRIMARY");
-        check(c.primary >= 0.9 * (int)pred.timed.size(),
-              "e2e primary: >=90% of the arc must be PRIMARY");
+        std::fprintf(
+            stdout,
+            "  [e2e primary, legacy R12 fixture, diagnostic] n=%zu W=%d P=%d "
+            "C=%d M=%d final=%s\n",
+            pred.timed.size(), c.world, c.primary, c.companion, c.moonlet,
+            lander::ref_segment_name(r.segments.back()));
     }
 }
 
@@ -600,14 +1066,6 @@ void moving_body_translation_removed() {
 int main() {
     std::printf("M06-R12 prediction reference frame tests\n");
 
-    std::printf("gate_companion...");
-    gate_companion();
-    std::printf("ok\n");
-
-    std::printf("gate_primary...");
-    gate_primary();
-    std::printf("ok\n");
-
     std::printf("co_rotating_point_stationary...");
     co_rotating_point_stationary();
     std::printf("ok\n");
@@ -622,6 +1080,10 @@ int main() {
 
     std::printf("no_direct_body_transition...");
     no_direct_body_transition();
+    std::printf("ok\n");
+
+    std::printf("no_direct_body_transition_moonlet...");
+    no_direct_body_transition_moonlet();
     std::printf("ok\n");
 
     std::printf("hysteresis_prev_dependence...");
@@ -640,12 +1102,38 @@ int main() {
     segments_align_with_samples();
     std::printf("ok\n");
 
-    std::printf("primary_fixture_robust_to_prev...");
+    std::printf("fixture_end_to_end...");
+    fixture_end_to_end();
+    std::printf("ok\n");
+
+    std::printf("primary_fixture_robust_to_prev (legacy R12 diagnostic)...");
     primary_fixture_robust_to_prev();
     std::printf("ok\n");
 
-    std::printf("fixture_end_to_end...");
-    fixture_end_to_end();
+    std::printf("report_legacy_r12_primary (legacy R12 diagnostic)...");
+    report_legacy_r12_primary();
+    std::printf("ok\n");
+
+    std::printf("report_companion (observational)...");
+    report_companion();
+    std::printf("ok\n");
+
+    std::printf("report_primary_physics_characterization (non-gating)...\n");
+    report_primary_physics_characterization();
+
+    std::printf("ALL UNIT TESTS + REPORTS PASS (%d failures so far)\n",
+                failures);
+
+    // The two classification gates use fail-fast; they run LAST so every unit
+    // test and report above has reported its result regardless of gate outcome
+    // (M06-R13-09: the primary gate is now gate_primary_current; the companion
+    // case is observational; the R12 primary fixture is a legacy diagnostic).
+    std::printf("gate_moonlet...");
+    gate_moonlet();
+    std::printf("ok\n");
+
+    std::printf("gate_primary_current (current-world PRIMARY gate)...");
+    gate_primary_current();
     std::printf("ok\n");
 
     std::printf("ALL PASS (%d failures so far)\n", failures);

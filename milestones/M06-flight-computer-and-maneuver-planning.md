@@ -151,6 +151,79 @@ Committed and pushed to `origin`. Only the human visual pass
 (`M06-R12-H01` / `M06-R12-H02`) remains open (alongside the still-open
 `M06-R11-H01` and `M06-R7-H01`); M06 is NOT closed.
 
+`M06-R13` extends the two-body moon system into a fixed three-body
+hierarchical (Jacobi) system by adding body 2 = OUTER MOONLET. This is the
+first M06 hardening pass that intentionally changes the canonical gravity /
+ephemeris model (superseding the frozen-physics scope of R8-R12, notably
+`M06-R12-P09`, per the explicit user request). The inner 0/1 pair keeps
+EXACTLY the old M05 relative two-body motion about its barycentre (separation
+600 m; same angular rate / period); the outer pair (inner-pair barycentre,
+body 2) orbits the total barycentre (at the origin) on a fixed 1200 m circle
+starting at pi/2 (`omega_outer = sqrt((mu0+mu1+mu2)/1200^3)`,
+`T_outer ~= 610.13 s`). Body 2 has the companion's scale (`R2 = R1 = R0/9`,
+`mu2 = mu1 = mu0/81`) with a distinct salted terrain seed. All three bodies'
+gravity fields are always active on the spacecraft in the one global inertial
+frame (no SOI / patched conics / stabilization); tidal locking is per-body
+(bodies 0/1 at the inner rate, body 2 at the outer rate). The contract loop
+stays exactly 0 <-> 1 (body 2 is never a contract destination); legacy
+transfer / sync routes from body 2 fail safely (no new three-body transfer
+algorithm; TFD-1 / TFD-2 stay open). The M06-R12 display-frame layer is
+preserved and extended: F9 = MOONLET fixed frame, a three-body AUTO
+classifier (all R12 thresholds / hysteresis unchanged; body->body transitions
+always route through World), three-body debug-panel readouts, and a new
+`--debug-predictor-body 0|1|2` predictor-fixture selector. 23 automated
+tests + 3 human gates; the 10-outer-period zero-thrust moonlet-orbit
+stability gate is a STOP-and-report gate (no retuning without a new user
+decision). **M06-R13-09 (USER decision 2026-10-05)** supersedes the R12
+primary-fixture invariance: the 2-body-calibrated R12 primary gate becomes a
+non-gating legacy diagnostic and the companion case becomes observational
+(not forced), while the classifier SEMANTICS (epsilon rule, dominance, tidal /
+differential definition, winding, radial-ratio, window sizing, hysteresis)
+ stay unchanged; the PRIMARY gate is re-baselined to a clean current-3-body-
+ world orbit run through the authoritative `Simulation`, observed over a BOUNDED
+ ONE-REVOLUTION classifier-correctness window (one complete body-0-relative
+ revolution; STOP-and-report if it cannot complete before the first physical
+ loss) — the earlier "10 local periods" wording is superseded by the same
+ 2026-10-05 user decision (`M06-R13-V23` / `M06-R13-09-04`). The canonical rules
+  are extended in
+`docs/physics-model-gravity.md`; the full atomic requirements live in
+`TASKS.md` (## M06-R13).
+
+**M06-R13 outcome (2026-10-05):** implemented, automated-verification complete,
+and human-verified. The canonical `BinarySystem` becomes a fixed hierarchical
+three-body system (body 2 = OUTER MOONLET) with `src/sim.cpp`, `pred_frame.cpp`,
+`flight_computer.cpp`, `autopilot.cpp`, `ballistic.cpp`, `landing.cpp`,
+`debug_subsystem.cpp`, `gui.cpp`, and `include/lander/{binary,sim,pred_frame,
+camera,debug_subsystem}.hpp` generalized (3-body gravity in the one global
+inertial frame; `reference_body`/`reference_body_for3`; F9 = MOONLET frame;
+three-body AUTO classifier with unchanged R12 semantics; body->body transitions
+routed via World; `--debug-predictor-body 0|1|2`). The canonical rules are
+extended in `docs/physics-model-gravity.md`. Automated: `lander_binary_tests`
+(V01-V10), `lander_tests` (V11-V17, V21), `lander_pred_frame_tests` (V19, V20,
+V23), and `lander_predictor_tests` (V18 three-body predictor parity) all pass;
+full `ctest` is 11/12 (the only failure is the PRE-EXISTING V14-C body-2
+cross-body landing red, not introduced by R13; the post-M06 transfer tests
+TFD-1 / TFD-2 document and pass). Headless GUI smoke (incl.
+`--debug-predictor-body 0|1|2`) exits 0. Human verification (2026-10-05):
+`M06-R13-H01` / `H02` / `H03` all PASS (normal play undisturbed with all three
+bodies rendering and F9 MOONLET frame; predictor + body-2 fixture renders a
+clean local moonlet orbit with sensible body-2 diagnostics and no physics
+mutation from frame switching; predictor + body-1 fixture preserves the R12
+tight-companion behaviour). Committed and pushed to `origin`.
+
+**Deferred (NOT fixed in R13; no frame / physics / classifier change):** the
+SYSTEM-view auto-fit camera zooms somewhat too far out now that body 2 expands
+the system bounds, so local orbit geometry can look smaller than ideal for
+visual inspection — recorded as a deferred camera/UI polish issue for a future
+pass. (The low FPS observed during verification is deliberately NOT recorded as
+an issue: it was caused by unrelated concurrent agents consuming resources, so
+it is not valid performance evidence.)
+
+R13 acceptance does NOT imply whole-M06 acceptance. M06 remains open and at
+AWAITING HUMAN VERIFICATION on the still-open `M06-R12-H01` / `M06-R12-H02`,
+`M06-R11-H01`, and `M06-R7-H01`; the deferred predictor / transfer defects
+(PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2) also remain open.
+
 All M06 flight-computer additions follow the canonical HOT / WARM / COLD
 computational rate tiers:
 
@@ -160,10 +233,13 @@ computational rate tiers:
 fixed small bounds; COLD = bounded numerical planning, warm-started when
 practical, never blocking or advancing simulation time.)
 
-`M06` remains open while the bounded post-M06 hardening passes complete —
-`M06-R8` (subsystem-isolation harness), `M06-R9` (predictor overlay), `M06-R10`
-(record-only), `M06-R11` (diagnostics), and `M06-R12` (prediction reference-
-frame architecture) — and the unresolved human verification items resolve;
+`M06` remains open: `M06-R8` (subsystem-isolation harness), `M06-R9` (predictor
+overlay), `M06-R10` (record-only), `M06-R11` (diagnostics), `M06-R12` (prediction
+reference-frame architecture), and `M06-R13` (three-body hierarchical system /
+outer moonlet) are code-complete and committed (R13 human-verified 2026-10-05).
+The outstanding work is the still-open human verification items
+(`M06-R12-H01` / `M06-R12-H02`, `M06-R11-H01`, `M06-R7-H01`) plus the deferred
+predictor / transfer defects (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2).
 `M06-R2`..`M06-R7` are code-complete (see `TASKS.md`).
 
 `M07` is not active.

@@ -98,7 +98,10 @@ struct Color {
 Color make_color(Uint8 r, Uint8 g, Uint8 b) { return {r, g, b}; }
 
 const char* body_name(int index) {
-    return index == 0 ? "PRIMARY" : "COMPANION";
+    return index == 0 ? "PRIMARY"
+         : index == 1 ? "COMPANION"
+         : index == 2 ? "MOONLET"
+         : "BODY";
 }
 
 // ---------------------------------------------------------------- 5x7 font
@@ -853,7 +856,7 @@ void draw_hud(SDL_Renderer* renderer, const lander::Simulation& sim,
     const int ref = sim.reference_body();
     const lander::Vec2 ref_pos = bin.position(ref, sim.sim_time());
     const lander::Vec2 ref_vel = bin.velocity(ref, sim.sim_time());
-    const double rot = bin.body_rotation(sim.sim_time());
+    const double rot = bin.body_rotation(ref, sim.sim_time());
     const double alt_m = std::max(
         0.0,
         lander::altitude_at(bin.body(ref).terrain, s, ref_pos, rot));
@@ -1187,6 +1190,9 @@ void print_usage() {
         "                   node-executor, transfer-cold, transfer-warm,\n"
         "                   autoland-primary, autoland-companion,\n"
         "                   autoland-cross, ui\n"
+        "  --debug-predictor-body N  for --debug-subsystem predictor, orbit the\n"
+        "                   startup fixture around body N (0 primary [default],\n"
+        "                   1 companion, 2 outer moonlet; developer mode)\n"
         "  --help           show this message\n"
         "Controls: Up/W increase throttle, Down/S decrease throttle, X\n"
         "throttle cutoff, Left/Right/A/D rotate, M camera mode (Auto/Manual;\n"
@@ -1212,7 +1218,10 @@ void print_usage() {
         "TARGET/MANEUVER attitude, Return execute the node, Shift+Return\n"
         "abort the executor, 9 arm the target-pad autoland for the reference\n"
         "body (manual throttle or X reclaims control), X aborts/cuts the\n"
-        "engine, G shows the nav overlay and the predicted pre/post-node path.\n");
+        "engine, G shows the nav overlay and the predicted pre/post-node path.\n"
+        "Display reference frame for the predicted arc: F5 AUTO (per-sample\n"
+        "orbit reference), F6 PRIMARY, F7 COMPANION, F8 WORLD (inertial / the\n"
+        "default rosette), F9 MOONLET (body-2 centred). Presentation only.\n");
 }
 
 void draw_line_simple(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
@@ -1235,7 +1244,8 @@ static void draw_transition_marker(SDL_Renderer* renderer, const Vec2& p,
     auto short_code = [](lander::PredFrame f) {
         return f == lander::PredFrame::World ? "W"
              : f == lander::PredFrame::Primary ? "P"
-             : "C";
+             : f == lander::PredFrame::Companion ? "C"
+             : "M";
     };
     char label[8];
     std::snprintf(label, sizeof label, "%s/%s", short_code(from),
@@ -1270,27 +1280,32 @@ void draw_trajectory(SDL_Renderer* renderer,
                       const std::vector<lander::RefSegment>& segments) {
     const lander::BinarySystem& bin = sim.binary();
     const double t_now = sim.sim_time();
-    const lander::Vec2 anchor0 = bin.position(0, t_now);
-    const lander::Vec2 anchor1 = bin.position(1, t_now);
     const size_t pre_count = prediction.pre.size();
+
+    // M06-R13: map a display frame to its body index (World is -1).
+    auto frame_body = [](lander::PredFrame f) -> int {
+        return f == lander::PredFrame::Primary ? 0
+             : f == lander::PredFrame::Companion ? 1
+             : f == lander::PredFrame::Moonlet ? 2
+             : -1;
+    };
 
     auto render_world = [&](const lander::Vec2& wp, double t,
                             lander::PredFrame f) -> lander::Vec2 {
-        if (f == lander::PredFrame::World) {
+        const int body = frame_body(f);
+        if (body < 0) {  // WORLD: inertial / barycentric identity.
             return wp;
         }
-        const lander::Vec2 anchor =
-            (f == lander::PredFrame::Primary) ? anchor0 : anchor1;
-        const lander::Vec2 bp =
-            (f == lander::PredFrame::Primary) ? bin.position(0, t)
-                                              : bin.position(1, t);
+        const lander::Vec2 bp = bin.position(body, t);
+        const lander::Vec2 anchor = bin.position(body, t_now);
         return lander::Vec2{wp.x - bp.x + anchor.x, wp.y - bp.y + anchor.y};
     };
 
     auto seg_frame = [](lander::RefSegment s) -> lander::PredFrame {
         return s == lander::RefSegment::World ? lander::PredFrame::World
              : s == lander::RefSegment::Primary ? lander::PredFrame::Primary
-             : lander::PredFrame::Companion;
+             : s == lander::RefSegment::Companion ? lander::PredFrame::Companion
+             : lander::PredFrame::Moonlet;
     };
 
     auto frame_at = [&](size_t i) -> lander::PredFrame {
@@ -1488,9 +1503,11 @@ void draw_prediction_legend(SDL_Renderer* renderer, lander::PredFrame frame) {
                   ? make_color(120, 240, 160)
                   : frame == lander::PredFrame::Companion
                         ? make_color(255, 196, 64)
-                        : make_color(96, 224, 255);
+                        : frame == lander::PredFrame::Moonlet
+                              ? make_color(235, 150, 255)
+                              : make_color(96, 224, 255);
     char flabel[48];
-    std::snprintf(flabel, sizeof flabel, "FRAME  %s  [F5-8]",
+    std::snprintf(flabel, sizeof flabel, "FRAME  %s  [F5-9]",
                   lander::pred_frame_name(frame));
     draw_thick_line(renderer, {x, y + 6}, {x + 18, y + 6}, 2.0, frame_col);
     draw_text(renderer, flabel, x + 26, y, 1, frame_col);
@@ -1925,7 +1942,8 @@ void draw_debug_subsystem_panel(
             // transform and analysis.
             std::snprintf(
                 buffer, sizeof buffer,
-                "  PRED FRAME %-8s   [F5]AUTO [F6]PRM [F7]CPN [F8]WORLD",
+                "  PRED FRAME %-8s   [F5]AUTO [F6]PRM [F7]CPN [F8]WORLD "
+                "[F9]MNL",
                 lander::pred_frame_name(ctx.pred_frame));
             line(buffer, white);
             {
@@ -1941,7 +1959,10 @@ void draw_debug_subsystem_panel(
                          ? cyan
                          : ctx.pred_final == lander::RefSegment::Primary
                                ? green
-                               : amber);
+                               : ctx.pred_final ==
+                                         lander::RefSegment::Companion
+                                     ? amber
+                                     : make_color(235, 150, 255));
                 if (ctx.pred_auto_valid) {
                     std::snprintf(
                         buffer, sizeof buffer,
@@ -1957,12 +1978,19 @@ void draw_debug_subsystem_panel(
                     line(buffer, white);
                     std::snprintf(
                         buffer, sizeof buffer,
+                        "  MNL eps %8.1f dom %7.2f wind %6.3f ratio %5.2f",
+                        pm.body[2].epsilon, pm.body[2].dominance,
+                        pm.body[2].delta_theta, pm.body[2].radial_ratio);
+                    line(buffer, white);
+                    std::snprintf(
+                        buffer, sizeof buffer,
                         "  raw %-8s win %-4s  HYST 3S / 0.5S via-WORLD",
                         lander::ref_segment_name(pm.raw),
                         pm.window_ok ? "ok" : "tail");
                     line(buffer, dim);
                 }
-                line("  PHYSICS WORLD / INERTIAL  both-bodies  no-SOI  no-rot",
+                line("  PHYSICS WORLD / INERTIAL  three-bodies  no-SOI  "
+                     "no-rot",
                      dim);
             }
             std::snprintf(
@@ -2045,7 +2073,7 @@ void draw_debug_subsystem_panel(
                 line("  MIN R --  MAX R --  CLR-PT --  (no forecast)", dim);
             } else {
                 for (const auto& smp : live_predictor.samples()) {
-                    for (int b = 0; b < 2; b++) {
+                    for (int b = 0; b < 3; b++) {
                         const lander::Vec2 bp = bin.position(b, smp.time);
                         const double r =
                             std::hypot(smp.state.x - bp.x,
@@ -2056,7 +2084,7 @@ void draw_debug_subsystem_panel(
                         }
                         const double alt = lander::altitude_at(
                             bin.body(b).terrain, smp.state, bp,
-                            bin.body_rotation(smp.time));
+                            bin.body_rotation(b, smp.time));
                         clr = std::min(clr, alt);
                     }
                 }
@@ -2066,7 +2094,7 @@ void draw_debug_subsystem_panel(
                 line(buffer, dim);
                 std::snprintf(
                     buffer, sizeof buffer,
-                    "  CLR-PT %7.1f m  (ref-pt clearance, both bodies)", clr);
+                    "  CLR-PT %7.1f m  (ref-pt clearance, all bodies)", clr);
                 line(buffer, clr < 15.0 ? red : dim);
             }
             // Closest approach to the destination pad point over the ring.
@@ -2471,6 +2499,7 @@ int main(int argc, char** argv) {
     bool orbit_demo = false;
     bool system_view = false;
     std::string debug_subsystem_arg;
+    std::string debug_predictor_body_arg;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -2492,6 +2521,8 @@ int main(int argc, char** argv) {
             system_view = true;
         } else if (arg == "--debug-subsystem" && i + 1 < argc) {
             debug_subsystem_arg = argv[++i];
+        } else if (arg == "--debug-predictor-body" && i + 1 < argc) {
+            debug_predictor_body_arg = argv[++i];
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", arg.c_str());
             print_usage();
@@ -2517,6 +2548,22 @@ int main(int argc, char** argv) {
             return 2;
         }
         debug_mode = *parsed;
+    }
+
+    // M06-R13: resolve the predictor-fixture body selector (0 primary [default],
+    // 1 companion, 2 outer moonlet). Only consulted by the predictor isolation.
+    int debug_predictor_body = 0;
+    if (!debug_predictor_body_arg.empty()) {
+        const auto parsed_body =
+            lander::parse_debug_predictor_body(debug_predictor_body_arg);
+        if (!parsed_body) {
+            std::fprintf(stderr,
+                         "Invalid --debug-predictor-body: %s (use 0, 1, or 2)\n",
+                         debug_predictor_body_arg.c_str());
+            print_usage();
+            return 2;
+        }
+        debug_predictor_body = *parsed_body;
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -2779,7 +2826,7 @@ int main(int argc, char** argv) {
                 landing_coast, landing_cfg, maneuver_node, attitude_mode,
                 &transfer_debug, zero_effort,
             };
-            lander::setup_debug_scenario(debug_mode, subs);
+            lander::setup_debug_scenario(debug_mode, subs, debug_predictor_body);
         }
         const lander::State& state = sim.state();
         const lander::Vec2 ref_pos =
@@ -2956,15 +3003,17 @@ int main(int argc, char** argv) {
                     case SDL_SCANCODE_F5:
                     case SDL_SCANCODE_F6:
                     case SDL_SCANCODE_F7:
-                    case SDL_SCANCODE_F8: {
-                        // M06-R12: select the display reference frame for the
-                        // prediction arc. User-facing (works in normal play and
-                        // in the debug predictor). F5 AUTO (per-sample orbit
-                        // reference), F6 PRIMARY, F7 COMPANION, F8 WORLD
-                        // (inertial / barycentric, the default rosette). Pure
-                        // presentation: the sim and stored inertial samples are
-                        // untouched; the arc is re-segmented at the prediction
-                        // rebuild cadence and transitioned by the classifier.
+                    case SDL_SCANCODE_F8:
+                    case SDL_SCANCODE_F9: {
+                        // M06-R12 / M06-R13: select the display reference frame
+                        // for the prediction arc. User-facing (works in normal
+                        // play and in the debug predictor). F5 AUTO (per-sample
+                        // orbit reference), F6 PRIMARY, F7 COMPANION, F8 WORLD
+                        // (inertial / barycentric, the default rosette), F9
+                        // MOONLET (body-2 centred). Pure presentation: the sim
+                        // and stored inertial samples are untouched; the arc is
+                        // re-segmented at the prediction rebuild cadence and
+                        // transitioned by the classifier.
                         pred_frame =
                             event.key.scancode == SDL_SCANCODE_F5
                                 ? lander::PredFrame::Auto
@@ -2972,7 +3021,10 @@ int main(int argc, char** argv) {
                                       ? lander::PredFrame::Primary
                                       : (event.key.scancode == SDL_SCANCODE_F7
                                             ? lander::PredFrame::Companion
-                                            : lander::PredFrame::World));
+                                            : (event.key.scancode ==
+                                                     SDL_SCANCODE_F8
+                                                  ? lander::PredFrame::World
+                                                  : lander::PredFrame::Moonlet)));
                         debug_message = std::string("PRED FRAME: ") +
                                         lander::pred_frame_name(pred_frame);
                         debug_message_time = 2.0;
@@ -3021,9 +3073,13 @@ int main(int argc, char** argv) {
                             !node_executor.active()) {
                             const bool shift =
                                 (event.key.mod & SDL_KMOD_SHIFT) != 0;
+                            // M06-R13: the "other" body is the two-body
+                            // complement (0<->1) and the primary when the
+                            // reference is the moonlet (body 2 has no single
+                            // complement).
+                            const int ref_b = sim.reference_body();
                             const int frame_body =
-                                shift ? 1 - sim.reference_body()
-                                      : sim.reference_body();
+                                shift ? (ref_b == 2 ? 0 : 1 - ref_b) : ref_b;
                             maneuver_node = lander::default_node(
                                 sim.sim_time(), frame_body,
                                 sim.config().fixed_dt);
@@ -3530,11 +3586,11 @@ int main(int argc, char** argv) {
         }
 
         const lander::BinarySystem& bin = sim.binary();
-        // Both bodies share the same prograde spin rate (tidal locking), so
-        // one rotation value at the presentation time drives everything
-        // derived from the rotating surfaces this frame.
-        const double body_rot = bin.body_rotation(t_present);
+        // M06-R13: each body has its own tidal-lock spin, so the REFERENCE
+        // body's rotation (not a single shared value) drives the altitude and
+        // up-vector derived from its rotating surface this frame.
         const int ref = sim.reference_body();
+        const double body_rot = bin.body_rotation(ref, t_present);
         const lander::Vec2 ref_pos = bin.position(ref, t_present);
 
         // The camera follows the interpolated lander position and chooses
@@ -3691,9 +3747,17 @@ int main(int argc, char** argv) {
         // The backdrop rotates with the final presentation angle (M05-R3-12).
         draw_space(renderer, stars, cam.angle());
         const int dest = sim.contract().destination_body;
-        const lander::Vec2 other_pos = bin.position(1 - ref, t_present);
-        draw_body(renderer, bin.body(1 - ref), other_pos, cam, render_state,
-                  1 - ref == dest, body_rot);
+        // M06-R13: draw all three bodies, each with its own tidal-lock spin.
+        // The reference body is drawn last so it stays on top, preserving the
+        // M05 two-body draw order for the primary / companion.
+        for (int b = 0; b < 3; ++b) {
+            if (b == ref) {
+                continue;
+            }
+            draw_body(renderer, bin.body(b), bin.position(b, t_present), cam,
+                      render_state, b == dest,
+                      bin.body_rotation(b, t_present));
+        }
         draw_body(renderer, bin.body(ref), ref_pos, cam, render_state,
                   ref == dest, body_rot);
         draw_lander(renderer, render_state, thrust_level, flame_clock, cam);

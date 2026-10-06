@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -664,6 +665,231 @@ void test_cold_vs_rolling_workload() {
           "rolling workload is far less than cold-every-frame");
 }
 
+// M06-R13-V18 helper: a zero-thrust, no-rotation, no-reaction-wheel kick-drift
+// integrator that exactly mirrors Simulation::integrate_flight (semi-implicit
+// Euler: the field is sampled at the START of the step, the velocity is kicked,
+// then the position drifts) for a caller-supplied gravity field. It is a pure
+// local reference (it never touches a Simulation) so the test can compare the
+// full three-body field against a two-body-only field from identical initial
+// conditions, isolating the effect of a single body's gravitational field.
+template <class Field>
+void integrate_field(const lander::BinarySystem& bin, double dt,
+                     const lander::State& init, int steps, double t_start,
+                     const Field& field,
+                     std::vector<lander::PredictorSample>& out) {
+    out.clear();
+    lander::State s = init;
+    double t = t_start;
+    out.push_back(lander::PredictorSample{s, t, s.ticks});
+    for (int i = 0; i < steps; ++i) {
+        const lander::Vec2 a = field(bin, lander::Vec2{s.x, s.y}, t);
+        s.vx += a.x * dt;
+        s.vy += a.y * dt;
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        t += dt;
+        s.ticks += 1;
+        out.push_back(lander::PredictorSample{s, t, s.ticks});
+    }
+}
+
+// M06-R13-V18 (parity independent of prior/window size): two receding-horizon
+// predictors built from the SAME state / time / policy / body-count but with
+// DIFFERENT window sizes must produce identical overlapping predictions over
+// the horizon. The rollout is a local fixed-step integration (the same
+// step code as the authoritative sim), so the near prediction cannot depend on
+// how large the ring holds the horizon.
+void test_three_body_window_parity() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 41;
+
+    // A shared free-fall seed near the moonlet (body 2), clear of its surface
+    // and co-moving with its ephemeris velocity, so the rollout is a clean
+    // non-trivial three-body trajectory.
+    auto make_seed = [&]() {
+        lander::Simulation sim(cfg);
+        sim.reset(seed);
+        const lander::BinarySystem& bin = sim.binary();
+        const lander::Vec2 p2 = bin.position(2, 0.0);
+        const lander::Vec2 v2 = bin.velocity(2, 0.0);
+        const double r2 = std::hypot(p2.x, p2.y);
+        const double rx = (p2.x / r2) * 120.0;
+        const double ry = (p2.y / r2) * 120.0;
+        lander::State st{};
+        st.x = p2.x + rx;
+        st.y = p2.y + ry;
+        st.vx = v2.x;
+        st.vy = v2.y;
+        st.fuel = 1000.0;
+        st.angle = 0.0;
+        st.omega = 0.0;
+        st.landed = false;
+        st.crashed = false;
+        sim.set_state(st);
+        return sim;
+    };
+
+    const int small_horizon = 240;  // 2 s at 120 Hz
+    const int big_horizon = 960;    // a different (4x) window size
+    const int advance_steps = 60;
+    const lander::FlightPolicy coast = coast_policy();
+    lander::NodeExecutor exec;
+
+    lander::Simulation live = make_seed();
+    lander::RecedingHorizonPredictor small_pred;
+    lander::RecedingHorizonPredictor big_pred;
+    small_pred.configure(small_horizon, 1e-9);
+    big_pred.configure(big_horizon, 1e-9);
+    small_pred.cold_rebuild(live, coast, exec, small_horizon);
+    big_pred.cold_rebuild(live, coast, exec, big_horizon);
+
+    for (int k = 0; k < advance_steps; ++k) {
+        live.step_once(lander::Input{});
+        const lander::State actual = live.state();
+        small_pred.advance(live, actual, coast, exec, 1);
+        big_pred.advance(live, actual, coast, exec, 1);
+    }
+
+    const auto& s = small_pred.samples();
+    const auto& b = big_pred.samples();
+    check(static_cast<int>(s.size()) > small_horizon / 2,
+          "small-window predictor holds a populated horizon");
+    check(static_cast<int>(b.size()) > big_horizon / 2,
+          "large-window predictor holds a populated horizon");
+
+    const int overlap =
+        std::min(static_cast<int>(s.size()), static_cast<int>(b.size()));
+    double max_pos = 0.0, max_vel = 0.0;
+    for (int i = 0; i < overlap; ++i) {
+        max_pos = std::max(max_pos,
+                           std::hypot(s[i].state.x - b[i].state.x,
+                                      s[i].state.y - b[i].state.y));
+        max_vel = std::max(
+            max_vel, std::hypot(s[i].state.vx - b[i].state.vx,
+                                s[i].state.vy - b[i].state.vy));
+    }
+    std::printf("  window parity (overlap %d samples): max_pos=%.3g m, "
+                "max_vel=%.3g m/s\n", overlap, max_pos, max_vel);
+    check(overlap >= small_horizon / 2,
+          "overlap spans at least half the small horizon");
+    check(max_pos < 1e-6 && max_vel < 1e-6,
+          "window-size-independent parity: identical overlapping predictions");
+}
+
+// M06-R13-V18 (body-count-aware cold rebuild + all three fields live):
+//  (a) a cold-rebuilt predictor in the three-body system matches the
+//      authoritative three-body Simulation over the horizon (the rollout uses
+//      the full body set, not a two-body approximation); and
+//  (b) the three-body predicted path diverges from a two-body-only reference
+//      (primary + companion, body-2 field omitted) over the same horizon from
+//      the same initial state, proving all three gravitational fields are live
+//      in the predictor, not just two. No production gravity or canonical
+//      system is changed: the two-body reference is a local test integrator.
+void test_three_body_fields_live() {
+    lander::Config cfg{};
+    const std::uint64_t seed = 41;
+
+    lander::Simulation live(cfg);
+    live.reset(seed);
+    const lander::BinarySystem& bin = live.binary();
+    const lander::Vec2 p2 = bin.position(2, 0.0);
+    const lander::Vec2 v2 = bin.velocity(2, 0.0);
+    const double r2 = std::hypot(p2.x, p2.y);
+    lander::State init{};
+    init.x = p2.x + (p2.x / r2) * 120.0;
+    init.y = p2.y + (p2.y / r2) * 120.0;
+    init.vx = v2.x;
+    init.vy = v2.y;
+    init.fuel = 1000.0;
+    init.angle = 0.0;
+    init.omega = 0.0;
+    init.landed = false;
+    init.crashed = false;
+    live.set_state(init);
+
+    const int H = 240;  // 2 s at 120 Hz
+    const double dt = cfg.fixed_dt;
+    const double t0 = live.sim_time();  // 0.0
+    const lander::FlightPolicy coast = coast_policy();
+    lander::NodeExecutor exec;
+
+    // Authoritative three-body simulation over the same horizon (zero thrust).
+    lander::Simulation auth = live;
+    std::vector<lander::PredictorSample> ref_auth;
+    ref_auth.push_back({auth.state(), auth.sim_time(), auth.state().ticks});
+    for (int i = 0; i < H; ++i) {
+        auth.step_once(lander::Input{});
+        ref_auth.push_back({auth.state(), auth.sim_time(), auth.state().ticks});
+    }
+
+    // Cold-rebuilt predictor (uses the full three-body field).
+    lander::RecedingHorizonPredictor pred;
+    pred.configure(H, 1e-9);
+    pred.cold_rebuild(live, coast, exec, H);
+    const auto& ps = pred.samples();
+
+    // (a) body-count-aware: the three-body cold rebuild matches the
+    //     authoritative three-body simulation over the horizon.
+    const int n =
+        std::min(static_cast<int>(ps.size()), static_cast<int>(ref_auth.size()));
+    double max_pos = 0.0, max_vel = 0.0;
+    for (int i = 0; i < n; ++i) {
+        max_pos = std::max(max_pos, std::hypot(ps[i].state.x - ref_auth[i].state.x,
+                                               ps[i].state.y - ref_auth[i].state.y));
+        max_vel = std::max(
+            max_vel, std::hypot(ps[i].state.vx - ref_auth[i].state.vx,
+                                ps[i].state.vy - ref_auth[i].state.vy));
+    }
+    std::printf("  three-body cold rebuild vs authoritative (%d samples): "
+                "max_pos=%.3g m, max_vel=%.3g m/s\n", n, max_pos, max_vel);
+    check(n > 0, "compared non-empty horizons");
+    check(max_pos < 1e-6 && max_vel < 1e-6,
+          "body-count-aware: three-body cold rebuild matches the authoritative sim");
+
+    // (b) all three fields live: a two-body-only reference (primary +
+    //     companion, body-2 field omitted) diverges from the three-body path
+    //     over the same horizon from the same initial state.
+    std::vector<lander::PredictorSample> ref3, ref2;
+    integrate_field(bin, dt, live.state(), H, t0,
+                    [](const lander::BinarySystem& b, const lander::Vec2& p,
+                       double t) { return b.gravity(p, t); },
+                    ref3);
+    integrate_field(bin, dt, live.state(), H, t0,
+                    [](const lander::BinarySystem& b, const lander::Vec2& p,
+                       double t) {
+                        return b.gravity_from(0, p, t) + b.gravity_from(1, p, t);
+                    },
+                    ref2);
+
+    // Validate the manual three-body integrator against the predictor first
+    // (isolates the integration scheme from the field comparison).
+    const int m =
+        std::min(static_cast<int>(ps.size()), static_cast<int>(ref3.size()));
+    double scheme_err = 0.0;
+    for (int i = 0; i < m; ++i) {
+        scheme_err = std::max(scheme_err,
+                              std::hypot(ps[i].state.x - ref3[i].state.x,
+                                         ps[i].state.y - ref3[i].state.y));
+    }
+    // The two manual integrators are identical except for the body-2 field, so
+    // their divergence is exactly the body-2 field's integrated effect.
+    const int q =
+        std::min(static_cast<int>(ref3.size()), static_cast<int>(ref2.size()));
+    double mu2_effect = 0.0;
+    for (int i = 0; i < q; ++i) {
+        mu2_effect =
+            std::max(mu2_effect,
+                     std::hypot(ref3[i].state.x - ref2[i].state.x,
+                                ref3[i].state.y - ref2[i].state.y));
+    }
+    std::printf("  field liveness (H=%d): manual-vs-predictor %.3g m, "
+                "3-body-vs-2-body %.3g m\n", H, scheme_err, mu2_effect);
+    check(scheme_err < 1e-6,
+          "manual three-body integrator matches the predictor (scheme validated)");
+    check(mu2_effect > 1e-3,
+          "omitting the body-2 field changes the path (all three fields live)");
+}
+
 int main() {
     test_zero_thrust_consistency();
     test_throttle_diverges();
@@ -679,6 +905,8 @@ int main() {
     test_progressive_rebuild();
     test_compute_time_not_flight_time();
     test_cold_vs_rolling_workload();
+    test_three_body_window_parity();
+    test_three_body_fields_live();
 
     if (failures == 0) {
         std::printf("All lander_predictor_tests passed\n");
