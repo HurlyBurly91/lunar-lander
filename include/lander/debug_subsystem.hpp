@@ -360,11 +360,14 @@ inline NodeExecutorOverlay node_executor_overlay(const Vec2& anchor,
 // warm-starting-and-bounded-replanning.md (the accepted COLD solution being
 // displayed); docs/physics-model-gravity.md (the arc stays WORLD/INERTIAL).
 //
-// M06-R20: READ-ONLY, presentation-only helpers for the
+// M06-R20 / M06-R20-F01: READ-ONLY, presentation-only helpers for the
 // `--debug-subsystem transfer-cold` isolation. They turn an already-accepted
-// `TransferSolution` into a frozen zero-thrust display arc and an inertial
-// debug camera fit. They never re-solve, never mutate the solution / binary /
-// simulation, and are not used by normal gameplay.
+// `TransferSolution` into an explicit inertial temporal inspection scene: a
+// frozen zero-thrust display arc, the source body's local surface at the solve
+// epoch, the target body's local surface at the arrival epoch, the solver's
+// arrival-shell target when available, and an aspect-preserving debug camera
+// fit. They never re-solve, never mutate the solution / binary / simulation,
+// and are not used by normal gameplay.
 
 struct TransferColdDisplay {
     bool valid = false;
@@ -375,6 +378,14 @@ struct TransferColdDisplay {
     Vec2 arr{};
     Vec2 target_at_arrival{};
     Vec2 source_at_solve{};
+    bool target_point_valid = false;
+    Vec2 target_point{};
+    std::vector<Vec2> source_outline{};
+    std::vector<Vec2> target_outline{};
+    double source_rotation = 0.0;
+    double target_rotation = 0.0;
+    Vec2 raw_center{};
+    Vec2 raw_half{};
     Vec2 fit_center{};
     Vec2 fit_half{};
     double solve_epoch = 0.0;

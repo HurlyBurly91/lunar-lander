@@ -408,6 +408,38 @@ void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
 // Reference: docs/flight-guidance-intermoon-transfer-differential-correction-
 // warm-starting-and-bounded-replanning.md (the accepted COLD solution being
 // displayed); docs/physics-model-gravity.md (the arc stays WORLD/INERTIAL).
+//
+// M06-R20-F01: the display is an explicit temporal inspection scene. The
+// camera fit is driven by the accepted inertial arc, by local source/target
+// surface outlines at their respective epochs, and by the solver's arrival
+// shell when available. Full body centres are intentionally excluded from the
+// fit bounds so an unrelated large body cannot compress the route.
+
+namespace {
+
+std::vector<Vec2> sample_temporal_outline(
+    const BinarySystem& bin, int index, double t, const Vec2& anchor,
+    double half_angle, int samples) {
+    std::vector<Vec2> out;
+    if (samples < 2) {
+        return out;
+    }
+    const Vec2 c = bin.position(index, t);
+    const double rot = bin.body_rotation(index, t);
+    const Terrain& terrain = bin.body(index).terrain;
+    const double theta0 = std::atan2(anchor.y - c.y, anchor.x - c.x);
+    for (int i = 0; i < samples; ++i) {
+        const double theta =
+            theta0 - half_angle + (2.0 * half_angle * i) / (samples - 1);
+        const double arc = terrain.arc_at_angle(theta - rot);
+        const double r = terrain.surface_radius_at_arc(arc);
+        out.push_back(Vec2{c.x + std::cos(theta) * r,
+                           c.y + std::sin(theta) * r});
+    }
+    return out;
+}
+
+}  // namespace
 
 TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
                                           const TransferSolution& sol,
@@ -451,6 +483,25 @@ TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
     d.arr = d.arc.back().p;
     d.target_at_arrival = bin.position(sol.target, sol.arrival_epoch);
     d.source_at_solve = bin.position(sol.source, sol.solve_epoch);
+    d.source_rotation = bin.body_rotation(sol.source, sol.solve_epoch);
+    d.target_rotation = bin.body_rotation(sol.target, sol.arrival_epoch);
+    d.target_point_valid = transfer_arrival_target(
+        bin, sol.source, sol.target, sol.arrival_epoch, d.target_point);
+    const Vec2 target_anchor =
+        d.target_point_valid ? d.target_point : d.arr;
+
+    const double route_len = std::hypot(d.arr.x - d.dep.x, d.arr.y - d.dep.y);
+    const double context_len = std::max(route_len, 60.0);
+    auto outline_for = [&](int index, double t, const Vec2& anchor) {
+        const double ref = std::max(
+            bin.body(index).terrain.reference_radius(), 1.0);
+        const double half = std::clamp(0.5 * context_len / ref, 0.10, 0.75);
+        return sample_temporal_outline(bin, index, t, anchor, half, 48);
+    };
+    d.source_outline =
+        outline_for(sol.source, sol.solve_epoch, d.dep);
+    d.target_outline =
+        outline_for(sol.target, sol.arrival_epoch, target_anchor);
 
     double minx = d.dep.x, maxx = d.dep.x;
     double miny = d.dep.y, maxy = d.dep.y;
@@ -464,24 +515,31 @@ TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
         include(st.p);
     }
     include(d.arr);
-    include(d.target_at_arrival);
-    include(d.source_at_solve);
+    if (d.target_point_valid) {
+        include(d.target_point);
+    }
+    if (d.source_outline.empty()) {
+        include(d.dep);
+    } else {
+        for (const Vec2& p : d.source_outline) {
+            include(p);
+        }
+    }
+    if (d.target_outline.empty()) {
+        include(d.arr);
+    } else {
+        for (const Vec2& p : d.target_outline) {
+            include(p);
+        }
+    }
 
-    auto include_body = [&](int index, double t) {
-        const Vec2 c = bin.position(index, t);
-        const double r = bin.body(index).terrain.max_surface_radius();
-        include({c.x - r, c.y - r});
-        include({c.x + r, c.y - r});
-        include({c.x - r, c.y + r});
-        include({c.x + r, c.y + r});
-    };
-    include_body(sol.source, sol.solve_epoch);
-    include_body(sol.target, sol.arrival_epoch);
-
-    d.fit_center = {0.5 * (minx + maxx), 0.5 * (miny + maxy)};
+    d.raw_center = {0.5 * (minx + maxx), 0.5 * (miny + maxy)};
+    d.raw_half = {0.5 * std::max(maxx - minx, 0.0),
+                  0.5 * std::max(maxy - miny, 0.0)};
+    d.fit_center = d.raw_center;
     const double margin = 1.18;
-    d.fit_half = {std::max(0.5 * (maxx - minx) * margin, 30.0),
-                  std::max(0.5 * (maxy - miny) * margin, 30.0)};
+    d.fit_half = {std::max(d.raw_half.x * margin, 30.0),
+                  std::max(d.raw_half.y * margin, 30.0)};
     return d;
 }
 

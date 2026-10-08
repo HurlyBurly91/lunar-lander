@@ -67,6 +67,7 @@ using lander::propagate_ballistic;
 using lander::setup_debug_scenario;
 using lander::thrust_hat;
 using lander::to_screen_point;
+using lander::transfer_arrival_target;
 using lander::transfer_cold_camera_fit;
 using lander::transfer_cold_display;
 using lander::ZeroEffortQuery;
@@ -1163,6 +1164,9 @@ void test_transfer_cold_display_no_mutation() {
     }
     check(ballistic_propagation_count() == count_before,
           "R20 V02: the display arc adds no counted propagation work");
+    check(f.sim.state() == state_before,
+          "R20 V11: the F01 temporal presentation does not mutate the normal "
+          "Simulation");
     (void)fit;
 }
 
@@ -1210,21 +1214,147 @@ void test_transfer_cold_camera_fit_contains_route() {
     check(inside(d.arr), "R20 V04: the fit contains the arrival endpoint");
     check(inside(d.target_at_arrival),
           "R20 V04: the fit contains the arrival-epoch target ghost");
-    check(inside(d.source_at_solve),
-          "R20 V04: the fit contains the source region");
     for (const auto& st : d.arc) {
         if (!inside(st.p)) {
             check(false, "R20 V04: every accepted-arc sample is in view");
             return;
         }
     }
+    for (const Vec2& pt : d.source_outline) {
+        if (!inside(pt)) {
+            check(false, "R20 V04: the source temporal outline is in view");
+            return;
+        }
+    }
+    for (const Vec2& pt : d.target_outline) {
+        if (!inside(pt)) {
+            check(false, "R20 V04: the target temporal outline is in view");
+            return;
+        }
+    }
+    if (d.target_point_valid && !inside(d.target_point)) {
+        check(false, "R20 V04: the solver arrival-shell target is in view");
+        return;
+    }
 
     const Vec2 moonlet = f.bin().position(2, f.cold().arrival_epoch);
-    const bool moonlet_outside =
-        std::abs(moonlet.x - d.fit_center.x) > d.fit_half.x ||
-        std::abs(moonlet.y - d.fit_center.y) > d.fit_half.y;
-    check(moonlet_outside,
-          "R20 V04: the distant moonlet is not required by the transfer fit");
+    const bool moonlet_outside_raw =
+        std::abs(moonlet.x - d.raw_center.x) > d.raw_half.x ||
+        std::abs(moonlet.y - d.raw_center.y) > d.raw_half.y;
+    check(moonlet_outside_raw,
+          "R20 V09: body 2 is excluded from the transfer-cold raw fit bounds");
+    check(d.fit_half.x >= d.raw_half.x - 1.0e-9 &&
+              d.fit_half.y >= d.raw_half.y - 1.0e-9,
+          "R20 V09: the transfer-cold fit adds viewport margin");
+    const double zx = p.window_width / (2.0 * d.fit_half.x) / p.base_scale;
+    const double zy = p.window_height / (2.0 * d.fit_half.y) / p.base_scale;
+    check_close(fit.zoom,
+                std::clamp(std::min(zx, zy), 1.0e-3, p.zoom_max), 1.0e-12,
+                "R20 V09: the transfer-cold fit preserves aspect ratio");
+
+    const double scale = p.base_scale * fit.zoom;
+    const double view_w = p.window_width / scale;
+    const double view_h = p.window_height / scale;
+    const double fraction =
+        std::max((2.0 * d.raw_half.x) / view_w,
+                 (2.0 * d.raw_half.y) / view_h);
+    check(fraction >= 0.70 && fraction <= 0.90,
+          "R20 V09: the dominant relevant extent fills the usable viewport");
+
+    const Vec2 dep_sp = to_screen_point(d.dep.x, d.dep.y, cam);
+    const Vec2 arr_sp = to_screen_point(d.arr.x, d.arr.y, cam);
+    const double route_px =
+        std::hypot(arr_sp.x - dep_sp.x, arr_sp.y - dep_sp.y);
+    check(route_px >= 60.0,
+          "R20 V10: DEP and ARR are not collapsed on screen");
+}
+
+void test_transfer_cold_temporal_epochs_and_inertial_frame() {
+    ColdFixture f;
+    const TransferSolution& sol = f.cold();
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), sol, f.dt(), 256);
+    check(d.valid, "R20 V07: a valid solution produces a valid display");
+
+    check(d.source == sol.source && d.target == sol.target,
+          "R20 V07: the display preserves the solver's source/target identity");
+    check_close(d.source_rotation,
+                f.bin().body_rotation(sol.source, sol.solve_epoch), 1.0e-12,
+                "R20 V07: the source temporal body uses the solve epoch");
+    check_close(d.target_rotation,
+                f.bin().body_rotation(sol.target, sol.arrival_epoch), 1.0e-12,
+                "R20 V07: the target temporal body uses the arrival epoch");
+
+    auto outline_ok = [&](int index, double t, double rotation,
+                          const std::vector<Vec2>& outline) {
+        if (outline.empty()) {
+            return false;
+        }
+        const Vec2 c = f.bin().position(index, t);
+        const auto& terrain = f.bin().body(index).terrain;
+        for (const Vec2& pt : outline) {
+            const double dx = pt.x - c.x;
+            const double dy = pt.y - c.y;
+            const double theta = std::atan2(dy, dx);
+            const double expected_r =
+                terrain.surface_radius_at_arc(
+                    terrain.arc_at_angle(theta - rotation));
+            if (std::abs(std::hypot(dx, dy) - expected_r) > 1.0e-9) {
+                return false;
+            }
+        }
+        return true;
+    };
+    check(outline_ok(sol.source, sol.solve_epoch, d.source_rotation,
+                     d.source_outline),
+          "R20 V07: the displayed source outline is the source terrain at the "
+          "solve epoch");
+    check(outline_ok(sol.target, sol.arrival_epoch, d.target_rotation,
+                     d.target_outline),
+          "R20 V07: the displayed target outline is the target terrain at the "
+          "arrival epoch");
+
+    check(d.arc.front().p == d.dep,
+          "R20 V08: the displayed arc starts at the departure state");
+    check(d.arc.back().p == d.arr,
+          "R20 V08: the displayed arc ends at the propagated arrival state");
+    check(d.target_at_arrival ==
+              f.bin().position(sol.target, sol.arrival_epoch),
+          "R20 V08: the target reference is in the same inertial frame at the "
+          "arrival epoch");
+    check(d.source_at_solve == f.bin().position(sol.source, sol.solve_epoch),
+          "R20 V08: the source reference is in the same inertial frame at the "
+          "solve epoch");
+
+    Vec2 expected_target{};
+    if (transfer_arrival_target(f.bin(), sol.source, sol.target,
+                                sol.arrival_epoch, expected_target)) {
+        check(d.target_point_valid && d.target_point == expected_target,
+              "R20 V08: the TARGET marker is the solver's arrival shell");
+    } else {
+        check(!d.target_point_valid,
+              "R20 V08: no TARGET marker is fabricated when the solver goal is "
+              "unavailable");
+    }
+
+    bool finite = true;
+    for (const auto& st : d.arc) {
+        if (!std::isfinite(st.p.x) || !std::isfinite(st.p.y) ||
+            !std::isfinite(st.t)) {
+            finite = false;
+        }
+    }
+    for (const Vec2& pt : d.source_outline) {
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) {
+            finite = false;
+        }
+    }
+    for (const Vec2& pt : d.target_outline) {
+        if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) {
+            finite = false;
+        }
+    }
+    check(finite, "R20 V08: every temporal display quantity is finite");
 }
 
 void test_transfer_cold_display_cost_not_reported() {
@@ -1330,6 +1460,7 @@ int main() {
     test_transfer_cold_display_no_mutation();
     test_transfer_cold_display_arrival_target_future();
     test_transfer_cold_camera_fit_contains_route();
+    test_transfer_cold_temporal_epochs_and_inertial_frame();
     test_transfer_cold_display_cost_not_reported();
     test_transfer_cold_mode_isolation_and_invalid();
 

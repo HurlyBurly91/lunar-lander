@@ -3,7 +3,7 @@
 ```yaml
 Milestone: M06
 State: ACTIVE
-Phase: IMPLEMENTATION
+Phase: HUMAN_VERIFICATION
 Active-Request: M06-R20
 Previous: M05
 Spec: milestones/M06-flight-computer-and-maneuver-planning.md

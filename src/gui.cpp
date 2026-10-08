@@ -423,13 +423,21 @@ void draw_thick_line(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
     fill_poly(renderer, {a + n, b + n, b - n, a - n}, color, alpha);
 }
 
+void draw_body(SDL_Renderer* renderer, const lander::Body& body,
+                const lander::Vec2& bpos, const lander::Camera& cam,
+                const lander::State& ship,
+                bool highlight_base, double body_rotation);
+
 // M06-R20: the transfer-cold isolated scene. It draws ONLY the frozen
-// accepted COLD route: the departure marker, the zero-thrust arc, the
-// propagated arrival endpoint, and the target body's arrival-epoch
-// position. No live-state or planning information is taken from or written
-// to the simulation.
+// accepted COLD route as an explicit temporal inspection: the source body's
+// local surface at the solve epoch, the target body's local surface at the
+// arrival epoch, the departure marker, the zero-thrust arc with sparse time
+// markers, the propagated arrival endpoint, and the solver's arrival-shell
+// target when it is available. No live-state or planning information is taken
+// from or written to the simulation.
 void draw_transfer_cold_debug(SDL_Renderer* renderer,
                               const lander::Camera& cam,
+                              const lander::BinarySystem& bin,
                               const lander::TransferColdDisplay& d,
                               const char* source_label,
                               const char* target_label) {
@@ -446,35 +454,83 @@ void draw_transfer_cold_debug(SDL_Renderer* renderer,
     const Color arr_c = make_color(255, 120, 120);
     const Color target_c = make_color(120, 240, 160);
 
+    auto temporal_state = [](const lander::Vec2& anchor) {
+        lander::State s{};
+        s.x = anchor.x;
+        s.y = anchor.y;
+        return s;
+    };
+    if (d.source >= 0 && d.source < lander::BinarySystem::kBodyCount) {
+        draw_body(renderer, bin.body(d.source), d.source_at_solve, cam,
+                  temporal_state(d.dep), false, d.source_rotation);
+    }
+    if (d.target >= 0 && d.target < lander::BinarySystem::kBodyCount) {
+        draw_body(renderer, bin.body(d.target), d.target_at_arrival, cam,
+                  temporal_state(d.arr), false, d.target_rotation);
+    }
+
     for (std::size_t i = 1; i < d.arc.size(); ++i) {
         const lander::Vec2& pa = d.arc[i - 1].p;
         const lander::Vec2& pb = d.arc[i].p;
         draw_thick_line(renderer, to_screen(pa.x, pa.y, cam),
-                        to_screen(pb.x, pb.y, cam), 1.5, arc_c, 220);
+                        to_screen(pb.x, pb.y, cam), 2.5, arc_c, 240);
     }
     if (d.arc.size() >= 2) {
         const lander::Vec2& mid = d.arc[d.arc.size() / 2].p;
         const Vec2 sp = to_screen(mid.x, mid.y, cam);
         draw_text(renderer, "COLD ARC", static_cast<int>(sp.x) + 7,
-                  static_cast<int>(sp.y) - 4, 1, arc_c);
+                  static_cast<int>(sp.y) - 6, 2, arc_c);
     }
+
+    auto time_marker = [&](double fraction, const char* label) {
+        if (d.arc.size() < 2) {
+            return;
+        }
+        const std::size_t idx = static_cast<std::size_t>(
+            std::lround(fraction * static_cast<double>(d.arc.size() - 1)));
+        const lander::Vec2& p = d.arc[idx].p;
+        const Vec2 sp = to_screen(p.x, p.y, cam);
+        draw_thick_line(renderer, {sp.x - 4.0, sp.y}, {sp.x + 4.0, sp.y},
+                        1.8, arc_c, 230);
+        draw_thick_line(renderer, {sp.x, sp.y - 4.0}, {sp.x, sp.y + 4.0},
+                        1.8, arc_c, 230);
+        draw_text(renderer, label, static_cast<int>(sp.x) + 6,
+                  static_cast<int>(sp.y) + 8, 1, arc_c);
+    };
+    time_marker(0.25, "25%");
+    time_marker(0.50, "50%");
+    time_marker(0.75, "75%");
 
     auto marker = [&](const lander::Vec2& world, const std::string& label,
                       Color color) {
         const Vec2 sp = to_screen(world.x, world.y, cam);
-        draw_thick_line(renderer, {sp.x - 7.0, sp.y}, {sp.x + 7.0, sp.y},
-                        2.0, color, 235);
-        draw_thick_line(renderer, {sp.x, sp.y - 7.0}, {sp.x, sp.y + 7.0},
-                        2.0, color, 235);
-        draw_text(renderer, label, static_cast<int>(sp.x) + 10,
-                  static_cast<int>(sp.y) - 4, 1, color);
+        draw_thick_line(renderer, {sp.x - 8.0, sp.y}, {sp.x + 8.0, sp.y},
+                        3.0, color, 245);
+        draw_thick_line(renderer, {sp.x, sp.y - 8.0}, {sp.x, sp.y + 8.0},
+                        3.0, color, 245);
+        draw_text(renderer, label, static_cast<int>(sp.x) + 11,
+                  static_cast<int>(sp.y) - 5, 2, color);
     };
 
+    if (d.target_point_valid) {
+        draw_thick_line(renderer, to_screen(d.arr.x, d.arr.y, cam),
+                        to_screen(d.target_point.x, d.target_point.y, cam),
+                        2.0, target_c, 220);
+        marker(d.target_point, "TARGET", target_c);
+    }
     marker(d.dep, "DEP", dep_c);
     marker(d.arr, "ARR", arr_c);
-    marker(d.target_at_arrival,
-           std::string(target_label) + " @ ARRIVAL", target_c);
-    (void)source_label;
+
+    char label_buf[96];
+    std::snprintf(label_buf, sizeof(label_buf), "%s @ T0", source_label);
+    const Vec2 dep_sp = to_screen(d.dep.x, d.dep.y, cam);
+    draw_text(renderer, label_buf, static_cast<int>(dep_sp.x) + 14,
+              static_cast<int>(dep_sp.y) + 20, 2, dep_c);
+    std::snprintf(label_buf, sizeof(label_buf), "%s @ T+%.1fS", target_label,
+                  d.arrival_epoch - d.solve_epoch);
+    const Vec2 arr_sp = to_screen(d.arr.x, d.arr.y, cam);
+    draw_text(renderer, label_buf, static_cast<int>(arr_sp.x) + 14,
+              static_cast<int>(arr_sp.y) - 20, 2, target_c);
 }
 
 void fill_rect(SDL_Renderer* renderer, int x, int y, int w, int h,
@@ -4321,17 +4377,24 @@ int main(int argc, char** argv) {
         const int dest = sim.contract().destination_body;
         // M06-R13: draw all three bodies, each with its own tidal-lock spin.
         // The reference body is drawn last so it stays on top, preserving the
-        // M05 two-body draw order for the primary / companion.
-        for (int b = 0; b < 3; ++b) {
-            if (b == ref) {
-                continue;
+        // M05 two-body draw order for the primary / companion. In the
+        // transfer-cold isolation the ordinary current-time bodies are
+        // suppressed so the scene contains only the explicit temporal
+        // references drawn by the transfer-cold overlay.
+        const bool transfer_cold_scene =
+            debug_mode == lander::DebugSubsystem::TransferCold;
+        if (!transfer_cold_scene) {
+            for (int b = 0; b < 3; ++b) {
+                if (b == ref) {
+                    continue;
+                }
+                draw_body(renderer, bin.body(b), bin.position(b, t_present),
+                          cam, render_state, b == dest,
+                          bin.body_rotation(b, t_present));
             }
-            draw_body(renderer, bin.body(b), bin.position(b, t_present), cam,
-                      render_state, b == dest,
-                      bin.body_rotation(b, t_present));
+            draw_body(renderer, bin.body(ref), ref_pos, cam, render_state,
+                      ref == dest, body_rot);
         }
-        draw_body(renderer, bin.body(ref), ref_pos, cam, render_state,
-                  ref == dest, body_rot);
         draw_lander(renderer, render_state, thrust_level, flame_clock, cam);
         if (s.crashed) {
             // Time is frozen after a crash, so the crash body's centre at
@@ -4490,7 +4553,7 @@ int main(int argc, char** argv) {
         // camera beyond the debug-only frame lock above.
         if (debug_mode == lander::DebugSubsystem::TransferCold) {
             draw_transfer_cold_debug(
-                renderer, cam, transfer_cold_display,
+                renderer, cam, sim.binary(), transfer_cold_display,
                 body_name(transfer_debug.source),
                 body_name(transfer_debug.target));
             if (paused) {

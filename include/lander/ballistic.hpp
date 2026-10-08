@@ -80,9 +80,17 @@ struct TransferSolution {
 // arrival epoch / achieved miss as a `TransferSolution` cache entry for a
 // later warm replan. When null, the solver's behavior is exactly as before.
 bool solve_transfer_velocity(const BinarySystem& bin, double dt,
-                             const Vec2& x0, int source, int target, double t0,
-                             Vec2& v_out, TransferSolution* out_solution =
-                                 nullptr);
+                              const Vec2& x0, int source, int target, double t0,
+                              Vec2& v_out, TransferSolution* out_solution =
+                                  nullptr);
+
+// M06-R20-F01: read-only canonical arrival-shell target for a transfer epoch.
+// Computes exactly the goal point used by the accepted COLD / WARM terminal
+// miss (the target surface clearance shell on the side facing the source at
+// the arrival epoch), without solving, propagating, or mutating any state.
+// Returns false for invalid body indices or coincident centres.
+bool transfer_arrival_target(const BinarySystem& bin, int source, int target,
+                             double arrival_epoch, Vec2& goal_out);
 
 // M06-R5-02: bounded 2x2 Newton / differential correction on the terminal
 // error F(v0) = propagate(x0, v0, t0, steps, dt) - goal. A central-difference

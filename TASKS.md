@@ -3,7 +3,7 @@
 ```yaml
 Milestone: M06
 State: ACTIVE
-Phase: IMPLEMENTATION
+Phase: HUMAN_VERIFICATION
 Active-Request: M06-R20
 ```
 
@@ -26,21 +26,19 @@ only for provenance or legacy-ID detail, not as active execution state.
 
 ## Current decision boundary
 
-M06 is active in IMPLEMENTATION on the `M06-R20-F01` bounded follow-up to the
-same `M06-R20` transfer-cold visual-observability request. The first R20
-implementation passed the technical V01-V06 checks, but `M06-R20-H01` is a
-human FAIL: the route is still a small ambiguous cluster above the primary, the
-current-time bodies compete with the departure/arrival-epoch bodies, and the
-scene does not let a human immediately understand `PRIMARY @ T0 -> COLD ARC ->
-COMPANION @ ARRIVAL`. This remains the SAME request / SAME human gate; do NOT
-allocate R21. The follow-up must first instrument the accepted solution to find
-the causal presentation defect, then rebuild the transfer-cold debug scene as
-an explicit temporal inspection scene (source at `solve_epoch`, target at
-`arrival_epoch`, de-emphasized current-time bodies, transfer-only aspect-preserving
-camera fit, readable arc with sparse time markers, and truthful ARR/TARGET
-geometry only where the solver exposes exact quantities). The COLD solver,
-physics, ephemerides, normal rendering, other debug modes, warm replanning,
-executor/R19, and M07 remain untouched. Work stays UNCOMMITTED at `M06-R20-H01`.
+M06 is active in HUMAN_VERIFICATION with the `M06-R20` transfer-cold cell now
+COMPLETE. The first R20 implementation passed V01-V06 but failed `M06-R20-H01`
+because the route was visually ambiguous. The F01 follow-up diagnosed the
+causal defect as C/D/E (camera fit dominated by full body extents plus
+current-time/temporal body mixing), then rebuilt the scene as an explicit
+inertial temporal inspection scene: `PRIMARY @ T0 -> COLD ARC -> COMPANION @
+ARRIVAL`, transfer-cold-only suppression of current-time bodies, a
+transfer-only aspect-preserving fit, readable time markers, and a truthful
+solver arrival-shell TARGET. All R20/F01 automated checks pass, and the user
+returned PASS on 2026-10-08. Do NOT allocate or start R21 / transfer-warm
+without a new explicit request. The COLD solver, physics, ephemerides, normal
+rendering, other debug modes, warm replanning, executor/R19, and M07 remain
+untouched.
 The node-executor cell (R18+R19) is COMPLETE and committed (`37c7689`). M06 is
 NOT closed (inherited gates R11-H01 / R12-H01 / R12-H02 / R7-H01 remain).
 
@@ -535,7 +533,7 @@ ID per visualization experiment.
 
 ### M06-R20 human verification
 
-- [H] M06-R20-H01 Transfer-cold visual-inspection gate.
+- [x] M06-R20-H01 Transfer-cold visual-inspection gate.
   Run: `./build/lander_gui --debug-subsystem transfer-cold`. The human must
   immediately be able to verify:
   1. The source is PRIMARY and the destination is COMPANION.
@@ -548,9 +546,10 @@ ID per visualization experiment.
   8. Nothing visibly intersects terrain contrary to the solver's validation.
   9. The numeric panel and the graphical route describe the same solution.
   10. The live craft is not teleported or otherwise mutated by the inspection.
-  Do not self-complete this gate; do not mark the transfer-cold cell
-  human-accepted until the user can actually inspect the solved route. Do not
-  proceed to transfer-warm until M06-R20-H01 passes.
+  Evidence: after the F01 inertial temporal-scene rebuild, the user inspected
+  the transfer-cold scene on 2026-10-08 and returned PASS. The transfer-cold
+  cell is human-accepted; transfer-warm may be started only as a separately
+  requested scope.
 
 ### M06-R20 derived implementation tasks
 
@@ -567,11 +566,122 @@ ID per visualization experiment.
 - [x] M06-R20-D06 Run verification (focused + ctest + smokes); stop uncommitted
   at M06-R20-H01.
 
+### M06-R20-F01 bounded follow-up after the first H01 FAIL
+
+Source: USER (2026-10-08) human verification of `M06-R20-H01`: FAIL. The
+visualization exists, but the route is not visually legible. This is a bounded
+iteration under the same R20 request and same H01 gate; it is not R21.
+
+- [x] M06-R20-F01-01 Diagnose the compression before changing rendering. Record
+  a diagnostic artifact with `solve_epoch`, `arrival_epoch`, TOF, departure /
+  first / final arc positions, ARR, source/target positions at both epochs, raw
+  arc bounds, camera-fit bounds, and screen coordinates for DEP / ARR /
+  source@departure / target@arrival. Conclude which of A-E is causal:
+  A coordinates, B epoch/frame transformation, C camera-fit bounds, D
+  ambiguous mixing of current-time and departure/arrival-time geometry, or E a
+  combination. Retain only the causal conclusion in durable state.
+  Evidence: temporary headless diagnostic produced
+  `/tmp/opencode/r20-diag.txt`; `first_arc == DEP`, `last_arc == ARR`, and the
+  target reference used the arrival epoch, so A/B were not causal. The causal
+  defect was C/D/E: the old fit included full body extents and the scene mixed
+  current-time bodies with the temporal references, compressing the short route
+  into an ambiguous cluster.
+- [x] M06-R20-F01-02 Rebuild the transfer-cold debug scene as an explicit
+  WORLD/INERTIAL temporal inspection scene: render `PRIMARY @ T0` from
+  `solve_epoch` and `COMPANION @ T+<actual TOF>` from `arrival_epoch` as the two
+  dominant body references, with the complete accepted COLD arc between them.
+  Do not imply both bodies are at the same instant.
+  Evidence: `TransferColdDisplay` now carries `source_outline` /
+  `target_outline`, `source_rotation` / `target_rotation`, and labelled
+  `@ T0` / `@ T+<TOF>` body references; the GUI draws those temporal bodies
+  instead of implying a single shared instant.
+- [x] M06-R20-F01-03 In transfer-cold debug mode only, suppress or clearly
+  de-emphasize/label the ordinary current-time bodies so they cannot be
+  confused with the departure/arrival temporal bodies. The unrelated outer
+  moonlet must not control framing or dominate the scene. Normal gameplay and
+  other debug modes remain unchanged.
+  Evidence: `gui.cpp` skips the ordinary current-time `draw_body` calls only
+  when `debug_mode == TransferCold`; all other modes still draw current-time
+  bodies normally.
+- [x] M06-R20-F01-04 Make the transfer-cold debug camera fit depend only on the
+  accepted arc, source body outline at `solve_epoch`, target body outline at
+  `arrival_epoch`, DEP, and ARR. Preserve aspect ratio, add screen margin,
+  exclude body 2 / arbitrary system bounds, and make the dominant relevant
+  extent occupy roughly 70-85% of the usable viewport.
+  Evidence: `transfer_cold_display` computes `raw_center` / `raw_half` from the
+  arc, local source/target outlines, DEP, ARR, and the solver arrival shell
+  only; body centres and body 2 are excluded, the fit adds a 1.18 margin, and
+  V09 asserts the dominant relevant extent occupies 70-90% of the viewport.
+- [x] M06-R20-F01-05 Make the arc readable as a route: clear DEP/ARR markers,
+  a visible COLD ARC polyline, source/target temporal-body outlines, and sparse
+  presentation-only time markers along the arc (for example 25/50/75% or
+  elapsed times) without clutter.
+  Evidence: the overlay draws enlarged DEP/ARR markers, a 2.5px COLD ARC
+  polyline, 25/50/75% time ticks, and epoch-labelled temporal bodies.
+- [x] M06-R20-F01-06 Keep the arrival relationship truthful. Draw a
+  `TARGET` marker and short `ARR -> TARGET` miss segment only if both endpoints
+  are exactly the quantities used by the accepted solver and `achieved_miss`;
+  otherwise show ARR plus the labelled `COMPANION @ ARRIVAL` geometry and keep
+  MISS numerical. Do not fabricate or approximate a target point.
+  Evidence: `transfer_arrival_target` exposes the solver's exact arrival shell
+  (`target max_surface_radius + kTransferClearance` on the source-facing side
+  at `arrival_epoch`) without changing the solver; the overlay draws TARGET and
+  the ARR -> TARGET segment only when that exact point is available, and V08
+  asserts equality with the solver goal.
+- [x] M06-R20-F01-07 Extend the headless R20 regressions to cover temporal
+  source/target epochs, inertial arc consistency, first/last parity, exclusion
+  of body 2 from the fit, aspect preservation, viewport margins, meaningful
+  dominant viewport extent, DEP/ARR not collapsed by an epoch/frame mismatch,
+  and Simulation immutability. Include one deterministic regression that fails
+  if the route is again a tiny cluster despite available viewport space.
+  Evidence: `test_transfer_cold_temporal_epochs_and_inertial_frame` and the
+  reworked fit test add deterministic checks for temporal outlines, inertial
+  parity, body-2 exclusion, aspect/margin/extent, and a DEP-ARR screen-distance
+  regression that fails if the route collapses below 60px.
+- [x] M06-R20-F01-08 Re-run focused transfer/debug/render/camera tests,
+  `lander_transfer_warm_tests`, `lander_debug_subsystem_tests`,
+  `lander_flight_computer_tests`, `lander_predictor_tests`, full `ctest`
+  (expected 11/12 with only the pre-existing V14-C red), transfer-cold headless
+  smoke, and normal-game smoke, then return to the SAME `M06-R20-H01` gate.
+  Evidence: all non-landing ctest targets pass (11/11 with landing excluded);
+  `lander_landing_tests` shows only the pre-existing V14-C failure; all 12
+  `--debug-subsystem` headless smokes exit 0; transfer-cold and normal PPM
+  artifacts were generated for human inspection.
+
+Derived implementation follow-up:
+
+- [x] M06-R20-D07 Instrument / diagnose the first presentation and record the
+  causal conclusion.
+- [x] M06-R20-D08 Rebuild the transfer-cold display/camera helpers as a
+  temporal inspection model (source at T0, target at arrival, transfer-only
+  fit).
+- [x] M06-R20-D09 Rework the transfer-cold GUI scene: dominant temporal bodies,
+  de-emphasized current-time bodies, readable arc + time markers, truthful
+  ARR/TARGET presentation.
+- [x] M06-R20-D10 Add the F01 automated presentation regressions.
+- [x] M06-R20-D11 Run the F01 verification battery and stop uncommitted at
+  `M06-R20-H01`.
+
+Additional automated verification for F01:
+
+- [x] M06-R20-V07 The displayed source geometry uses `solve_epoch` and the
+  displayed target geometry uses `arrival_epoch`.
+- [x] M06-R20-V08 The arc samples, DEP, ARR, and body references are all in one
+  consistent world/inertial presentation frame, with first/last parity.
+- [x] M06-R20-V09 The debug fit excludes body 2 and arbitrary system bounds,
+  preserves aspect ratio, respects viewport margins, and makes the dominant
+  relevant extent occupy a meaningful fraction of the viewport.
+- [x] M06-R20-V10 DEP and ARR screen points are not collapsed by an
+  epoch/frame mismatch; the route occupies non-degenerate viewport space in the
+  actual transfer-cold fixture.
+- [x] M06-R20-V11 The normal `Simulation` remains unmodified by the F01
+  presentation changes.
+
 ## Inherited unresolved human gates
 
 These remain unresolved and must not be inferred complete from later automated
-work. Preserve them while M06 remains active (current follow-up cell:
-TRANSFER-COLD / M06-R20).
+work. Preserve them while M06 remains active (last completed subsystem cell:
+TRANSFER-COLD / M06-R20; no new M06 cell is active yet).
 
 - [H] M06-R11-H01 Trustworthy-diagnostics visual pass: confirm corrected
   labels/units/body-relative readouts in the debug harness.
@@ -606,6 +716,9 @@ TRANSFER-COLD / M06-R20).
 - M06-R18-H01 + M06-R19-H01 node-executor human gates: PASS 2026-10-08. The
   node-executor hardening cell (R18+R19) is COMPLETE and committed at the
   current checkpoint. Next subsystem cell: TRANSFER-COLD (-> M06-R20).
+- M06-R20 transfer-cold visual-observability cell (including F01): human
+  `M06-R20-H01` PASS 2026-10-08. The cell is COMPLETE and committed in the
+  R20 completion commit; no R21 / transfer-warm work has been started.
 - 2026-10-06 durable-state migration to the experience-augmented architecture:
   committed (`f2dc61d`); exact pre-migration ledgers preserved under
   `records/M06-pre-experience-*.snapshot.md`.

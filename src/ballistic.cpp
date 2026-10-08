@@ -686,6 +686,25 @@ bool solve_transfer_velocity(const BinarySystem& bin, double dt,
     return true;
 }
 
+bool transfer_arrival_target(const BinarySystem& bin, int source, int target,
+                             double arrival_epoch, Vec2& goal_out) {
+    if (source < 0 || source >= BinarySystem::kBodyCount || target < 0 ||
+        target >= BinarySystem::kBodyCount) {
+        return false;
+    }
+    const Vec2 s1 = bin.position(source, arrival_epoch);
+    const Vec2 g1 = bin.position(target, arrival_epoch);
+    const double dg = std::hypot(s1.x - g1.x, s1.y - g1.y);
+    if (dg < 1.0e-9) {
+        return false;
+    }
+    const Vec2 approach{(s1.x - g1.x) / dg, (s1.y - g1.y) / dg};
+    const double r_arr =
+        bin.body(target).terrain.max_surface_radius() + kTransferClearance;
+    goal_out = Vec2{g1.x + approach.x * r_arr, g1.y + approach.y * r_arr};
+    return true;
+}
+
 NewtonCorrectionResult differential_correction(
     const BinarySystem& bin, double dt, const Vec2& x0, double t0, int steps,
     const Vec2& goal, Vec2 v0, int max_iters, double accept_miss,
