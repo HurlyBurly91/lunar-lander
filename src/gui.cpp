@@ -2617,6 +2617,28 @@ void draw_debug_subsystem_panel(
             std::snprintf(buffer, sizeof buffer, "  STATE  %s",
                           lander::executor_state_name(es));
             line(buffer, node_executor.active() ? green : dim);
+            // M06-R19 (fixture observability): this debug fixture is
+            // pre-armed on a deliberately observable mixed PGR+RAD node and
+            // starts paused. Surface the intended maneuver and the "no key
+            // press to begin" fact directly, derived from the actual fixture
+            // node and config (no duplicated magic display constants).
+            if (maneuver_node) {
+                const double ndv =
+                    std::hypot(maneuver_node->dv_prograde,
+                               maneuver_node->dv_radial);
+                std::snprintf(
+                    buffer, sizeof buffer,
+                    "  TEST NODE  %s   PGR %+.2f  RAD %+.2f  DV %5.2f M/S",
+                    body_name(maneuver_node->frame_body),
+                    maneuver_node->dv_prograde, maneuver_node->dv_radial,
+                    ndv);
+                line(buffer, cyan);
+                std::snprintf(buffer, sizeof buffer, "  NOM BURN  %5.2f S   "
+                    "(full throttle)",
+                              ndv / sim.config().main_accel);
+                line(buffer, cyan);
+                line("  EXECUTOR ARMED BY FIXTURE - [P] RUN  [X] ABORT", green);
+            }
             std::snprintf(
                 buffer, sizeof buffer,
                 "  NODE  %s   ignite T+%7.1f s   burn ~%5.1f s%s",
@@ -2636,6 +2658,23 @@ void draw_debug_subsystem_panel(
                           "  THR   %4.2f   (held during burn)",
                           ctx.last_step_input.main_throttle);
             line(buffer, dim);
+            // M06-R19-04: display-only mirror of the NodeExecutor alignment
+            // test (signed error to the VGO direction, angular rate).
+            const double vgo_ang =
+                (rem_n < 1e-12)
+                    ? 0.0
+                    : std::atan2(-dv_rem.x, dv_rem.y);
+            double align_err = vgo_ang - st.angle;
+            align_err -=
+                lander::kTwoPi * std::round(align_err / lander::kTwoPi);
+            const bool aligned_now =
+                std::abs(align_err) <= 0.05 && std::abs(st.omega) <= 0.1;
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  ALIGN err %7.2f deg  omega %+.3f rad/s%s",
+                align_err * 180.0 / lander::kPi, st.omega,
+                aligned_now ? "" : "   OUT OF ALIGNMENT");
+            line(buffer, aligned_now ? green : amber);
             std::snprintf(buffer, sizeof buffer,
                           "  FUEL  %7.1f kg", st.fuel);
             line(buffer, st.fuel < 100.0 ? amber : dim);
@@ -2646,7 +2685,8 @@ void draw_debug_subsystem_panel(
             } else if (es == lander::ExecutorState::Incomplete) {
                 line("  RESULT  INCOMPLETE (fuel exhausted)", red);
             }
-            line("  [Return] exec  [Shift+Return | X] abort", dim);
+            line("  [P] RUN  [X] ABORT   (executor is pre-armed; no Return)",
+                 dim);
             break;
         }
         case lander::DebugSubsystem::TransferCold: {

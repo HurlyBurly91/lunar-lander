@@ -55,7 +55,7 @@ class NodeExecutor {
 public:
     void clear();
     void arm(const ManeuverNode& node, const NodeBasis& basis, double now,
-             const Config& config);
+             const Config& config, bool direct_burn = false);
     void abort();
 
     bool active() const noexcept {

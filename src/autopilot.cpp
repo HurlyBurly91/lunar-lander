@@ -25,6 +25,23 @@ Vec2 normalize_safe(const Vec2& v) {
     return {v.x / r, v.y / r};
 }
 
+// Continuous alignment safety (M06-R19): a burn is only held while the nose
+// is within kAlignAngleBand of the current VGO direction and the spin stays
+// below kAlignOmegaBand; otherwise the executor drops back to ALIGN.
+constexpr double kAlignAngleBand = 0.05;
+constexpr double kAlignOmegaBand = 0.1;
+// The tracked VGO is in the "small vector" (flip-danger) regime when its
+// magnitude is at most this many full-thrust steps. A single lagged,
+// off-axis step is then a large fraction of the vector and can rotate or
+// flip its direction by O(1) rad inside one step, beyond what the bang-bang
+// can track (M06-R19: a step delivered against a ~1.5-step vector flipped
+// it 1.57 rad and the burn chased the flip for the rest of the tank). Above
+// it, the VGO direction is stable enough that the ordinary bang-bang
+// tracking oscillation is safe while thrusting, so the continuous
+// re-check uses the strict alignment band only in the small-vector regime.
+constexpr double kSmallVgoSteps = 1.5;
+constexpr double kContinuationAngleBand = 0.2;
+
 // FLIGHT-COMPUTER TIER: HOT
 // BEGIN CANONICAL ALGORITHM: bang-bang attitude control
 // Reference:
@@ -164,7 +181,7 @@ void NodeExecutor::clear() {
 }
 
 void NodeExecutor::arm(const ManeuverNode& node, const NodeBasis& basis,
-                       double now, const Config& config) {
+                       double now, const Config& config, bool direct_burn) {
     clear();
     frame_body_ = node.frame_body;
     node_time_ = node.time;
@@ -183,7 +200,16 @@ void NodeExecutor::arm(const ManeuverNode& node, const NodeBasis& basis,
     // with throttle 0, regardless of ignition time (M06-R4-03). Once aligned
     // it holds the VGO direction in WAIT until ignition; it never burns
     // before ignition. A late arm (now >= node_time) is exposed as LATE.
-    state_ = ExecutorState::Align;
+    // A continuation re-arm (midcourse re-target with the nose already near
+    // the new VGO direction) resumes the correction burn immediately,
+    // skipping the ALIGN swing. Only late nodes (time <= now) may direct-
+    // burn, so the pre-ignition ALIGN/WAIT semantics (M06-R4-03) are
+    // preserved for ordinary arms.
+    if (direct_burn && now >= node_time_) {
+        state_ = ExecutorState::Burn;
+    } else {
+        state_ = ExecutorState::Align;
+    }
     late_ = now >= node_time_;
 }
 
@@ -200,7 +226,7 @@ bool NodeExecutor::aligned(const State& state) const {
     }
     const double desired = std::atan2(-direction.x, direction.y);
     const double error = std::abs(wrap_pi(desired - state.angle));
-    return error <= 0.05 && std::abs(state.omega) <= 0.1;
+    return error <= kAlignAngleBand && std::abs(state.omega) <= kAlignOmegaBand;
 }
 
 Input NodeExecutor::make_input(const State& state, double now,
@@ -216,15 +242,29 @@ Input NodeExecutor::make_input(const State& state, double now,
     // while aligned: we never force an off-axis burn just because the node
     // time passed. The first burning step must already carry the thrust
     // command, otherwise the finite burn would slip one fixed step.
+    //
+    // Continuous alignment safety is magnitude-gated (M06-R19): while the
+    // burn holds, thrust requires the strict alignment band only in the
+    // small-vector flip-danger regime (|VGO| <= kSmallVgoSteps full steps,
+    // where one lagged off-axis step can flip the VGO direction); above it,
+    // the bang-bang tracks the (slowly rotating) VGO direction while
+    // thrusting, so the burn continues without a per-step re-check. In both
+    // regimes a step that fails the required check delivers no impulse and
+    // after_step re-enters ALIGN.
     const bool is_aligned = aligned(state);
+    const double step_dv = config.main_accel * config.fixed_dt;
+    const bool small_vgo =
+        step_dv > 0.0 &&
+        vec_length(dv_remaining_) <= kSmallVgoSteps * step_dv;
     const bool burning =
-        state_ == ExecutorState::Burn ||
+        (state_ == ExecutorState::Burn &&
+         (!small_vgo || is_aligned)) ||
         (state_ == ExecutorState::Align && now >= ignite_time_ &&
          is_aligned) ||
         (state_ == ExecutorState::Wait && now >= ignite_time_ && is_aligned);
 
     if (state_ == ExecutorState::Align || state_ == ExecutorState::Wait ||
-        burning) {
+        state_ == ExecutorState::Burn) {
         const Vec2 direction = normalize_safe(dv_remaining_);
         input = attitude_input(state, config,
                                vec_length(direction) > 1.0e-9
@@ -285,7 +325,19 @@ void NodeExecutor::after_step(const State& before, const State& after,
 
         // The next `make_input` scales the final partial step, so the burn
         // is complete only once the tracked impulse has actually been spent.
-        if (vec_length(dv_remaining_) <= 1.0e-9) {
+        // The floor is one alignment-band width of a single thrust step
+        // (main_accel * fixed_dt * kAlignAngleBand): a partial step of that
+        // size or smaller can leave at most that much off-axis remainder
+        // (band * magnitude), which no later aligned step can deliver, and
+        // chasing it would only rotate the sub-floor residual out of the
+        // band again and again (each re-alignment is a full attitude
+        // rotation with the engine off). At the floor the remainder is
+        // below the guidance's own angular resolution and is declared
+        // delivered (M06-R19 follow-up).
+        const double delivery_floor =
+            config.main_accel * config.fixed_dt * kAlignAngleBand;
+        if (vec_length(dv_remaining_) <=
+            std::max(delivery_floor, 1.0e-9)) {
             state_ = ExecutorState::Complete;
             dv_remaining_ = {};
             return;
@@ -293,6 +345,22 @@ void NodeExecutor::after_step(const State& before, const State& after,
         if (after.fuel <= 0.0) {
             state_ = ExecutorState::Incomplete;
             return;
+        }
+        // Continuous alignment safety (M06-R19), magnitude-gated: in the
+        // small-vector flip-danger regime (|VGO| <= kSmallVgoSteps full
+        // steps), a lagged off-axis impulse can rotate or flip the VGO
+        // direction by O(1) rad inside a step, beyond what the bang-bang
+        // tracks, so alignment is re-checked every step and a misaligned
+        // state stops the physical thrust and returns to ALIGN (the Align
+        // transition re-enters BURN once aligned; never back to WAIT after
+        // ignition). Above the regime the VGO direction is stable, the
+        // bang-bang tracks it while thrusting, and the burn holds without
+        // the per-step re-check.
+        const double gate_step_dv = config.main_accel * config.fixed_dt;
+        if (gate_step_dv > 0.0 &&
+            vec_length(dv_remaining_) <= kSmallVgoSteps * gate_step_dv &&
+            !aligned(after)) {
+            state_ = ExecutorState::Align;
         }
     }
 
@@ -358,8 +426,11 @@ bool TransferMidcourse::maybe_replan(const BinarySystem& bin,
     if (!engaged_) {
         return false;
     }
-    // Never interrupt an in-progress correction burn; the next bounded-rate
-    // cycle re-aims once that burn is complete.
+    // Never interrupt an in-progress correction BURN (M06-R19: a burn may
+    // re-enter ALIGN as a zero-throttle alignment hold, so it is tracked
+    // here, but a re-aim must not replace a partially delivered correction);
+    // a re-aim during an ALIGN swing only refreshes the swing target and is
+    // allowed, as in the original bounded-rate design.
     if (fast_.state() == ExecutorState::Burn) {
         return false;
     }
@@ -398,7 +469,21 @@ bool TransferMidcourse::maybe_replan(const BinarySystem& bin,
     const NodeBasis basis = compute_node_basis(
         bin, now, solved->frame_body, {state.x, state.y},
         {state.vx, state.vy});
-    fast_.arm(*solved, basis, now, config);
+    // Burn-continuation re-arm: a re-target that keeps the nose within the
+    // continuation band of the new VGO direction (with bounded rate) resumes
+    // the correction burn immediately instead of paying a full ALIGN
+    // re-swing; otherwise the ordinary ALIGN re-swing applies. The re-target
+    // always arms a late node (time = now), so a direct burn is legal.
+    const Vec2 new_world_dv = node_world_dv(*solved, basis);
+    const double desired =
+        vec_length(new_world_dv) > 1.0e-9
+            ? std::atan2(-new_world_dv.x, new_world_dv.y)
+            : state.angle;
+    const double err_to_new = std::abs(wrap_pi(desired - state.angle));
+    const bool direct =
+        err_to_new <= kContinuationAngleBand &&
+        std::abs(state.omega) <= kAlignOmegaBand;
+    fast_.arm(*solved, basis, now, config, direct);
     node_ = *solved;
     ++retargets_;
     return true;

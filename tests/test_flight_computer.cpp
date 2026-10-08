@@ -1077,6 +1077,257 @@ void test_node_executor() {
     }
 }
 
+// M06-R19 (R19-03 / V02): continuous alignment safety during a burn — the
+// exact failure observed in the M06-R18-H01 human gate, where the node
+// executor spun the ship uncontrollably (STATE BURN / THR 1.00 while the
+// thrust axis and the VGO ray were visibly separated).
+//
+// Mechanism: as the tracked VGO magnitude approaches zero near the end of a
+// small burn, each delivered impulse is applied along the previous step's
+// nose, which lags the VGO direction; the shrinking vector then rotates
+// faster and faster, crosses the origin, and normalize(VGO) flips. Without a
+// re-entry from the burn state to a safe state the engine keeps firing at
+// the flipping target until the ship spins and the fuel is spent.
+//
+// Both scenarios drive the real bang-bang law and the real semi-implicit
+// attitude integration (no direct state mutation):
+//   A: zero-gravity minimal geometry, armed at ignition with the exact
+//      ignition state of the observed failure (nose 0.0097 rad ahead of the
+//      VGO direction, +0.01 rad/s);
+//   B: the exact GUI node-executor fixture (seed 1005, the debug-fixture
+//      orbit, the default node at 5.0 s with dv_prograde 0.5) through the
+//      authoritative Simulation, driven exactly as gui.cpp does.
+//
+// The whole-run invariant both assert (magnitude-gated, matching the
+// executor's own safety check): while the tracked VGO is in the
+// small-vector flip-danger regime (|VGO| <= 1.5 full-thrust steps) the
+// executor only ever emits main throttle while the ship is aligned with
+// the VGO direction (the 0.05 rad / 0.1 rad/s band). Above it, the VGO
+// direction is stable and the bang-bang tracks it while thrusting, so the
+// burn may continue with the ordinary tracking oscillation.
+//
+ // The boundedness assertions separate the defect (an ever-growing spin while
+ // the engine fires, hundreds of fixed steps of thrust, the whole fuel tank
+ // consumed) from legitimate behaviour (a one-shot pre-ignition ALIGN
+ // rotation of up to a full turn or so at throttle 0, as in the existing
+ // misaligned-node test; the alignment gate itself bounds |omega| to 0.1
+ // rad/s at every burn re-entry).
+ //
+ // This test is the safety guard behind the R5-V08 closed-loop bound
+ // (tests/test_transfer_warm.cpp, the 0.65 approach-ratio ceiling). That
+ // ceiling was superseded from the pre-R19 0.60 proxy precisely to absorb the
+ // bounded zero-throttle re-entry interval this rule mandates. The ceiling is
+ // only valid while this guard stays mandatory: a future implementation that
+ // regains transfer margin by re-emitting off-axis thrust in the small-VGO
+ // misaligned regime (relaxing or removing this gate) must fail here. Do not
+ // loosen the 0.05 rad / 0.1 rad/s band or the small-vector threshold to make
+ // either the transfer test or this one pass.
+ void test_node_executor_alignment_safety() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const double a = cfg.main_accel;
+
+    // Read-only mirror of the executor's strict alignment band (the
+    // NodeExecutor::aligned formula is private): the VGO direction within
+    // 0.05 rad of the nose and |omega| within 0.1 rad/s; a zero remaining
+    // vector is trivially aligned. This is the band that bounds thrust in
+    // the small-vector flip-danger regime (see the invariant note above).
+    auto aligned_mirror = [](const lander::Vec2& dv, const lander::State& s) {
+        const double r = std::hypot(dv.x, dv.y);
+        if (r < 1.0e-12) {
+            return true;
+        }
+        const double desired = std::atan2(-dv.x, dv.y);
+        double err =
+            std::fmod(desired - s.angle + lander::kPi, lander::kTwoPi);
+        if (err < 0.0) {
+            err += lander::kTwoPi;
+        }
+        err -= lander::kPi;
+        return std::abs(err) <= 0.05 && std::abs(s.omega) <= 0.1;
+    };
+
+    // A: zero gravity; the attitude and the executor's VGO accounting are
+    // fully determined by (angle, omega, throttle), so this mirrors
+    // integrate_flight for the burn dynamics exactly.
+    {
+        lander::ManeuverNode node{};
+        node.time = 5.0;
+        node.dv_prograde = 0.5;  // VGO (0, 0.5): the aligned nose angle is 0
+        const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, 4.9375, cfg);  // armed at ignition
+        check(exec.state() == lander::ExecutorState::Align,
+              "arming at ignition starts in ALIGN");
+
+        lander::State before{};
+        before.fuel = 1000.0;
+        before.angle = 0.0097;  // the nose leads the VGO direction
+        before.omega = 0.01;    // (the observed ignition state)
+
+        double now = 4.9375;
+        int thrust_steps = 0;
+        bool invariant_held = true;
+        bool wait_after_ignition = false;
+        double max_omega_thrusting = 0.0;
+        double sweep = 0.0;
+        for (int i = 0; i < 20000 && exec.active(); ++i) {
+            const lander::Input input =
+                exec.make_input(before, now, cfg, false, false);
+            if (input.main_throttle > 0.0) {
+                ++thrust_steps;
+                max_omega_thrusting =
+                    std::max(max_omega_thrusting, std::abs(before.omega));
+                const lander::Vec2& dv = exec.dv_remaining();
+                if (std::hypot(dv.x, dv.y) <= 1.5 * a * dt &&
+                    !aligned_mirror(dv, before)) {
+                    invariant_held = false;
+                }
+            }
+            lander::State after = before;
+            lander::Vec2 acc{0.0, 0.0};
+            if (input.main_throttle > 0.0) {
+                acc.x = -a * input.main_throttle * std::sin(before.angle);
+                acc.y = a * input.main_throttle * std::cos(before.angle);
+            }
+            if (input.rotate_left) {
+                after.omega -= cfg.rotate_accel * dt;
+            }
+            if (input.rotate_right) {
+                after.omega += cfg.rotate_accel * dt;
+            }
+            after.vx += acc.x * dt;
+            after.vy += acc.y * dt;
+            after.x += after.vx * dt;
+            after.y += after.vy * dt;
+            after.angle += after.omega * dt;
+            after.fuel =
+                std::max(0.0,
+                         before.fuel -
+                             (input.main_throttle > 0.0
+                                  ? cfg.fuel_burn * dt
+                                  : 0.0));
+            now += dt;
+            sweep += std::abs(after.omega) * dt;
+            exec.after_step(before, after, input, now, cfg);
+            if (now >= exec.ignite_time() &&
+                exec.state() == lander::ExecutorState::Wait) {
+                wait_after_ignition = true;
+            }
+            before = after;
+        }
+        check(exec.state() == lander::ExecutorState::Complete,
+              "a small burn that loses alignment mid-burn completes "
+              "instead of burning out");
+        check(invariant_held,
+              "thrust in the small-vector regime is only emitted while "
+              "aligned with the VGO direction (whole run)");
+        check(thrust_steps <= 60,
+              "the burn stays bounded when alignment is lost and "
+              "recovered");
+        check(max_omega_thrusting <= 0.3,
+              "no uncontrolled angular spin while the engine fires");
+        check(sweep <= 10.0,
+              "the whole run stays a bounded rotation, not a "
+              "multi-turn spin");
+        check(before.fuel > 900.0, "the burn does not drain the fuel tank");
+        check(!wait_after_ignition,
+              "after ignition the executor never returns to WAIT");
+    }
+
+    // B: the exact GUI node-executor fixture through the authoritative
+    // Simulation, driven exactly as gui.cpp does.
+    {
+        lander::Simulation sim{};
+        sim.reset(1005);
+        const lander::Config& cfg2 = sim.config();
+        const lander::BinarySystem& bin = sim.binary();
+        const lander::Body& b = bin.body(0);
+        const double r = b.terrain.max_surface_radius() + 20.0;
+        const lander::Vec2 p0 = bin.position(0, 0.0);
+        const lander::Vec2 v0 = bin.velocity(0, 0.0);
+        const double speed = std::sqrt(b.mu / r);
+        lander::State orbit{};
+        orbit.x = p0.x;
+        orbit.y = p0.y + r;
+        orbit.vx = v0.x + speed;
+        orbit.vy = v0.y;
+        orbit.angle = 0.0;
+        orbit.fuel = cfg2.fuel;
+        sim.set_state(orbit);
+
+        const double t0 = sim.sim_time();
+        lander::ManeuverNode node =
+            lander::default_node(t0, 0, cfg2.fixed_dt);
+        node.dv_prograde = 0.5;  // the fixture's small visible burn
+        const lander::State& st = sim.state();
+        const double t =
+            std::max(t0, lander::snap_time(node.time, cfg2.fixed_dt));
+        const lander::BallisticState initial{{st.x, st.y}, {st.vx, st.vy},
+                                             t0};
+        const int steps = lander::ballistic_steps(t0, t, cfg2.fixed_dt);
+        const lander::BallisticState pre = lander::propagate_ballistic(
+            bin, initial, steps, cfg2.fixed_dt);
+        const lander::NodeBasis basis = lander::compute_node_basis(
+            bin, t, node.frame_body, pre.p, pre.v);
+
+        lander::NodeExecutor exec;
+        exec.arm(node, basis, t0, cfg2);
+
+        int thrust_steps = 0;
+        bool invariant_held = true;
+        bool wait_after_ignition = false;
+        double max_omega_thrusting = 0.0;
+        double sweep = 0.0;
+        for (int i = 0; i < 20000; ++i) {
+            const lander::State before = sim.state();
+            const double now = sim.sim_time();
+            const lander::Input input =
+                exec.make_input(before, now, cfg2, false, false);
+            if (input.main_throttle > 0.0) {
+                ++thrust_steps;
+                max_omega_thrusting =
+                    std::max(max_omega_thrusting, std::abs(before.omega));
+                const lander::Vec2& dv = exec.dv_remaining();
+                if (std::hypot(dv.x, dv.y) <= 1.5 * a * dt &&
+                    !aligned_mirror(dv, before)) {
+                    invariant_held = false;
+                }
+            }
+            sweep += std::abs(before.omega) * cfg2.fixed_dt;
+            sim.step_once(input);
+            exec.after_step(before, sim.state(), input, sim.sim_time(),
+                            cfg2);
+            if (sim.sim_time() >= exec.ignite_time() &&
+                exec.state() == lander::ExecutorState::Wait) {
+                wait_after_ignition = true;
+            }
+            if (!exec.active() || sim.state().crashed || sim.state().landed) {
+                break;
+            }
+        }
+        check(exec.state() == lander::ExecutorState::Complete,
+              "the exact GUI fixture burn completes instead of spinning "
+              "until fuel exhaustion");
+        check(invariant_held,
+              "thrust is only emitted while aligned with the VGO "
+              "direction (GUI fixture, whole run)");
+        check(thrust_steps <= 60, "the GUI fixture burn stays bounded");
+        check(max_omega_thrusting <= 0.3,
+              "no uncontrolled angular spin while the engine fires");
+        check(sweep <= 10.0,
+              "the whole run stays a bounded rotation, not a "
+              "multi-turn spin");
+        check(sim.state().fuel > 900.0,
+              "the GUI fixture burn does not drain the fuel tank");
+        check(!wait_after_ignition,
+              "after ignition the executor never returns to WAIT");
+        check(!sim.state().crashed && !sim.state().landed,
+              "the fixture ship stays in the flight phase");
+    }
+}
+
 // M06-R18 (R18-02 / V01..V05): the presentation layer of the node-executor
 // isolation. The executor is driven exactly as in test_node_executor above
 // (no executor change); every assertion is about the PRESENTATION quantities
@@ -1462,6 +1713,7 @@ int main() {
     test_planners();
     test_attitude_controller();
     test_node_executor();
+    test_node_executor_alignment_safety();
     test_node_executor_presentation();
     test_determinism();
 

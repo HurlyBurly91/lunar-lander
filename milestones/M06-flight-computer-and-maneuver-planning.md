@@ -460,7 +460,63 @@ pre-existing, unrelated V14-C cross-body soft-land in `lander_landing_tests`).
 Headless smokes: node-executor `--frames 300` -> `ticks=0`, fuel 1000.00
 (paused fixture); `--seed 1 --frames 120` -> `ticks=237` / landed (baseline
 unchanged). AWAITING HUMAN VERIFICATION at `M06-R18-H01`; work STOPPED
-UNCOMMITTED until human acceptance.
+UNCOMMITTED until human acceptance (the R18 implementation was subsequently
+committed as `508344f` in the 2026-10-06 durable-state-migration sequence).
+HUMAN VERIFICATION (M06-R18-H01, 2026-10-06, USER): FAIL — once engaged, the
+node executor spins uncontrollably: `STATE BURN / THR 1.00` while the ACT
+thrust axis and the VGO ray are visibly separated. Not an R18 presentation
+failure, but a genuine canonical-executor stability defect (an off-axis burn
+rotates the VGO direction and the bang-bang controller chases it); carried to
+`M06-R19` as the follow-up, with R18-H01 left unresolved and re-run through
+M06-R19-H01.
+
+`M06-R19` is the ACTIVE group (registered 2026-10-06, USER): node-executor
+burn-direction stability / continuous alignment safety. The human failure
+(uncontrolled spinning during BURN with ACT/VGO rays separated) indicates the
+VGO execution has no rule for alignment being LOST mid-burn: `make_input`
+holds `burning == true` unconditionally in the BURN state, `after_step` has no
+BURN->safe transition, and the actually delivered (off-axis) thrust impulse
+rotates the VGO vector so the bang-bang controller chases `normalize(VGO)` in
+a feedback loop. Scope: (1) quantitative diagnosis first — deterministic
+fixture reproducing the GUI node-executor scenario with per-step records
+(decisive evidence: `BURN && !aligned && main_throttle > 0`, plus VGO
+direction rotation); (2) the narrow fix — continuous alignment safety during
+BURN (throttle 0 while materially misaligned, attitude correction continues
+toward the current VGO, thrust resumes when safe again; VGO never
+discarded/rewritten while the engine is off) as the smallest coherent
+state-machine change consistent with the canonical semantics; (3) the exact-
+failure regression test plus the whole-run invariant `main_throttle > 0 =>
+aligned`; (4) a compact ERR/OMEGA readout only if useful. Strict scope: no
+PID/MPC replacement, no state snapping, no loosened alignment threshold, no
+physics/camera/M07 changes; R18 work preserved; the canonical
+`docs/flight-guidance-attitude-bang-bang-control-and-velocity-to-be-gained-node-execution.md`
+updated in the same work if the fix changes a documented algorithm. Gate
+`M06-R19-H01` (same command re-run, covering R18-H01): accept only if no
+uncontrolled spinning, ACT converges onto VGO, no plume/THR while materially
+misaligned, burn resumes only when aligned, VGO decreases coherently, final
+partial burn normal, COMPLETE reached without latent thrust, and abort stays
+clean. STOP uncommitted until accepted; do not advance to transfer-cold until
+this executor cell passes.
+
+Resolution note (2026-10-06, USER decision): implementing the continuous
+alignment-safety fix (scope item 2) introduces one bounded, magnitude-gated
+zero-throttle re-entry interval in the closed-loop transfer endgame (the
+small-VGO flip-danger regime), which measurably relaxes the pre-R19 R5-V08
+closed-loop approach ratio from the 0.60 derived proxy to 0.631 (HEAD
+ballistic) / 0.626 (warm-start seed). This is the causal cost of the
+higher-authority R19 safety rule, not a transfer-solver regression, and it is
+not a permission for general transfer degradation. Per the user's decision the
+derived 0.60 executable proxy in `tests/test_transfer_warm.cpp` is SUPERSEDED
+by a 0.65 regression ceiling — the smallest bound containing those measured
+safe cases (~0.019 margin over the worst). The USER-level R5-V08 requirement
+(the physical executor remains consistent with the planned transfer and
+converges toward the target using ordinary thrust) is NOT superseded. The 0.65
+ceiling is valid only while the R19 continuous alignment-safety gate stays
+mandatory; the node-executor regression test
+(`tests/test_flight_computer.cpp`, whole-run invariant `main_throttle > 0 =>
+aligned`) is the complementary guard that keeps it mandatory and must keep
+failing on any implementation that regains transfer margin by re-emitting
+off-axis thrust.
 
 All M06 flight-computer additions follow the canonical HOT / WARM / COLD
 computational rate tiers:
@@ -480,13 +536,38 @@ committed (R13 and R14 human-verified 2026-10-05); the node-edit cell
 (effective node-epoch source of truth + paused node-edit fixture +
 deterministic label placement) + `M06-R17` (RUNNING jitter / stair-step
 presentation cadence) is COMPLETE, human-accepted (M06-R17-H01 PASS
-2026-10-06) and committed as c2114f3 (2026-10-06); the ACTIVE group is now
-`M06-R18` (node-executor observability / presentation prep), whose
-implementation + automated verification is complete 2026-10-06 and which is
-AWAITING HUMAN VERIFICATION at `M06-R18-H01` (uncommitted until accepted). The
-outstanding work is the still-open human verification items (`M06-R12-H01` /
-`M06-R12-H02`, `M06-R11-H01`, `M06-R7-H01`, and the current `M06-R18-H01`)
-plus the deferred predictor / transfer defects
+2026-10-06) and committed as c2114f3 (2026-10-06); `M06-R18`
+(node-executor observability / presentation prep) is code-complete and
+committed (`508344f`). Its human gate M06-R18-H01 FAILED on 2026-10-06
+(uncontrolled spinning during BURN — a genuine canonical-executor stability
+defect, not an R18 presentation failure); it was resolved by `M06-R19` and the
+gate re-run PASS on 2026-10-08. `M06-R19` (node-executor burn-direction
+stability / continuous alignment safety) is now COMPLETE and committed at this
+checkpoint: the diagnosis, the narrow magnitude-gated continuous
+alignment-safety fix, the exact-failure regression test + whole-run invariant,
+the compact ERR/OMEGA readout, and the canonical doc update are code-complete;
+full `ctest` is at the 11/12 baseline (sole red is the pre-existing V14-C
+cross-body soft-land, failing as a timeout) and the R5-V08 derived proxy was
+superseded 0.60 -> 0.65 to absorb the bounded R19 safety re-entry cost (see the
+R19 resolution note above). The 2026-10-08 fixture-observability follow-up
+(M06-R19-D06, same loop, no new request group) made the debug-only
+node-executor fixture an observable mixed PGR+RAD node (dv 4.0/2.0, ~1.12 s
+nominal burn) surfaced on the panel (TEST NODE / NOM BURN / ARMED BY FIXTURE;
+legend `[P] RUN / [X] ABORT`), node-edit unchanged. Both human gates
+(M06-R18-H01 re-run + M06-R19-H01) PASS 2026-10-08, closing the node-executor
+hardening cell (R18+R19).
+
+The next subsystem cell is TRANSFER-COLD. It was human-observed 2026-10-08 and
+is BLOCKED on presentation / debug observability only (not the solver): the
+COLD one-shot PRIMARY -> COMPANION panel reports RESULT SOLVED with miss / TOF
+/ departure / arrival-relative-speed / TERRAIN validated / propagation count /
+wall time, but the scene is not meaningfully inspectable — the COMPANION is not
+clearly visible and the accepted transfer arc is not drawn for a human to
+inspect. This observation is captured as a new follow-up request (`M06-R20`,
+transfer-cold visual observability — PRESENTATION ONLY, COLD solver untouched)
+in the next transition. The outstanding human verification items are
+`M06-R12-H01` / `M06-R12-H02`, `M06-R11-H01`, and `M06-R7-H01` (the R18/R19
+gates are now closed) plus the deferred predictor / transfer defects
 (PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2). `M06-R2`..`M06-R7` are code-complete
 (see `TASKS.md`).
 

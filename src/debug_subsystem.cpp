@@ -286,7 +286,23 @@ void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
             place_in_orbit(s.sim, 0);
             const double t0 = s.sim.sim_time();
             ManeuverNode node = default_node(t0, 0, cfg.fixed_dt);
-            node.dv_prograde = 0.5;  // a small visible prograde burn
+            if (mode == DebugSubsystem::NodeExecutor) {
+                // M06-R19 (fixture observability): a deliberately OBSERVABLE
+                // mixed PGR+RAD node. The prior 0.5 m/s prograde-only node was
+                // a ~0.125 s full-throttle burn at the 4.0 m/s^2 main accel,
+                // too short to visually judge the continuous alignment-safety
+                // behaviour. |dv| = hypot(4,2) = 4.472 m/s -> a ~1.12 s
+                // full-throttle burn: long, visibly non-pure-prograde, and
+                // bounded. DEBUG FIXTURE ONLY: node-edit keeps its own 0.5 m/s
+                // prograde node (below); normal node defaults, gameplay,
+                // main/rotate accel, thresholds, the executor, and physics are
+                // all unchanged.
+                node.dv_prograde = 4.0;
+                node.dv_radial = 2.0;
+            } else {
+                // NodeEdit: a small visible prograde burn (unchanged).
+                node.dv_prograde = 0.5;
+            }
             s.maneuver_node = node;
             if (mode == DebugSubsystem::NodeExecutor) {
                 // Arm the one-shot executor on the node, mirroring the

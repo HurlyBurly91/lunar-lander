@@ -89,6 +89,11 @@ struct Snapshot {
     double altitude = 0.0;
     double tangential = 0.0;
     bool node_present = false;
+    int node_frame = 0;
+    double node_time = 0.0;
+    double node_dv_prograde = 0.0;
+    double node_dv_radial = 0.0;
+    double node_burn_time = 0.0;
     bool node_active = false;
     bool transfer_active = false;
     bool landing_armed = false;
@@ -124,7 +129,14 @@ Snapshot run(DebugSubsystem mode) {
     s.altitude = readout.altitude;
     s.tangential = readout.tangential_velocity;
     s.node_present = node.has_value();
+    if (node) {
+        s.node_frame = node->frame_body;
+        s.node_time = node->time;
+        s.node_dv_prograde = node->dv_prograde;
+        s.node_dv_radial = node->dv_radial;
+    }
     s.node_active = exec.active();
+    s.node_burn_time = exec.burn_time();
     s.transfer_active = mc.active();
     s.landing_armed = ap.armed();
     s.attitude = att;
@@ -953,6 +965,58 @@ void test_node_event_future_matches_predictor() {
     check(moved > 1.0, "future event state was propagated away from now");
 }
 
+// M06-R19 (fixture observability, V05): the node-executor debug fixture is a
+// deliberately OBSERVABLE mixed PGR+RAD node, pre-armed and started paused.
+// Assert the exact fixture contract: frame == PRIMARY (0), time ~= t0 + 5 s,
+// dv_prograde == +4.0, dv_radial == +2.0, armed in the one-shot executor, and
+// nominal full-throttle burn ~= hypot(4,2)/main_accel ~= 1.118 s (the armed
+// executor's own burn_time()). Also guard that the node-edit fixture is
+// unchanged (0.5 m/s prograde, no radial) and that normal (None) gameplay
+// places no node and arms no executor. The "starts PAUSED" part of the
+// contract is a GUI-level guarantee covered by the headless node-executor
+// paused smoke (ticks=0), not by this headless setup path.
+void test_node_executor_fixture_contract() {
+    // Read the authoritative main accel from a default simulation (the same
+    // config the fixtures use) instead of duplicating a magic constant.
+    Simulation cfg_sim;
+    const double main_accel = cfg_sim.config().main_accel;
+
+    // Node-executor fixture: the observable mixed PGR+RAD node.
+    const auto ne = run(DebugSubsystem::NodeExecutor);
+    check(ne.node_present, "node-executor fixture has a node");
+    check(ne.node_frame == 0, "node-executor node framed on PRIMARY (0)");
+    check_close(ne.node_time, ne.sim_time + 5.0, 0.01,
+                "node-executor node is ~5 s ahead of the fixture start");
+    check_close(ne.node_dv_prograde, 4.0, 1e-12,
+                "node-executor dv_prograde is +4.0");
+    check_close(ne.node_dv_radial, 2.0, 1e-12,
+                "node-executor dv_radial is +2.0");
+    check(ne.node_active, "node-executor one-shot executor is armed");
+    check_close(std::hypot(4.0, 2.0) / main_accel, 1.118, 1e-2,
+                "node-executor nominal full-throttle burn ~= 1.118 s");
+    check_close(ne.node_burn_time, std::hypot(4.0, 2.0) / main_accel, 1e-9,
+                "armed executor burn_time() matches the fixture node dv");
+
+    // Node-edit fixture: unchanged 0.5 m/s prograde node (no radial).
+    const auto edit = run(DebugSubsystem::NodeEdit);
+    check(edit.node_present, "node-edit fixture has a node");
+    check(edit.node_frame == 0, "node-edit node framed on PRIMARY (0)");
+    check_close(edit.node_time, edit.sim_time + 5.0, 0.01,
+                "node-edit node is ~5 s ahead");
+    check_close(edit.node_dv_prograde, 0.5, 1e-12,
+                "node-edit dv_prograde stays 0.5");
+    check_close(edit.node_dv_radial, 0.0, 1e-12,
+                "node-edit dv_radial stays 0.0");
+    check(!edit.node_active, "node-edit does NOT arm the one-shot executor");
+    check_close(edit.node_burn_time, 0.0, 1e-12,
+                "node-edit executor stays cleared (no nominal burn)");
+
+    // Normal (None) gameplay: no node placed, no executor armed.
+    const auto none = run(DebugSubsystem::None);
+    check(!none.node_present, "normal gameplay places no node");
+    check(!none.node_active, "normal gameplay arms no executor");
+}
+
 }  // namespace
 
 int main() {
@@ -960,6 +1024,7 @@ int main() {
     test_seeds();
     test_common_readout_landed();
     test_fixture_signatures();
+    test_node_executor_fixture_contract();
     test_determinism();
     test_landing_debug_getters();
     test_predictor_keeps_prediction_overlay();
