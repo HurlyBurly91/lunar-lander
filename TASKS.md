@@ -3,8 +3,8 @@
 ```yaml
 Milestone: M06
 State: ACTIVE
-Phase: HUMAN_VERIFICATION
-Active-Request: M06-R19
+Phase: IMPLEMENTATION
+Active-Request: M06-R20
 ```
 
 This is the canonical live execution ledger. It intentionally contains only
@@ -26,39 +26,22 @@ only for provenance or legacy-ID detail, not as active execution state.
 
 ## Current decision boundary
 
-M06 is active. The node-executor hardening cell (M06-R18 + M06-R19) is now
-COMPLETE and committed at this checkpoint: both human gates PASS on 2026-10-08
-(M06-R18-H01 re-run through M06-R19-H01, and M06-R19-H01 directly). The
-magnitude-gated continuous alignment-safety fix in the canonical VGO region of
-`src/autopilot.cpp` stops the executor spin (no off-axis sustained thrust; ACT
-converges onto VGO; on material mid-burn separation the burn is cut to zero
-throttle and the executor re-enters ALIGN, re-burns on re-align, and never
-returns to WAIT after ignition); the longer PGR +4.0 / RAD +2.0 fixture
-(|dv| ~4.47 m/s, ~1.12 s nominal burn) is observable with the on-panel TEST
-NODE / NOM BURN / ARMED BY FIXTURE readout; the sustained burn shows coherent
-fuel and VGO decrease; COMPLETE is reached with no latent thrust; a fresh
-run with an explicit abort is clean and permanent. The bounded R19 re-entry
-measurably relaxed the R5-V08 closed-loop approach ratio to 0.631 (HEAD
-ballistic) / 0.626 (warm-start seed); per the user's decision the derived 0.60
-proxy in `tests/test_transfer_warm.cpp` is SUPERSEDED by a 0.65 ceiling
-(smallest bound containing the measured safe cases), while the USER-level
-R5-V08 convergence requirement is NOT superseded and the R19 gate stays
-mandatory (complementary guard = the node-executor whole-run invariant in
-`tests/test_flight_computer.cpp`). Full `ctest` = 11/12 (sole red:
-pre-existing V14-C cross-body soft-land, failing as a timeout; not a
-regression, not fixed here).
-
-The next subsystem cell is TRANSFER-COLD. Its 2026-10-08 human observation is
-BLOCKED on presentation / debug observability only (NOT the solver): the panel
-reports COLD PRIMARY -> COMPANION RESULT SOLVED with miss / TOF / departure /
-arrival-relative-speed / TERRAIN validated / propagation count / wall time, but
-the scene is not meaningfully inspectable — the COMPANION is not clearly
-visible and the accepted transfer arc is not drawn for a human to inspect. The
-COLD solver's automated verification remains valid; the transfer-cold cell is
-NOT human-accepted on the basis of "the panel says SOLVED." This observation is
-captured as a new follow-up request (M06-R20, transfer-cold visual
-observability — PRESENTATION ONLY, COLD solver untouched) in the next
-transition. Do NOT advance to transfer-warm until M06-R20-H01 passes. M06 is
+M06 is active in IMPLEMENTATION on the `M06-R20-F01` bounded follow-up to the
+same `M06-R20` transfer-cold visual-observability request. The first R20
+implementation passed the technical V01-V06 checks, but `M06-R20-H01` is a
+human FAIL: the route is still a small ambiguous cluster above the primary, the
+current-time bodies compete with the departure/arrival-epoch bodies, and the
+scene does not let a human immediately understand `PRIMARY @ T0 -> COLD ARC ->
+COMPANION @ ARRIVAL`. This remains the SAME request / SAME human gate; do NOT
+allocate R21. The follow-up must first instrument the accepted solution to find
+the causal presentation defect, then rebuild the transfer-cold debug scene as
+an explicit temporal inspection scene (source at `solve_epoch`, target at
+`arrival_epoch`, de-emphasized current-time bodies, transfer-only aspect-preserving
+camera fit, readable arc with sparse time markers, and truthful ARR/TARGET
+geometry only where the solver exposes exact quantities). The COLD solver,
+physics, ephemerides, normal rendering, other debug modes, warm replanning,
+executor/R19, and M07 remain untouched. Work stays UNCOMMITTED at `M06-R20-H01`.
+The node-executor cell (R18+R19) is COMPLETE and committed (`37c7689`). M06 is
 NOT closed (inherited gates R11-H01 / R12-H01 / R12-H02 / R7-H01 remain).
 
 2026-10-08 human follow-up on M06-R19-H01 (attempted, NOT judged): the
@@ -421,6 +404,168 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   `[Return] exec ...` legend now reads `[P] RUN  [X] ABORT   (executor is
   pre-armed; no Return)`. The `PAUSED FOR NODE EXECUTOR [P] RUN` banner and the
   normal-gameplay help text are untouched.
+
+## M06-R20 — transfer-cold visual observability
+
+Source: USER (2026-10-08), follow-up to the transfer-cold human observation
+(Phase B): `--debug-subsystem transfer-cold` reports COLD PRIMARY -> COMPANION
+RESULT SOLVED with miss / TOF / departure / arrival-relative-speed / TERRAIN
+validated / propagation count / wall time, but the scene is not meaningfully
+inspectable — the COMPANION is not clearly visible and the accepted transfer
+arc is not drawn for a human to inspect. This is a PRESENTATION / DEBUG-
+OBSERVABILITY defect, not a solver defect: the COLD solver's automated
+verification remains valid, and the transfer-cold cell is NOT human-accepted on
+the basis of "the panel says SOLVED." R20 is PRESENTATION ONLY — the COLD
+solver is untouched. One request group covers the whole cell; do not mint a new
+ID per visualization experiment.
+
+- [x] M06-R20-01 Start `--debug-subsystem transfer-cold` PAUSED (debug-only)
+  with a `PAUSED FOR COLD TRANSFER INSPECTION` banner. No normal-gameplay
+  behavior change; no other debug mode changes unless via an already-correct
+  shared debug-only mechanism.
+  Evidence: `SDL_VIDEO_DRIVER=dummy ./build/lander_gui --debug-subsystem
+  transfer-cold --frames 20` exits 0 with `ticks=0` (paused start); all other
+  `--debug-subsystem` modes still run `--frames 3` cleanly.
+
+- [x] M06-R20-02 Render the ACTUAL accepted COLD arc. Build a READ-ONLY display
+  trajectory from the accepted `TransferSolution` (`source` / `target` /
+  `solve_epoch` / `departure_state` / `departure_velocity` / `time_of_flight` /
+  `arrival_epoch` / `achieved_miss` / `arrival_rel_speed`) as a
+  `BallisticState{p=departure_state, v=departure_velocity, t=solve_epoch}`
+  propagated to `arrival_epoch` via the existing canonical fixed-step
+  propagation (prefer an existing pure zero-thrust trajectory sampler if
+  suitable). Same `BinarySystem`, same three-body gravity, same fixed_dt (1/120);
+  no alternative integrator, no second transfer solve, no patched conics, no
+  SOI, no live-state mutation. Do NOT feed the display trajectory back into
+  planning or the simulation. Compute / cache it once for the debug result
+   (not per rendered frame).
+   Evidence: `transfer_cold_display` in `src/debug_subsystem.cpp` builds the
+   read-only arc from the accepted `TransferSolution` using
+   `predict_zero_thrust` on the existing fixed-step grid; it is cached once in
+   the GUI fixture, and R20 V01/V02 verify the endpoint and no mutation.
+
+- [x] M06-R20-03 Make the transfer route legible: (A) a `DEP` marker + label at
+  the accepted departure state; (B) the full COLD zero-thrust arc drawn in one
+  distinctive style/color and labelled `COLD ARC` (not confused with the live
+  ship trajectory or a generic predictor); (C) an `ARR` marker + label at the
+  actual propagated endpoint; (D) a ghost/reference of the TARGET (COMPANION) at
+  the arrival epoch (`T+<TOF>`), from the canonical ephemeris, making obvious
+  that the solver aims at a moving future body, not its present location. Do NOT
+  fabricate a "miss line" unless its endpoint is the same canonical target
+  quantity behind `achieved_miss`; otherwise keep the numeric MISS readout plus
+   the propagated ARR endpoint plus the arrival-epoch body geometry.
+   Evidence: `draw_transfer_cold_debug` renders `DEP`, the labelled `COLD ARC`,
+   `ARR`, and the `COMPANION @ ARRIVAL` ghost; no miss line is drawn.
+
+- [x] M06-R20-04 Debug-only transfer fit / camera: in transfer-cold debug mode,
+  a read-only debug-view framing that initially fits the PRIMARY/source region,
+  the COMPANION/target region, the entire accepted COLD arc, the departure and
+  arrival markers, and the arrival-epoch target ghost. Do NOT force full
+  three-body SYSTEM bounds just because the distant outer moonlet (body 2)
+  exists. Prefer a narrow debug-view helper over changing the normal camera
+  architecture. Ordinary gameplay camera, the UI debug cell, and camera physics
+  are unchanged; the user can still zoom/pan; the visualization stays
+   geometrically truthful (no independent ad-hoc magnification of pieces).
+   Evidence: `transfer_cold_camera_fit` and `Camera::set_debug_frame` fit only
+   the source/target/arc geometry and leave normal camera behavior unchanged;
+   R20 V04 verifies the fit contains the route and does not force body 2.
+
+- [x] M06-R20-05 Keep the existing numeric COLD panel (COLD one-shot,
+  PRIMARY -> COMPANION, RESULT SOLVED/NO SOLUTION, MISS, TOF, departure data,
+  arrival-relative speed, TERRAIN validated, propagation count, wall time). Add
+  only useful presentation context if required; do not turn the panel into a
+   large data dump — the scene is meant to make the numbers understandable.
+   Evidence: the existing numeric COLD panel in `src/gui.cpp` was left in place.
+
+- [x] M06-R20-06 Solver-failure presentation: if the COLD solve returns no valid
+  solution, show NO SOLUTION clearly, draw NO fake transfer arc, synthesize no
+  arrival marker, and mutate no state to make a route exist. The debug
+   visualization must faithfully represent the solver output.
+   Evidence: `transfer_cold_display` returns invalid / empty for a no-solution
+   result, and R20 V06 verifies that no arc, ARR, or target ghost is synthesized.
+
+### M06-R20 preservation constraints
+
+- M06-R20-P01 Do NOT change: the COLD coarse search, Newton correction,
+  Jacobian, transfer acceptance miss threshold, terrain-clearance gate,
+  transfer candidate ranking, transfer timing fractions, warm replan, the
+  midcourse controller, the node executor, the R19 alignment safety, gravity,
+  ephemerides, physics, normal camera behavior, normal gameplay, or M07.
+- M06-R20-P02 R20 is PRESENTATION / DEBUG-OBSERVABILITY only. Do not invent a
+  second planner or an approximate trajectory; render only the existing accepted
+  `TransferSolution`. Do not feed any display geometry into planning or the
+  simulation.
+- M06-R20-P03 Do not fix TFD-1 / TFD-2 (or other deferred predictor/transfer
+  defects) here. This request is observability only.
+- M06-R20-P04 Read-only: building the visual arc and the debug geometry must not
+  mutate `Simulation`, `BinarySystem`, or the `TransferSolution`.
+
+### M06-R20 automated verification
+
+- [x] M06-R20-V01 Accepted arc: for a valid `TransferSolution`, the first
+  trajectory sample equals `departure_state`, the first time equals
+  `solve_epoch`, the final time equals `arrival_epoch` on the fixed-step grid,
+  the final state equals the authoritative fixed-step propagation from the same
+   departure state/velocity, and all samples are finite.
+   Evidence: `test_transfer_cold_display_accepted_arc` in
+   `tests/test_debug_subsystem.cpp`; `lander_debug_subsystem_tests` passes.
+- [x] M06-R20-V02 No mutation: building the visual arc and the debug geometry
+   does not mutate `Simulation`, `BinarySystem`, or the `TransferSolution`.
+   Evidence: `test_transfer_cold_display_no_mutation` passes.
+- [x] M06-R20-V03 Arrival target: the displayed arrival target body position
+  comes from `BinarySystem::position(target, arrival_epoch)`, not the current
+   simulation time.
+   Evidence: `test_transfer_cold_display_arrival_target_future` passes.
+- [x] M06-R20-V04 View bounds: the initial transfer-cold debug fit contains the
+  departure, the transfer arc, the arrival endpoint, and the relevant
+  source/target geometry, and does not require including the distant moonlet
+   merely because body 2 exists.
+   Evidence: `test_transfer_cold_camera_fit_contains_route` passes.
+- [x] M06-R20-V05 Cost accounting: the displayed COLD solver propagation count
+  continues to represent solver cost; extra pure display propagation is not
+   reported as part of the COLD search cost.
+   Evidence: `test_transfer_cold_display_cost_not_reported` passes.
+- [x] M06-R20-V06 Mode isolation: the visualization/camera behavior appears only
+  in transfer-cold debug mode; normal gameplay and the other subsystem fixtures
+  are unchanged. Full `ctest` returns to the 11/12 baseline (sole red the
+   pre-existing V14-C cross-body soft-land timeout).
+   Evidence: `test_transfer_cold_mode_isolation_and_invalid` passes; full
+   `ctest` returned 11/12 with the sole failure `lander_landing_tests`
+   (`V14-C` perturbed/independent-seed cross-body soft-land timeout).
+
+### M06-R20 human verification
+
+- [H] M06-R20-H01 Transfer-cold visual-inspection gate.
+  Run: `./build/lander_gui --debug-subsystem transfer-cold`. The human must
+  immediately be able to verify:
+  1. The source is PRIMARY and the destination is COMPANION.
+  2. Both relevant bodies/regions are visible at a useful scale.
+  3. The departure (DEP) is obvious.
+  4. The complete COLD transfer arc is visible.
+  5. The arrival (ARR) is obvious.
+  6. The future COMPANION arrival geometry is visible and labelled.
+  7. The arc approaches the FUTURE target, not its current position.
+  8. Nothing visibly intersects terrain contrary to the solver's validation.
+  9. The numeric panel and the graphical route describe the same solution.
+  10. The live craft is not teleported or otherwise mutated by the inspection.
+  Do not self-complete this gate; do not mark the transfer-cold cell
+  human-accepted until the user can actually inspect the solved route. Do not
+  proceed to transfer-warm until M06-R20-H01 passes.
+
+### M06-R20 derived implementation tasks
+
+- [x] M06-R20-D01 Paused transfer-cold debug start + `PAUSED FOR COLD TRANSFER
+  INSPECTION` banner.
+- [x] M06-R20-D02 Read-only accepted-arc builder (pure fixed-step propagation of
+  the accepted `TransferSolution` departure state, cached once for the debug
+  result).
+- [x] M06-R20-D03 Scene rendering: COLD ARC polyline + DEP / ARR markers +
+  COMPANION @ ARRIVAL ghost; faithful NO-SOLUTION presentation.
+- [x] M06-R20-D04 Debug-only camera fit to source + target + arc + markers
+  (narrow debug-view helper, not a normal-camera change).
+- [x] M06-R20-D05 Automated regression tests V01-V06 (pure / headless).
+- [x] M06-R20-D06 Run verification (focused + ctest + smokes); stop uncommitted
+  at M06-R20-H01.
 
 ## Inherited unresolved human gates
 

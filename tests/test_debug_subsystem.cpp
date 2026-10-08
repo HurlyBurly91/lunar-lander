@@ -12,21 +12,30 @@
 //   * R8-06  repeated setup for the same mode is deterministic
 //
 // No SDL dependency; everything runs from the library.
+#include "lander/ballistic.hpp"
+#include "lander/binary.hpp"
+#include "lander/camera.hpp"
 #include "lander/debug_subsystem.hpp"
 #include "lander/debug_font.hpp"
+#include "lander/render_geom.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
 using lander::AttitudeDebugAxes;
 using lander::AttitudeMode;
 using lander::BallisticState;
+using lander::BinarySystem;
+using lander::Camera;
+using lander::CameraParams;
 using lander::DebugSubsystem;
 using lander::DebugSubsystems;
 using lander::LandingAutopilot;
@@ -36,20 +45,31 @@ using lander::NodeExecutor;
 using lander::RecedingHorizonPredictor;
 using lander::Simulation;
 using lander::State;
+using lander::TransferCameraFit;
+using lander::TransferColdDisplay;
 using lander::TransferDebugResult;
 using lander::TransferMidcourse;
+using lander::TransferSolution;
 using lander::Vec2;
 using lander::altitude_at;
 using lander::attitude_debug_axes;
-using lander::thrust_hat;
-using lander::ZeroEffortQuery;
+using lander::ballistic_propagation_count;
+using lander::ballistic_reset_propagation_count;
+using lander::ballistic_steps;
 using lander::debug_scenario_seed;
 using lander::debug_subsystem_description;
 using lander::debug_subsystem_name;
 using lander::keeps_prediction_overlay;
 using lander::make_common_readout;
 using lander::parse_debug_subsystem;
+using lander::predict_zero_thrust;
+using lander::propagate_ballistic;
 using lander::setup_debug_scenario;
+using lander::thrust_hat;
+using lander::to_screen_point;
+using lander::transfer_cold_camera_fit;
+using lander::transfer_cold_display;
+using lander::ZeroEffortQuery;
 
 // M06-R15: the pure node-edit geometry helpers under test.
 using lander::NodeBasis;
@@ -1017,6 +1037,274 @@ void test_node_executor_fixture_contract() {
     check(!none.node_active, "normal gameplay arms no executor");
 }
 
+// M06-R20: a live transfer-cold fixture whose owned subsystems outlive the
+// `setup_debug_scenario` call, so the accepted `TransferSolution` and the
+// simulation / binary it came from remain available for the read-only display
+// helpers under test.
+struct ColdFixture {
+    Simulation sim;
+    RecedingHorizonPredictor live;
+    RecedingHorizonPredictor coast;
+    NodeExecutor exec;
+    TransferMidcourse mc;
+    LandingAutopilot ap;
+    AttitudeMode att = AttitudeMode::Off;
+    TransferDebugResult tdbg{};
+    LandingConfig lcfg{};
+    std::optional<ManeuverNode> node;
+
+    ColdFixture() {
+        ZeroEffortQuery zero_effort = [](double) { return BallisticState{}; };
+        DebugSubsystems subs{sim, exec, mc, ap, live, coast, lcfg, node, att,
+                             &tdbg, zero_effort};
+        setup_debug_scenario(DebugSubsystem::TransferCold, subs);
+    }
+
+    const BinarySystem& bin() const { return sim.binary(); }
+    double dt() const { return sim.config().fixed_dt; }
+    const TransferSolution& cold() const { return tdbg.cold; }
+};
+
+void test_transfer_cold_display_accepted_arc() {
+    ColdFixture f;
+    const TransferSolution& sol = f.cold();
+    check(sol.valid, "R20 V01: the transfer-cold fixture has a valid solution");
+
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), sol, f.dt(), 256);
+    check(d.valid, "R20 V01: the accepted arc is valid");
+    check(!d.arc.empty(), "R20 V01: the accepted arc is non-empty");
+    check(d.arc.front().p == sol.departure_state,
+          "R20 V01: the first sample is the departure state");
+    check_close(d.arc.front().t, sol.solve_epoch, 1.0e-12,
+                "R20 V01: the first sample is at the solve epoch");
+    check(d.arc.back().p == d.arr,
+          "R20 V01: the displayed ARR endpoint is the propagated endpoint");
+    check_close(d.arc.back().t, sol.arrival_epoch, 1.0e-6,
+                "R20 V01: the final sample is on the arrival grid epoch");
+
+    const int steps = ballistic_steps(sol.solve_epoch, sol.arrival_epoch, f.dt());
+    const BallisticState authoritative = propagate_ballistic(
+        f.bin(), {sol.departure_state, sol.departure_velocity, sol.solve_epoch},
+        steps, f.dt());
+    check_close(d.arc.back().p.x, authoritative.p.x, 1.0e-9,
+                "R20 V01: the final position matches the authoritative step");
+    check_close(d.arc.back().p.y, authoritative.p.y, 1.0e-9,
+                "R20 V01: the final position y matches the authoritative step");
+    check_close(d.arc.back().v.x, authoritative.v.x, 1.0e-9,
+                "R20 V01: the final velocity x matches the authoritative step");
+    check_close(d.arc.back().v.y, authoritative.v.y, 1.0e-9,
+                "R20 V01: the final velocity y matches the authoritative step");
+
+    bool finite_and_monotone = true;
+    for (std::size_t i = 0; i < d.arc.size(); ++i) {
+        if (!std::isfinite(d.arc[i].p.x) || !std::isfinite(d.arc[i].p.y) ||
+            !std::isfinite(d.arc[i].v.x) || !std::isfinite(d.arc[i].v.y) ||
+            !std::isfinite(d.arc[i].t)) {
+            finite_and_monotone = false;
+        }
+        if (i > 0 && d.arc[i].t + 1.0e-12 < d.arc[i - 1].t) {
+            finite_and_monotone = false;
+        }
+    }
+    check(finite_and_monotone,
+          "R20 V01: all samples are finite and time-ordered");
+}
+
+void test_transfer_cold_display_no_mutation() {
+    ColdFixture f;
+
+    const State state_before = f.sim.state();
+    const auto config_before = f.sim.config();
+    const double sim_time_before = f.sim.sim_time();
+    const TransferSolution sol_before = f.cold();
+    const int count_before = ballistic_propagation_count();
+    const double probe_t0 = f.sim.sim_time();
+    const double probe_t1 = probe_t0 + 12.345;
+    std::vector<Vec2> pos_before(BinarySystem::kBodyCount);
+    std::vector<Vec2> vel_before(BinarySystem::kBodyCount);
+    for (int i = 0; i < BinarySystem::kBodyCount; ++i) {
+        pos_before[i] = f.bin().position(i, probe_t0);
+        vel_before[i] = f.bin().velocity(i, probe_t1);
+    }
+
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), f.cold(), f.dt(), 256);
+    const TransferCameraFit fit =
+        transfer_cold_camera_fit(d.fit_center, d.fit_half, 1280.0, 720.0, 14.0,
+                                 1.0e-3, 4.0);
+
+    check(f.sim.state() == state_before,
+          "R20 V02: building the display arc does not mutate the simulation");
+    check(f.sim.config() == config_before,
+          "R20 V02: building the display arc does not mutate the config");
+    check_close(f.sim.sim_time(), sim_time_before, 1.0e-12,
+                "R20 V02: building the display arc does not advance sim time");
+    const TransferSolution& sol_after = f.cold();
+    check(sol_after.valid == sol_before.valid,
+          "R20 V02: the TransferSolution valid flag is unchanged");
+    check(sol_after.source == sol_before.source &&
+              sol_after.target == sol_before.target,
+          "R20 V02: the TransferSolution source/target are unchanged");
+    check_close(sol_after.solve_epoch, sol_before.solve_epoch, 1.0e-12,
+                "R20 V02: the TransferSolution solve epoch is unchanged");
+    check(sol_after.departure_state == sol_before.departure_state &&
+              sol_after.departure_velocity == sol_before.departure_velocity,
+          "R20 V02: the TransferSolution departure state is unchanged");
+    check_close(sol_after.time_of_flight, sol_before.time_of_flight, 1.0e-12,
+                "R20 V02: the TransferSolution TOF is unchanged");
+    check_close(sol_after.arrival_epoch, sol_before.arrival_epoch, 1.0e-12,
+                "R20 V02: the TransferSolution arrival epoch is unchanged");
+    for (int i = 0; i < BinarySystem::kBodyCount; ++i) {
+        check(f.bin().position(i, probe_t0) == pos_before[i],
+              "R20 V02: the binary ephemeris is unchanged");
+        check(f.bin().velocity(i, probe_t1) == vel_before[i],
+              "R20 V02: the binary velocities are unchanged");
+    }
+    check(ballistic_propagation_count() == count_before,
+          "R20 V02: the display arc adds no counted propagation work");
+    (void)fit;
+}
+
+void test_transfer_cold_display_arrival_target_future() {
+    ColdFixture f;
+    const TransferSolution& sol = f.cold();
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), sol, f.dt(), 256);
+    check(d.valid, "R20 V03: a valid solution produces a valid display");
+    check(d.target_at_arrival ==
+              f.bin().position(sol.target, sol.arrival_epoch),
+          "R20 V03: the ARRIVAL ghost uses the target's arrival-epoch position");
+    if (std::abs(sol.arrival_epoch - f.sim.sim_time()) > 1.0e-9) {
+        check(d.target_at_arrival !=
+                  f.bin().position(sol.target, f.sim.sim_time()),
+              "R20 V03: the ARRIVAL ghost is not the target's current position");
+    }
+}
+
+void test_transfer_cold_camera_fit_contains_route() {
+    ColdFixture f;
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), f.cold(), f.dt(), 256);
+    check(d.valid, "R20 V04: a valid solution produces a valid display");
+
+    const CameraParams p{};
+    const TransferCameraFit fit =
+        transfer_cold_camera_fit(d.fit_center, d.fit_half, p.window_width,
+                                 p.window_height, p.base_scale, 1.0e-3,
+                                 p.zoom_max);
+    check(fit.angle == 0.0, "R20 V04: the debug fit is inertial / unrotated");
+    check(fit.zoom >= 1.0e-3 - 1.0e-12 && fit.zoom <= p.zoom_max + 1.0e-12,
+          "R20 V04: the debug fit zoom stays within the allowed band");
+
+    Camera cam(p);
+    cam.set_debug_frame(fit.center.x, fit.center.y, fit.angle, fit.zoom);
+
+    auto inside = [&](const Vec2& world) {
+        const Vec2 sp = to_screen_point(world.x, world.y, cam);
+        return sp.x >= -1.0e-6 && sp.x <= p.window_width + 1.0e-6 &&
+               sp.y >= -1.0e-6 && sp.y <= p.window_height + 1.0e-6;
+    };
+
+    check(inside(d.dep), "R20 V04: the fit contains the departure");
+    check(inside(d.arr), "R20 V04: the fit contains the arrival endpoint");
+    check(inside(d.target_at_arrival),
+          "R20 V04: the fit contains the arrival-epoch target ghost");
+    check(inside(d.source_at_solve),
+          "R20 V04: the fit contains the source region");
+    for (const auto& st : d.arc) {
+        if (!inside(st.p)) {
+            check(false, "R20 V04: every accepted-arc sample is in view");
+            return;
+        }
+    }
+
+    const Vec2 moonlet = f.bin().position(2, f.cold().arrival_epoch);
+    const bool moonlet_outside =
+        std::abs(moonlet.x - d.fit_center.x) > d.fit_half.x ||
+        std::abs(moonlet.y - d.fit_center.y) > d.fit_half.y;
+    check(moonlet_outside,
+          "R20 V04: the distant moonlet is not required by the transfer fit");
+}
+
+void test_transfer_cold_display_cost_not_reported() {
+    ColdFixture f;
+    const int solver_count = f.tdbg.cold_propagations;
+    check(solver_count > 0,
+          "R20 V05: the COLD solve has a positive propagation count");
+
+    const int count_before = ballistic_propagation_count();
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), f.cold(), f.dt(), 256);
+    const TransferCameraFit fit =
+        transfer_cold_camera_fit(d.fit_center, d.fit_half, 1280.0, 720.0, 14.0,
+                                 1.0e-3, 4.0);
+    const int count_after = ballistic_propagation_count();
+
+    check(count_after == count_before,
+          "R20 V05: the pure display propagation is not counted as solver work");
+    check(f.tdbg.cold_propagations == solver_count,
+          "R20 V05: the displayed COLD propagation count is unchanged");
+    (void)fit;
+}
+
+void test_transfer_cold_mode_isolation_and_invalid() {
+    const auto cold = run(DebugSubsystem::TransferCold);
+    check(cold.transfer_computed && cold.transfer_cold_valid,
+          "R20 V06: the transfer-cold fixture exposes the accepted COLD route");
+
+    const DebugSubsystem other_modes[] = {
+        DebugSubsystem::None,       DebugSubsystem::Manual,
+        DebugSubsystem::Predictor,  DebugSubsystem::Attitude,
+        DebugSubsystem::NodeEdit,   DebugSubsystem::NodeExecutor,
+        DebugSubsystem::AutolandPrimary,  DebugSubsystem::AutolandCompanion,
+        DebugSubsystem::AutolandCross,    DebugSubsystem::Ui,
+    };
+    for (const auto mode : other_modes) {
+        const auto snap = run(mode);
+        check(!snap.transfer_computed || !snap.transfer_cold_valid,
+              "R20 V06: non-transfer-cold fixtures expose no COLD route to draw");
+    }
+
+    ColdFixture f;
+    TransferSolution invalid{};
+    invalid.valid = false;
+    const TransferColdDisplay d_invalid =
+        transfer_cold_display(f.bin(), invalid, f.dt(), 256);
+    check(!d_invalid.valid && d_invalid.arc.empty(),
+          "R20 V06: an invalid COLD result yields no displayed arc");
+
+    TransferSolution zero{};
+    zero.valid = true;
+    zero.source = 0;
+    zero.target = 1;
+    zero.solve_epoch = 0.0;
+    zero.arrival_epoch = 0.0;
+    zero.time_of_flight = 0.0;
+    zero.departure_state = {1.0, 2.0};
+    zero.departure_velocity = {3.0, 4.0};
+    const TransferColdDisplay d_zero =
+        transfer_cold_display(f.bin(), zero, f.dt(), 256);
+    check(d_zero.valid,
+          "R20 V06: a zero-length valid solution still yields a display");
+    check(d_zero.arc.size() == 1,
+          "R20 V06: a zero-length arc has exactly one sample");
+    check(d_zero.fit_half.x >= 30.0 && d_zero.fit_half.y >= 30.0,
+          "R20 V06: a zero-length arc still produces a bounded camera fit");
+
+    const CameraParams p{};
+    const TransferCameraFit fit =
+        transfer_cold_camera_fit(d_zero.fit_center, d_zero.fit_half,
+                                 p.window_width, p.window_height, p.base_scale,
+                                 1.0e-3, p.zoom_max);
+    Camera cam(p);
+    cam.set_debug_frame(fit.center.x, fit.center.y, fit.angle, fit.zoom);
+    const Vec2 sp = to_screen_point(d_zero.dep.x, d_zero.dep.y, cam);
+    check(sp.x >= 0.0 && sp.x <= p.window_width && sp.y >= 0.0 &&
+              sp.y <= p.window_height,
+          "R20 V06: the zero-length fit keeps the departure marker in view");
+}
+
 }  // namespace
 
 int main() {
@@ -1038,6 +1326,12 @@ int main() {
     test_node_executor_overlay();
     test_node_event_overdue_matches_predictor();
     test_node_event_future_matches_predictor();
+    test_transfer_cold_display_accepted_arc();
+    test_transfer_cold_display_no_mutation();
+    test_transfer_cold_display_arrival_target_future();
+    test_transfer_cold_camera_fit_contains_route();
+    test_transfer_cold_display_cost_not_reported();
+    test_transfer_cold_mode_isolation_and_invalid();
 
     if (failures == 0) {
         std::printf("All lander_debug_subsystem_tests passed\n");

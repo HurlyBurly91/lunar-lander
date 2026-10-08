@@ -557,19 +557,29 @@ legend `[P] RUN / [X] ABORT`), node-edit unchanged. Both human gates
 (M06-R18-H01 re-run + M06-R19-H01) PASS 2026-10-08, closing the node-executor
 hardening cell (R18+R19).
 
-The next subsystem cell is TRANSFER-COLD. It was human-observed 2026-10-08 and
-is BLOCKED on presentation / debug observability only (not the solver): the
-COLD one-shot PRIMARY -> COMPANION panel reports RESULT SOLVED with miss / TOF
-/ departure / arrival-relative-speed / TERRAIN validated / propagation count /
-wall time, but the scene is not meaningfully inspectable — the COMPANION is not
-clearly visible and the accepted transfer arc is not drawn for a human to
-inspect. This observation is captured as a new follow-up request (`M06-R20`,
-transfer-cold visual observability — PRESENTATION ONLY, COLD solver untouched)
-in the next transition. The outstanding human verification items are
-`M06-R12-H01` / `M06-R12-H02`, `M06-R11-H01`, and `M06-R7-H01` (the R18/R19
-gates are now closed) plus the deferred predictor / transfer defects
-(PRED-01..08, SIM-COLL-01, TFD-1 / TFD-2). `M06-R2`..`M06-R7` are code-complete
-(see `TASKS.md`).
+`M06-R20` is the ACTIVE group (registered 2026-10-08, USER): transfer-cold
+visual observability. The next subsystem cell, TRANSFER-COLD, was human-observed
+2026-10-08 and is BLOCKED on presentation / debug observability only (not the
+solver): the COLD one-shot PRIMARY -> COMPANION panel reports RESULT SOLVED
+with miss / TOF / departure / arrival-relative-speed / TERRAIN validated /
+propagation count / wall time, but the scene is not meaningfully inspectable —
+the COMPANION is not clearly visible and the accepted transfer arc is not drawn
+for a human to inspect. R20 is PRESENTATION / DEBUG-OBSERVABILITY ONLY (the COLD
+solver is untouched, and TFD-1 / TFD-2 are not fixed here): start
+`--debug-subsystem transfer-cold` PAUSED with a `PAUSED FOR COLD TRANSFER
+INSPECTION` banner; render the ACTUAL accepted COLD arc from the accepted
+`TransferSolution` via a read-only fixed-step propagation (cached once, no
+live-state mutation, not fed back into planning/simulation) with a distinctive
+`COLD ARC` style plus `DEP` / `ARR` markers and a `COMPANION @ ARRIVAL T+<TOF>`
+ghost from the canonical ephemeris; a narrow debug-only camera fit to
+source + target + arc + markers (not full SYSTEM bounds); preserve the existing
+numeric COLD panel; faithful `NO SOLUTION` presentation when the solver has no
+solution. The gate is `M06-R20-H01` (10-item visual-inspection list); STOP
+uncommitted until it passes, and do not advance to transfer-warm before it.
+The outstanding human verification items are `M06-R12-H01` / `M06-R12-H02`,
+`M06-R11-H01`, and `M06-R7-H01` (the R18/R19 gates are now closed) plus the
+deferred predictor / transfer defects (PRED-01..08, SIM-COLL-01, TFD-1 /
+TFD-2). `M06-R2`..`M06-R7` are code-complete (see `TASKS.md`).
 
 `M07` is not active.
 

@@ -19,10 +19,12 @@
 #include "lander/predictor.hpp"     // RecedingHorizonPredictor, FlightPolicy
 #include "lander/sim.hpp"           // Simulation, State, Config
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace lander {
 
@@ -352,5 +354,48 @@ inline NodeExecutorOverlay node_executor_overlay(const Vec2& anchor,
 }
 
 // END CANONICAL ALGORITHM: node-executor debug display geometry
+
+// BEGIN CANONICAL ALGORITHM: inter-moon transfer cold display geometry
+// Reference: docs/flight-guidance-intermoon-transfer-differential-correction-
+// warm-starting-and-bounded-replanning.md (the accepted COLD solution being
+// displayed); docs/physics-model-gravity.md (the arc stays WORLD/INERTIAL).
+//
+// M06-R20: READ-ONLY, presentation-only helpers for the
+// `--debug-subsystem transfer-cold` isolation. They turn an already-accepted
+// `TransferSolution` into a frozen zero-thrust display arc and an inertial
+// debug camera fit. They never re-solve, never mutate the solution / binary /
+// simulation, and are not used by normal gameplay.
+
+struct TransferColdDisplay {
+    bool valid = false;
+    int source = -1;
+    int target = -1;
+    std::vector<BallisticState> arc;
+    Vec2 dep{};
+    Vec2 arr{};
+    Vec2 target_at_arrival{};
+    Vec2 source_at_solve{};
+    Vec2 fit_center{};
+    Vec2 fit_half{};
+    double solve_epoch = 0.0;
+    double arrival_epoch = 0.0;
+};
+
+struct TransferCameraFit {
+    Vec2 center{};
+    double angle = 0.0;
+    double zoom = 0.0;
+};
+
+TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
+                                          const TransferSolution& sol,
+                                          double fixed_dt, int samples);
+
+TransferCameraFit transfer_cold_camera_fit(
+    const Vec2& center, const Vec2& half, double window_width,
+    double window_height, double base_scale, double min_zoom,
+    double max_zoom);
+
+// END CANONICAL ALGORITHM: inter-moon transfer cold display geometry
 
 }  // namespace lander

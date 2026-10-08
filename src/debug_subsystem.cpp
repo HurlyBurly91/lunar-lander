@@ -7,6 +7,7 @@
 
 #include "lander/debug_subsystem.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -402,5 +403,108 @@ void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
             break;
     }
 }
+
+// BEGIN CANONICAL ALGORITHM: inter-moon transfer cold display geometry
+// Reference: docs/flight-guidance-intermoon-transfer-differential-correction-
+// warm-starting-and-bounded-replanning.md (the accepted COLD solution being
+// displayed); docs/physics-model-gravity.md (the arc stays WORLD/INERTIAL).
+
+TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
+                                          const TransferSolution& sol,
+                                          double fixed_dt, int samples) {
+    TransferColdDisplay d;
+    if (!sol.valid || fixed_dt <= 0.0 || samples < 1) {
+        return d;
+    }
+    if (sol.source < 0 || sol.source >= BinarySystem::kBodyCount ||
+        sol.target < 0 || sol.target >= BinarySystem::kBodyCount) {
+        return d;
+    }
+    if (sol.arrival_epoch + 1.0e-12 < sol.solve_epoch) {
+        return d;
+    }
+
+    d.valid = true;
+    d.source = sol.source;
+    d.target = sol.target;
+    d.solve_epoch = sol.solve_epoch;
+    d.arrival_epoch = sol.arrival_epoch;
+    d.dep = sol.departure_state;
+
+    const BallisticState start{sol.departure_state, sol.departure_velocity,
+                               sol.solve_epoch};
+    d.arc = predict_zero_thrust(bin, start, sol.arrival_epoch, fixed_dt,
+                                samples);
+    if (d.arc.empty()) {
+        d.valid = false;
+        return d;
+    }
+    for (const auto& st : d.arc) {
+        if (!std::isfinite(st.p.x) || !std::isfinite(st.p.y) ||
+            !std::isfinite(st.v.x) || !std::isfinite(st.v.y) ||
+            !std::isfinite(st.t)) {
+            d.valid = false;
+            return d;
+        }
+    }
+
+    d.arr = d.arc.back().p;
+    d.target_at_arrival = bin.position(sol.target, sol.arrival_epoch);
+    d.source_at_solve = bin.position(sol.source, sol.solve_epoch);
+
+    double minx = d.dep.x, maxx = d.dep.x;
+    double miny = d.dep.y, maxy = d.dep.y;
+    auto include = [&](const Vec2& p) {
+        minx = std::min(minx, p.x);
+        maxx = std::max(maxx, p.x);
+        miny = std::min(miny, p.y);
+        maxy = std::max(maxy, p.y);
+    };
+    for (const auto& st : d.arc) {
+        include(st.p);
+    }
+    include(d.arr);
+    include(d.target_at_arrival);
+    include(d.source_at_solve);
+
+    auto include_body = [&](int index, double t) {
+        const Vec2 c = bin.position(index, t);
+        const double r = bin.body(index).terrain.max_surface_radius();
+        include({c.x - r, c.y - r});
+        include({c.x + r, c.y - r});
+        include({c.x - r, c.y + r});
+        include({c.x + r, c.y + r});
+    };
+    include_body(sol.source, sol.solve_epoch);
+    include_body(sol.target, sol.arrival_epoch);
+
+    d.fit_center = {0.5 * (minx + maxx), 0.5 * (miny + maxy)};
+    const double margin = 1.18;
+    d.fit_half = {std::max(0.5 * (maxx - minx) * margin, 30.0),
+                  std::max(0.5 * (maxy - miny) * margin, 30.0)};
+    return d;
+}
+
+TransferCameraFit transfer_cold_camera_fit(
+    const Vec2& center, const Vec2& half, double window_width,
+    double window_height, double base_scale, double min_zoom,
+    double max_zoom) {
+    TransferCameraFit f;
+    f.center = center;
+    f.angle = 0.0;
+    const double floor_zoom = std::max(min_zoom, 1.0e-3);
+    const double ceiling = std::max(max_zoom, floor_zoom);
+    if (half.x <= 0.0 || half.y <= 0.0 || window_width <= 0.0 ||
+        window_height <= 0.0 || base_scale <= 0.0) {
+        f.zoom = floor_zoom;
+        return f;
+    }
+    const double zx = window_width / (2.0 * half.x) / base_scale;
+    const double zy = window_height / (2.0 * half.y) / base_scale;
+    f.zoom = std::clamp(std::min(zx, zy), floor_zoom, ceiling);
+    return f;
+}
+
+// END CANONICAL ALGORITHM: inter-moon transfer cold display geometry
 
 }  // namespace lander

@@ -155,6 +155,19 @@ public:
         focus_y_ = target_y_ - up_y * offset;
     }
 
+    // M06-R20 presentation-only inertial debug frame: a fixed centre /
+    // angle / zoom used by an isolated debug view. It deliberately does not
+    // change the camera mode or the normal update rules; the debug caller
+    // re-applies it after `update()` while the isolated view remains locked.
+    void set_debug_frame(double cx, double cy, double angle, double zoom) {
+        focus_x_ = cx;
+        focus_y_ = cy;
+        angle_ = angle;
+        angle_initialized_ = true;
+        angle_transition_active_ = false;
+        zoom_ = clamp(zoom, 1.0e-3, std::max(params_.zoom_max, 1.0e-3));
+    }
+
     CameraMode mode() const { return mode_; }
     double zoom() const { return zoom_; }
     double scale() const { return params_.base_scale * zoom_; }

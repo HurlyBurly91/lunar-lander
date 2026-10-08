@@ -423,6 +423,60 @@ void draw_thick_line(SDL_Renderer* renderer, const Vec2& a, const Vec2& b,
     fill_poly(renderer, {a + n, b + n, b - n, a - n}, color, alpha);
 }
 
+// M06-R20: the transfer-cold isolated scene. It draws ONLY the frozen
+// accepted COLD route: the departure marker, the zero-thrust arc, the
+// propagated arrival endpoint, and the target body's arrival-epoch
+// position. No live-state or planning information is taken from or written
+// to the simulation.
+void draw_transfer_cold_debug(SDL_Renderer* renderer,
+                              const lander::Camera& cam,
+                              const lander::TransferColdDisplay& d,
+                              const char* source_label,
+                              const char* target_label) {
+    if (!d.valid) {
+        const Color amber = make_color(255, 196, 64);
+        draw_center_text(renderer,
+                         "COLD TRANSFER: NO SOLUTION   [P] RUN", 96, 2,
+                         amber);
+        return;
+    }
+
+    const Color arc_c = make_color(120, 220, 255);
+    const Color dep_c = make_color(255, 228, 120);
+    const Color arr_c = make_color(255, 120, 120);
+    const Color target_c = make_color(120, 240, 160);
+
+    for (std::size_t i = 1; i < d.arc.size(); ++i) {
+        const lander::Vec2& pa = d.arc[i - 1].p;
+        const lander::Vec2& pb = d.arc[i].p;
+        draw_thick_line(renderer, to_screen(pa.x, pa.y, cam),
+                        to_screen(pb.x, pb.y, cam), 1.5, arc_c, 220);
+    }
+    if (d.arc.size() >= 2) {
+        const lander::Vec2& mid = d.arc[d.arc.size() / 2].p;
+        const Vec2 sp = to_screen(mid.x, mid.y, cam);
+        draw_text(renderer, "COLD ARC", static_cast<int>(sp.x) + 7,
+                  static_cast<int>(sp.y) - 4, 1, arc_c);
+    }
+
+    auto marker = [&](const lander::Vec2& world, const std::string& label,
+                      Color color) {
+        const Vec2 sp = to_screen(world.x, world.y, cam);
+        draw_thick_line(renderer, {sp.x - 7.0, sp.y}, {sp.x + 7.0, sp.y},
+                        2.0, color, 235);
+        draw_thick_line(renderer, {sp.x, sp.y - 7.0}, {sp.x, sp.y + 7.0},
+                        2.0, color, 235);
+        draw_text(renderer, label, static_cast<int>(sp.x) + 10,
+                  static_cast<int>(sp.y) - 4, 1, color);
+    };
+
+    marker(d.dep, "DEP", dep_c);
+    marker(d.arr, "ARR", arr_c);
+    marker(d.target_at_arrival,
+           std::string(target_label) + " @ ARRIVAL", target_c);
+    (void)source_label;
+}
+
 void fill_rect(SDL_Renderer* renderer, int x, int y, int w, int h,
                Color color, Uint8 alpha = 255) {
     SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, alpha);
@@ -3115,6 +3169,14 @@ int main(int argc, char** argv) {
     // any subsystem; without a selector it stays at its defaults.
     DebugPanelCtx panel_ctx{};
 
+    // M06-R20: the frozen, read-only COLD display arc plus the debug-only
+    // inertial camera lock. This state is presentation-only: it is built once
+    // from the accepted one-shot COLD solution and is never fed back into the
+    // solver, the simulation, or normal camera behavior.
+    lander::TransferColdDisplay transfer_cold_display{};
+    bool transfer_cold_frame_locked = false;
+    double transfer_cold_debug_zoom = 0.0;
+
     lander::AttitudeMode attitude_mode = lander::AttitudeMode::Off;
     // M06-R5: last inter-body transfer solution, used to warm-start the next
     // transfer plan (bounded differential correction) instead of a full coarse
@@ -3271,6 +3333,32 @@ int main(int argc, char** argv) {
             if (debug_mode == lander::DebugSubsystem::NodeExecutor) {
                 paused = true;
             }
+            // M06-R20: transfer-cold starts PAUSED and builds the frozen
+            // read-only display arc exactly once from the accepted COLD
+            // solution. The arc is presentation-only; it is not propagated
+            // into the live simulation or re-used by any planner. When no
+            // solution exists the display is empty and no arc / arrival
+            // marker is drawn.
+            transfer_cold_display = lander::TransferColdDisplay{};
+            transfer_cold_frame_locked = false;
+            transfer_cold_debug_zoom = 0.0;
+            if (debug_mode == lander::DebugSubsystem::TransferCold) {
+                paused = true;
+                transfer_cold_display = lander::transfer_cold_display(
+                    sim.binary(), transfer_debug.cold,
+                    sim.config().fixed_dt, 256);
+                if (transfer_cold_display.valid) {
+                    const lander::CameraParams& p = cam.params();
+                    const lander::TransferCameraFit fit =
+                        lander::transfer_cold_camera_fit(
+                            transfer_cold_display.fit_center,
+                            transfer_cold_display.fit_half, p.window_width,
+                            p.window_height, p.base_scale, 1.0e-3,
+                            p.zoom_max);
+                    transfer_cold_debug_zoom = fit.zoom;
+                    transfer_cold_frame_locked = true;
+                }
+            }
         }
         const lander::State& state = sim.state();
         const lander::Vec2 ref_pos =
@@ -3281,6 +3369,12 @@ int main(int argc, char** argv) {
     start_mission();
     if (system_view) {
         cam.set_system(true);
+    }
+    if (debug_mode == lander::DebugSubsystem::TransferCold &&
+        transfer_cold_frame_locked) {
+        cam.set_debug_frame(transfer_cold_display.fit_center.x,
+                            transfer_cold_display.fit_center.y, 0.0,
+                            transfer_cold_debug_zoom);
     }
 
     while (running) {
@@ -4069,10 +4163,36 @@ int main(int argc, char** argv) {
         } else {
             cam.clear_system_destination();
         }
+        // M06-R20: the transfer-cold debug view holds a fixed inertial frame
+        // after the initial fit. The wheel still changes that held zoom, and
+        // a camera-mode toggle releases the lock so the normal camera resumes.
+        // This block only re-applies presentation state; it never changes the
+        // simulation or any subsystem.
+        const bool transfer_cold_debug_mode =
+            debug_mode == lander::DebugSubsystem::TransferCold;
+        if (transfer_cold_debug_mode && transfer_cold_frame_locked) {
+            if (pending_wheel != 0) {
+                const double step = 1.0 + cam.params().wheel_step;
+                transfer_cold_debug_zoom *=
+                    (pending_wheel > 0) ? step : 1.0 / step;
+                transfer_cold_debug_zoom = std::clamp(
+                    transfer_cold_debug_zoom, 1.0e-3,
+                    cam.params().zoom_max);
+            }
+            if (pending_cam_toggle) {
+                transfer_cold_frame_locked = false;
+            }
+        }
         cam.update(dt, render_state.x, render_state.y, altitude,
                    pending_wheel, pending_cam_toggle, target_angle);
         pending_wheel = 0;
         pending_cam_toggle = false;
+        if (transfer_cold_debug_mode && transfer_cold_frame_locked &&
+            transfer_cold_display.valid) {
+            cam.set_debug_frame(transfer_cold_display.fit_center.x,
+                                transfer_cold_display.fit_center.y, 0.0,
+                                transfer_cold_debug_zoom);
+        }
 
         // M06-R18: the flame is only present when the engine can actually
         // burn, and its size follows the ACTUAL main-engine command the
@@ -4361,6 +4481,24 @@ int main(int argc, char** argv) {
                 const Color pause_c(255, 205, 90);
                 draw_center_text(renderer, "PAUSED FOR NODE EXECUTOR   [P] RUN",
                                   118, 1, pause_c);
+            }
+        }
+        // M06-R20: transfer-cold scene visualization. Drawn ONLY in the
+        // `transfer-cold` isolation, in both paused and running states: the
+        // frozen accepted COLD route plus the arrival-epoch target ghost.
+        // Read-only: it never mutates the simulation, the solver, or the
+        // camera beyond the debug-only frame lock above.
+        if (debug_mode == lander::DebugSubsystem::TransferCold) {
+            draw_transfer_cold_debug(
+                renderer, cam, transfer_cold_display,
+                body_name(transfer_debug.source),
+                body_name(transfer_debug.target));
+            if (paused) {
+                const Color pause_c = make_color(255, 205, 90);
+                draw_center_text(
+                    renderer,
+                    "PAUSED FOR COLD TRANSFER INSPECTION   [P] RUN", 118, 1,
+                    pause_c);
             }
         }
         // M06-R15: node-edit scene overlay. Drawn ONLY in the `node-edit`
