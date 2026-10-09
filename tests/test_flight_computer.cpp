@@ -1077,51 +1077,48 @@ void test_node_executor() {
     }
 }
 
-// M06-R19 (R19-03 / V02): continuous alignment safety during a burn — the
-// exact failure observed in the M06-R18-H01 human gate, where the node
-// executor spun the ship uncontrollably (STATE BURN / THR 1.00 while the
-// thrust axis and the VGO ray were visibly separated).
+// M06-R22 (supersedes the R19 magnitude-gated rule; preserves the R19
+// small-vector scenarios): continuous alignment safety during a burn — the
+// exact failure observed in the M06-R18-H01 and M06-R21-H01 human gates,
+// where the node executor spun the ship uncontrollably (STATE BURN / THR
+// 1.00 while the thrust axis and the VGO ray were visibly separated, with
+// the tracked VGO still large).
 //
-// Mechanism: as the tracked VGO magnitude approaches zero near the end of a
-// small burn, each delivered impulse is applied along the previous step's
-// nose, which lags the VGO direction; the shrinking vector then rotates
-// faster and faster, crosses the origin, and normalize(VGO) flips. Without a
-// re-entry from the burn state to a safe state the engine keeps firing at
-// the flipping target until the ship spins and the fuel is spent.
+// Mechanism: each delivered impulse is applied along the previous step's
+// nose, which lags the VGO direction. When the nose is materially off-axis,
+// the impulse can rotate the remaining vector and feed the next step's
+// pointing error. The hazard is not limited to the small-vector endgame;
+// with a large enough initial misalignment or angular rate the VGO can grow
+// while the craft spins. The safety is therefore full-range: thrust is
+// emitted only while the nose is inside the 0.05 rad / 0.1 rad/s alignment
+// band, and a misaligned burn step re-enters ALIGN with the VGO preserved.
 //
 // Both scenarios drive the real bang-bang law and the real semi-implicit
 // attitude integration (no direct state mutation):
 //   A: zero-gravity minimal geometry, armed at ignition with the exact
-//      ignition state of the observed failure (nose 0.0097 rad ahead of the
-//      VGO direction, +0.01 rad/s);
+//      ignition state of the R19 failure (nose 0.0097 rad ahead of the VGO
+//      direction, +0.01 rad/s);
 //   B: the exact GUI node-executor fixture (seed 1005, the debug-fixture
 //      orbit, the default node at 5.0 s with dv_prograde 0.5) through the
 //      authoritative Simulation, driven exactly as gui.cpp does.
 //
-// The whole-run invariant both assert (magnitude-gated, matching the
-// executor's own safety check): while the tracked VGO is in the
-// small-vector flip-danger regime (|VGO| <= 1.5 full-thrust steps) the
-// executor only ever emits main throttle while the ship is aligned with
-// the VGO direction (the 0.05 rad / 0.1 rad/s band). Above it, the VGO
-// direction is stable and the bang-bang tracks it while thrusting, so the
-// burn may continue with the ordinary tracking oscillation.
+// The whole-run invariant both assert: the executor only ever emits main
+// throttle while the ship is aligned with the VGO direction at the command
+// step, regardless of VGO magnitude.
 //
- // The boundedness assertions separate the defect (an ever-growing spin while
- // the engine fires, hundreds of fixed steps of thrust, the whole fuel tank
- // consumed) from legitimate behaviour (a one-shot pre-ignition ALIGN
- // rotation of up to a full turn or so at throttle 0, as in the existing
- // misaligned-node test; the alignment gate itself bounds |omega| to 0.1
- // rad/s at every burn re-entry).
- //
- // This test is the safety guard behind the R5-V08 closed-loop bound
- // (tests/test_transfer_warm.cpp, the 0.65 approach-ratio ceiling). That
- // ceiling was superseded from the pre-R19 0.60 proxy precisely to absorb the
- // bounded zero-throttle re-entry interval this rule mandates. The ceiling is
- // only valid while this guard stays mandatory: a future implementation that
- // regains transfer margin by re-emitting off-axis thrust in the small-VGO
- // misaligned regime (relaxing or removing this gate) must fail here. Do not
- // loosen the 0.05 rad / 0.1 rad/s band or the small-vector threshold to make
- // either the transfer test or this one pass.
+// The boundedness assertions separate the defect (an ever-growing spin while
+// the engine fires, hundreds of fixed steps of thrust, the whole fuel tank
+// consumed) from legitimate behaviour (a one-shot pre-ignition ALIGN
+// rotation of up to a full turn or so at throttle 0, as in the existing
+// misaligned-node test; the alignment gate itself bounds |omega| to 0.1
+// rad/s at every burn re-entry).
+//
+// This test is the safety guard behind the R5-V08 closed-loop bound
+// (tests/test_transfer_warm.cpp). The current 0.80 approach-ratio ceiling is
+// only valid while this full-range guard stays mandatory: a future
+// implementation that regains transfer margin by re-emitting off-axis thrust
+// in a misaligned burn must fail here. Do not loosen the 0.05 rad /
+// 0.1 rad/s band to make either the transfer test or this one pass.
  void test_node_executor_alignment_safety() {
     lander::Config cfg{};
     const double dt = cfg.fixed_dt;
@@ -1130,8 +1127,8 @@ void test_node_executor() {
     // Read-only mirror of the executor's strict alignment band (the
     // NodeExecutor::aligned formula is private): the VGO direction within
     // 0.05 rad of the nose and |omega| within 0.1 rad/s; a zero remaining
-    // vector is trivially aligned. This is the band that bounds thrust in
-    // the small-vector flip-danger regime (see the invariant note above).
+    // vector is trivially aligned. This band bounds thrust at every VGO
+    // magnitude (see the full-range invariant note above).
     auto aligned_mirror = [](const lander::Vec2& dv, const lander::State& s) {
         const double r = std::hypot(dv.x, dv.y);
         if (r < 1.0e-12) {
@@ -1180,8 +1177,7 @@ void test_node_executor() {
                 max_omega_thrusting =
                     std::max(max_omega_thrusting, std::abs(before.omega));
                 const lander::Vec2& dv = exec.dv_remaining();
-                if (std::hypot(dv.x, dv.y) <= 1.5 * a * dt &&
-                    !aligned_mirror(dv, before)) {
+                if (!aligned_mirror(dv, before)) {
                     invariant_held = false;
                 }
             }
@@ -1221,8 +1217,8 @@ void test_node_executor() {
               "a small burn that loses alignment mid-burn completes "
               "instead of burning out");
         check(invariant_held,
-              "thrust in the small-vector regime is only emitted while "
-              "aligned with the VGO direction (whole run)");
+              "thrust is only emitted while aligned with the VGO direction "
+              "(full-range, whole run)");
         check(thrust_steps <= 60,
               "the burn stays bounded when alignment is lost and "
               "recovered");
@@ -1290,8 +1286,7 @@ void test_node_executor() {
                 max_omega_thrusting =
                     std::max(max_omega_thrusting, std::abs(before.omega));
                 const lander::Vec2& dv = exec.dv_remaining();
-                if (std::hypot(dv.x, dv.y) <= 1.5 * a * dt &&
-                    !aligned_mirror(dv, before)) {
+                if (!aligned_mirror(dv, before)) {
                     invariant_held = false;
                 }
             }
@@ -1312,7 +1307,7 @@ void test_node_executor() {
               "until fuel exhaustion");
         check(invariant_held,
               "thrust is only emitted while aligned with the VGO "
-              "direction (GUI fixture, whole run)");
+              "direction (GUI fixture, full-range, whole run)");
         check(thrust_steps <= 60, "the GUI fixture burn stays bounded");
         check(max_omega_thrusting <= 0.3,
               "no uncontrolled angular spin while the engine fires");
@@ -1326,6 +1321,131 @@ void test_node_executor() {
         check(!sim.state().crashed && !sim.state().landed,
               "the fixture ship stays in the flight phase");
     }
+}
+
+// M06-R22 (R22-06 / V01): exact-failure regression for the full-range rule.
+// The R19 magnitude-gated logic would have started this burn at full throttle
+// because the tracked VGO is well above the small-vector threshold even though
+// the nose is 0.5 rad off-axis. The full-range gate must cut thrust for the
+// entire misaligned pre-ignition swing, preserve the VGO, align, and then
+// complete a bounded physical burn.
+void test_node_executor_full_range_alignment_safety() {
+    lander::Config cfg{};
+    const double dt = cfg.fixed_dt;
+    const double a = cfg.main_accel;
+
+    auto aligned_mirror = [](const lander::Vec2& dv, const lander::State& s) {
+        const double r = std::hypot(dv.x, dv.y);
+        if (r < 1.0e-12) {
+            return true;
+        }
+        const double desired = std::atan2(-dv.x, dv.y);
+        double err =
+            std::fmod(desired - s.angle + lander::kPi, lander::kTwoPi);
+        if (err < 0.0) {
+            err += lander::kTwoPi;
+        }
+        err -= lander::kPi;
+        return std::abs(err) <= 0.05 && std::abs(s.omega) <= 0.1;
+    };
+
+    lander::ManeuverNode node{};
+    node.time = 5.0;
+    node.dv_prograde = 4.0;  // large VGO: outside the R19 small-vector regime
+    const lander::NodeBasis basis{{0.0, 1.0}, {1.0, 0.0}};
+
+    lander::NodeExecutor exec;
+    exec.arm(node, basis, 5.0, cfg, true);
+    check(exec.state() == lander::ExecutorState::Burn,
+          "a direct-burn arm starts in BURN even when materially "
+          "misaligned");
+
+    lander::State before{};
+    before.fuel = 1000.0;
+    before.angle = 0.5;  // 28.6 deg off the VGO direction
+    before.omega = 0.0;
+
+    const double vgo0 =
+        std::hypot(exec.dv_remaining().x, exec.dv_remaining().y);
+    double now = 5.0;
+    int thrust_steps = 0;
+    bool invariant_held = true;
+    bool vgo_preserved = true;
+    bool first_thrust = false;
+    double max_omega_thrusting = 0.0;
+    double max_err_thrusting = 0.0;
+    double sweep = 0.0;
+    for (int i = 0; i < 20000 && exec.active(); ++i) {
+        const lander::Input input =
+            exec.make_input(before, now, cfg, false, false);
+        const lander::Vec2& dv = exec.dv_remaining();
+        if (input.main_throttle > 0.0) {
+            ++thrust_steps;
+            first_thrust = true;
+            max_omega_thrusting =
+                std::max(max_omega_thrusting, std::abs(before.omega));
+            const double desired = std::atan2(-dv.x, dv.y);
+            double err =
+                std::fmod(desired - before.angle + lander::kPi,
+                          lander::kTwoPi);
+            if (err < 0.0) {
+                err += lander::kTwoPi;
+            }
+            err -= lander::kPi;
+            max_err_thrusting = std::max(max_err_thrusting, std::abs(err));
+            if (!aligned_mirror(dv, before)) {
+                invariant_held = false;
+            }
+        } else if (!first_thrust &&
+                   std::hypot(dv.x, dv.y) != vgo0) {
+            vgo_preserved = false;
+        }
+
+        lander::State after = before;
+        lander::Vec2 acc{0.0, 0.0};
+        if (input.main_throttle > 0.0) {
+            acc.x = -a * input.main_throttle * std::sin(before.angle);
+            acc.y = a * input.main_throttle * std::cos(before.angle);
+        }
+        if (input.rotate_left) {
+            after.omega -= cfg.rotate_accel * dt;
+        }
+        if (input.rotate_right) {
+            after.omega += cfg.rotate_accel * dt;
+        }
+        after.vx += acc.x * dt;
+        after.vy += acc.y * dt;
+        after.x += after.vx * dt;
+        after.y += after.vy * dt;
+        after.angle += after.omega * dt;
+        after.fuel = std::max(
+            0.0,
+            before.fuel -
+                (input.main_throttle > 0.0 ? cfg.fuel_burn * dt : 0.0));
+        sweep += std::abs(after.omega) * dt;
+        now += dt;
+        exec.after_step(before, after, input, now, cfg);
+        before = after;
+    }
+
+    check(exec.state() == lander::ExecutorState::Complete,
+          "a materially misaligned large-VGO burn completes instead of "
+          "spinning");
+    check(invariant_held,
+          "full-range: thrust is only emitted while aligned with the VGO "
+          "direction (large-VGO regression, whole run)");
+    check(vgo_preserved,
+          "the VGO is preserved through the zero-throttle alignment hold");
+    check(thrust_steps <= 200,
+          "the large-VGO burn stays bounded after the alignment hold");
+    check(max_omega_thrusting <= 0.11,
+          "no uncontrolled angular spin while the engine fires");
+    check(max_err_thrusting <= 0.05 + 1.0e-9,
+          "the thrust vector stays inside the alignment envelope");
+    check(sweep <= 10.0,
+          "the whole run stays a bounded rotation, not a multi-turn spin");
+    check(before.fuel > 900.0,
+          "the large-VGO burn does not drain the fuel tank");
 }
 
 // M06-R18 (R18-02 / V01..V05): the presentation layer of the node-executor
@@ -1714,6 +1834,7 @@ int main() {
     test_attitude_controller();
     test_node_executor();
     test_node_executor_alignment_safety();
+    test_node_executor_full_range_alignment_safety();
     test_node_executor_presentation();
     test_determinism();
 

@@ -77,9 +77,9 @@ constexpr int kPredictBudget = 240;
 // re-aim (warm differential correction via plan_transfer) at this cadence in
 // simulation time, driving a fast O(1) VGO. 10 Hz keeps each re-aim (~a few ms)
 // well within the per-frame budget; a re-aim only re-targets the VGO when the
-// required correction exceeds the miss tolerance below.
+// required correction delta-v exceeds the threshold below.
 constexpr double kMidcourseReplanSec = 0.1;
-constexpr double kMidcourseMissTolerance = 0.25;
+constexpr double kMidcourseCorrectionDvThreshold = 0.25;
 
 struct Vec2 {
     double x{};
@@ -2094,6 +2094,131 @@ static void draw_node_executor_debug_axes(
               static_cast<int>(center.y) + 22, 1, label);
 }
 
+static void draw_transfer_warm_debug(
+    SDL_Renderer* renderer, const lander::Camera& cam,
+    const lander::TransferColdDisplay& seed,
+    const lander::TransferColdDisplay& warm, const lander::State& ship,
+    const lander::TransferMidcourse& mc, const lander::BinarySystem& bin,
+    const char* target_label, double t_now, bool banner_visible,
+    const std::string& banner) {
+    auto draw_outline = [&](const std::vector<lander::Vec2>& outline,
+                            Color color, Uint8 alpha) {
+        for (std::size_t i = 0; i + 1 < outline.size(); ++i) {
+            draw_thick_line(renderer, to_screen(outline[i].x, outline[i].y, cam),
+                            to_screen(outline[i + 1].x, outline[i + 1].y, cam),
+                            1.5, color, alpha);
+        }
+    };
+    auto draw_arc = [&](const lander::TransferColdDisplay& d, Color color,
+                        Uint8 alpha) {
+        for (std::size_t i = 1; i < d.arc.size(); ++i) {
+            const lander::Vec2& pa = d.arc[i - 1].p;
+            const lander::Vec2& pb = d.arc[i].p;
+            draw_thick_line(renderer, to_screen(pa.x, pa.y, cam),
+                            to_screen(pb.x, pb.y, cam), 2.0, color, alpha);
+        }
+    };
+    auto marker = [&](const lander::Vec2& world, const std::string& label,
+                      Color color, Uint8 alpha, double dx, double dy) {
+        const Vec2 sp = to_screen(world.x, world.y, cam);
+        draw_thick_line(renderer, {sp.x - 7.0, sp.y}, {sp.x + 7.0, sp.y},
+                        2.5, color, alpha);
+        draw_thick_line(renderer, {sp.x, sp.y - 7.0}, {sp.x, sp.y + 7.0},
+                        2.5, color, alpha);
+        draw_text(renderer, label, static_cast<int>(sp.x) + static_cast<int>(dx),
+                  static_cast<int>(sp.y) + static_cast<int>(dy), 1, color);
+    };
+
+    if (!seed.valid && !warm.valid) {
+        const Color amber = make_color(255, 196, 64);
+        draw_center_text(renderer, "WARM TRANSFER: NO ACCEPTED ROUTE", 96, 2,
+                         amber);
+    }
+
+    if (seed.valid) {
+        const Color seed_c = make_color(110, 118, 138);
+        draw_outline(seed.source_outline, seed_c, 110);
+        draw_outline(seed.target_outline, seed_c, 110);
+        draw_arc(seed, seed_c, 110);
+        if (seed.arc.size() >= 2) {
+            const lander::Vec2& mid = seed.arc[seed.arc.size() / 2].p;
+            const Vec2 sp = to_screen(mid.x, mid.y, cam);
+            draw_text(renderer, "COLD SEED", static_cast<int>(sp.x) + 7,
+                      static_cast<int>(sp.y) - 6, 1, seed_c);
+        }
+        marker(seed.dep, "COLD DEP", seed_c, 150, 10.0, -5.0);
+        marker(seed.arr, "COLD ARR", seed_c, 150, -64.0, -5.0);
+    }
+
+    if (warm.valid) {
+        const Color warm_c = make_color(120, 255, 170);
+        const Color target_c = make_color(255, 210, 90);
+        const Color dep_c = make_color(255, 235, 140);
+        draw_outline(warm.source_outline, warm_c, 170);
+        draw_outline(warm.target_outline, warm_c, 170);
+        draw_arc(warm, warm_c, 235);
+        if (warm.arc.size() >= 2) {
+            const lander::Vec2& mid = warm.arc[warm.arc.size() / 2].p;
+            const Vec2 sp = to_screen(mid.x, mid.y, cam);
+            draw_text(renderer, "WARM PLAN", static_cast<int>(sp.x) + 7,
+                      static_cast<int>(sp.y) - 6, 2, warm_c);
+        }
+        if (warm.target_point_valid) {
+            draw_thick_line(renderer, to_screen(warm.arr.x, warm.arr.y, cam),
+                            to_screen(warm.target_point.x, warm.target_point.y,
+                                      cam),
+                            1.8, target_c, 180);
+        }
+        marker(warm.dep, "PLAN DEP", dep_c, 245, 10.0, -5.0);
+        marker(warm.arr, "WARM ARR", warm_c, 245, 10.0, -18.0);
+        char label_buf[96];
+        std::snprintf(label_buf, sizeof(label_buf), "%s @ WARM ARR T+%6.1fS",
+                      target_label, std::max(0.0, warm.arrival_epoch - t_now));
+        marker(warm.target_at_arrival, label_buf, target_c, 245, 10.0, 10.0);
+
+        // Distinguish the target body's CURRENT position (drawn by the normal
+        // scene at t_now) from the plan's arrival-epoch outline / marker above.
+        if (warm.target >= 0 &&
+            warm.target < lander::BinarySystem::kBodyCount) {
+            const lander::Vec2 current_target =
+                bin.position(warm.target, t_now);
+            char current_buf[64];
+            std::snprintf(current_buf, sizeof(current_buf), "CUR %s",
+                          target_label);
+            marker(current_target, current_buf, target_c, 140, -70.0, 18.0);
+        }
+
+        if (warm.solve_epoch > 0.0) {
+            const Vec2 sp = to_screen(warm.dep.x, warm.dep.y, cam);
+            char age_buf[32];
+            std::snprintf(age_buf, sizeof(age_buf), "AGE %5.1fS",
+                          std::max(0.0, t_now - warm.solve_epoch));
+            draw_text(renderer, age_buf,
+                      static_cast<int>(sp.x) + 10,
+                      static_cast<int>(sp.y) + 9, 1, dep_c);
+        }
+    } else if (seed.valid) {
+        draw_center_text(renderer, "WARM PLAN: NO CACHE   COLD SEED ONLY", 132,
+                         1, make_color(255, 196, 64));
+    }
+
+    const Vec2 center = to_screen(ship.x, ship.y, cam);
+    draw_text(renderer, "LIVE", static_cast<int>(center.x) + 14,
+              static_cast<int>(center.y) - 8, 2, make_color(96, 224, 255));
+    if (mc.active()) {
+        const lander::NodeExecutorOverlay overlay =
+            lander::node_executor_overlay(
+                lander::Vec2{center.x, center.y}, ship.angle,
+                mc.fast().dv_remaining(), cam.angle(), 46.0);
+        draw_node_executor_debug_axes(renderer, ship, cam, overlay,
+                                      mc.fast().state());
+    }
+
+    if (banner_visible && !banner.empty()) {
+        draw_center_text(renderer, banner, 8, 1, make_color(255, 196, 64));
+    }
+}
+
 // M06-R15: the node-edit scene overlay, drawn ONLY in the `node-edit`
 // isolation. Read-only: it reads the prediction / node / basis / dv_world and
 // the selected display frame, then renders fixed-screen geometry (the NODE
@@ -2842,9 +2967,6 @@ void draw_debug_subsystem_panel(
             break;
         }
         case lander::DebugSubsystem::TransferWarm: {
-            // R8-11: the WARM midcourse: cache validity, last correction
-            // iterations, propagation count, miss before/after, fallback,
-            // and the bounded re-plan cadence.
             const auto& c = transfer_debug.cold;
             const auto& w = transfer_mc.cache();
             std::snprintf(buffer, sizeof buffer,
@@ -2862,6 +2984,11 @@ void draw_debug_subsystem_panel(
                 w.valid ? "valid" : "invalid", w.time_of_flight,
                 w.departure_velocity.x, w.departure_velocity.y);
             line(buffer, w.valid ? green : dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  ARR   t1 %8.2f s   %6.2f m/s target-relative",
+                w.arrival_epoch, w.arrival_rel_speed);
+            line(buffer, w.valid ? dim : dim);
             std::snprintf(buffer, sizeof buffer,
                           "  NEWTON  %2d iters   fallback COLD: %s",
                           w.newton_iterations,
@@ -2873,21 +3000,34 @@ void draw_debug_subsystem_panel(
                 transfer_debug.warm_propagations_last,
                 transfer_debug.warm_propagations_total);
             line(buffer, dim);
-            std::snprintf(buffer, sizeof buffer,
-                          "  MISS  %7.3f -> %7.3f m   (tol %4.2f)",
-                          transfer_debug.warm_miss_before,
-                          transfer_debug.warm_miss_after,
-                          kMidcourseMissTolerance);
-            line(buffer,
-                 transfer_debug.warm_miss_after > kMidcourseMissTolerance
-                     ? amber
-                     : dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  TERMINAL MISS  t1 %8.2f s   before %8.3f m  after %8.3f m",
+                w.arrival_epoch, transfer_debug.warm_miss_before,
+                transfer_debug.warm_miss_after);
+            line(buffer, dim);
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  CORR DV  last %8.3f m/s   thresh %6.2f m/s   %s",
+                transfer_debug.warm_corr_dv,
+                kMidcourseCorrectionDvThreshold,
+                transfer_debug.warm_retarget_last ? "RETARGET" : "hold");
+            line(buffer, transfer_debug.warm_retarget_last ? amber : dim);
             std::snprintf(
                 buffer, sizeof buffer,
                 "  REPLAN  %4d   RETARGET %4d   cadence %.1f s",
                 transfer_mc.slow_plans(), transfer_mc.retargets(),
                 kMidcourseReplanSec);
             line(buffer, dim);
+            const auto& fe = transfer_mc.fast();
+            const lander::Vec2 fdv = fe.dv_remaining();
+            std::snprintf(
+                buffer, sizeof buffer,
+                "  FAST  %-8s   VGO %7.2f m/s   THR %4.2f",
+                lander::executor_state_name(fe.state()),
+                std::hypot(fdv.x, fdv.y),
+                ctx.last_step_input.main_throttle);
+            line(buffer, fe.active() ? green : dim);
             line("  [manual throttle reclaims control]", dim);
             line("  TFD-1/TFD-2 surface raw here; this mode does not fix them",
                  dim);
@@ -3232,6 +3372,12 @@ int main(int argc, char** argv) {
     lander::TransferColdDisplay transfer_cold_display{};
     bool transfer_cold_frame_locked = false;
     double transfer_cold_debug_zoom = 0.0;
+    lander::TransferColdDisplay transfer_warm_display{};
+    lander::TransferColdDisplay transfer_warm_seed_display{};
+    bool transfer_warm_frame_locked = false;
+    lander::TransferDebugCameraState transfer_warm_debug_camera{};
+    std::string transfer_warm_banner;
+    double transfer_warm_banner_time = 0.0;
 
     lander::AttitudeMode attitude_mode = lander::AttitudeMode::Off;
     // M06-R5: last inter-body transfer solution, used to warm-start the next
@@ -3398,6 +3544,12 @@ int main(int argc, char** argv) {
             transfer_cold_display = lander::TransferColdDisplay{};
             transfer_cold_frame_locked = false;
             transfer_cold_debug_zoom = 0.0;
+            transfer_warm_display = lander::TransferColdDisplay{};
+            transfer_warm_seed_display = lander::TransferColdDisplay{};
+            transfer_warm_frame_locked = false;
+            transfer_warm_debug_camera = lander::TransferDebugCameraState{};
+            transfer_warm_banner.clear();
+            transfer_warm_banner_time = 0.0;
             if (debug_mode == lander::DebugSubsystem::TransferCold) {
                 paused = true;
                 transfer_cold_display = lander::transfer_cold_display(
@@ -3415,12 +3567,63 @@ int main(int argc, char** argv) {
                     transfer_cold_frame_locked = true;
                 }
             }
+            if (debug_mode == lander::DebugSubsystem::TransferWarm) {
+                transfer_warm_seed_display = lander::transfer_cold_display(
+                    sim.binary(), transfer_debug.cold,
+                    sim.config().fixed_dt, 256);
+                if (transfer_mc.active() && transfer_mc.cache().valid) {
+                    transfer_warm_display = lander::transfer_cold_display(
+                        sim.binary(), transfer_mc.cache(),
+                        sim.config().fixed_dt, 256);
+                }
+                if (transfer_warm_display.valid ||
+                    transfer_warm_seed_display.valid) {
+                    transfer_warm_frame_locked = true;
+                }
+            }
         }
         const lander::State& state = sim.state();
         const lander::Vec2 ref_pos =
             sim.binary().position(sim.reference_body(), 0.0);
         cam.snap(state.x, state.y,
                  lander::local_up_angle(state, ref_pos));
+    };
+    auto update_transfer_warm_debug_frame = [&](const lander::State& live) {
+        if (debug_mode != lander::DebugSubsystem::TransferWarm ||
+            !transfer_warm_frame_locked) {
+            return;
+        }
+        const lander::TransferColdDisplay* d =
+            transfer_warm_display.valid ? &transfer_warm_display
+                                        : &transfer_warm_seed_display;
+        if (!d->valid) {
+            transfer_warm_frame_locked = false;
+            return;
+        }
+        double minx = d->fit_center.x - d->fit_half.x;
+        double maxx = d->fit_center.x + d->fit_half.x;
+        double miny = d->fit_center.y - d->fit_half.y;
+        double maxy = d->fit_center.y + d->fit_half.y;
+        minx = std::min(minx, live.x);
+        maxx = std::max(maxx, live.x);
+        miny = std::min(miny, live.y);
+        maxy = std::max(maxy, live.y);
+        const lander::CameraParams& p = cam.params();
+        const lander::BinarySystem& bin = sim.binary();
+        const bool target_known =
+            d->target >= 0 && d->target < lander::BinarySystem::kBodyCount;
+        const double target_ref =
+            target_known ? bin.body(d->target).terrain.reference_radius()
+                         : 0.0;
+        const double min_half = std::max(120.0, 0.9 * target_ref);
+        const lander::TransferCameraFit fit = lander::update_transfer_debug_camera(
+            transfer_warm_debug_camera,
+            {0.5 * (minx + maxx), 0.5 * (miny + maxy)},
+            {0.5 * std::max(maxx - minx, 0.0),
+             0.5 * std::max(maxy - miny, 0.0)},
+            p.window_width, p.window_height, p.base_scale, 1.0e-3,
+            p.zoom_max, min_half);
+        cam.set_debug_frame(fit.center.x, fit.center.y, 0.0, fit.zoom);
     };
     start_mission();
     if (system_view) {
@@ -3429,9 +3632,10 @@ int main(int argc, char** argv) {
     if (debug_mode == lander::DebugSubsystem::TransferCold &&
         transfer_cold_frame_locked) {
         cam.set_debug_frame(transfer_cold_display.fit_center.x,
-                            transfer_cold_display.fit_center.y, 0.0,
-                            transfer_cold_debug_zoom);
+                             transfer_cold_display.fit_center.y, 0.0,
+                             transfer_cold_debug_zoom);
     }
+    update_transfer_warm_debug_frame(sim.state());
 
     while (running) {
         SDL_Event event;
@@ -3907,6 +4111,8 @@ int main(int argc, char** argv) {
             contract_banner_time =
                 std::max(0.0, contract_banner_time - dt);
             debug_message_time = std::max(0.0, debug_message_time - dt);
+            transfer_warm_banner_time =
+                std::max(0.0, transfer_warm_banner_time - dt);
         }
 
         // The polled state array is indexed by scancode (SDL3's
@@ -3990,12 +4196,8 @@ int main(int argc, char** argv) {
                         warm_dbg ? transfer_mc.cache().achieved_miss : 0.0;
                     const bool replanned = transfer_mc.maybe_replan(
                         sim.binary(), sim.config(), before, now,
-                        kMidcourseReplanSec, kMidcourseMissTolerance);
+                        kMidcourseReplanSec, kMidcourseCorrectionDvThreshold);
                     if (warm_dbg && replanned) {
-                        // Debug observation only (R8-11): the last re-plan's
-                        // miss / correction count / propagation cost / cold
-                        // fallback, stored on the panel context. It never
-                        // feeds back into the midcourse (P07).
                         transfer_debug.warm_miss_before = miss_before;
                         transfer_debug.warm_miss_after =
                             transfer_mc.cache().achieved_miss;
@@ -4005,8 +4207,36 @@ int main(int argc, char** argv) {
                         transfer_debug.warm_propagations_total +=
                             transfer_debug.warm_propagations_last;
                         transfer_debug.warm_fallback_last =
-                            transfer_mc.cache().valid &&
-                            transfer_mc.cache().newton_iterations == 0;
+                            transfer_mc.last_slow_valid() &&
+                            !transfer_mc.last_warm_used();
+                        transfer_debug.warm_corr_dv =
+                            transfer_mc.last_corr_dv();
+                        transfer_debug.warm_corr_dv_threshold =
+                            kMidcourseCorrectionDvThreshold;
+                        transfer_debug.warm_retarget_last =
+                            transfer_mc.last_retargeted();
+                        transfer_debug.warm_replan_number =
+                            transfer_mc.slow_plans();
+                        transfer_debug.warm_replan_time = now;
+                        transfer_debug.warm_slow_valid_last =
+                            transfer_mc.last_slow_valid();
+                        if (transfer_debug.warm_slow_valid_last &&
+                            transfer_mc.cache().valid) {
+                            transfer_warm_display =
+                                lander::transfer_cold_display(
+                                    sim.binary(), transfer_mc.cache(),
+                                    sim.config().fixed_dt, 256);
+                            char banner_buf[96];
+                            std::snprintf(
+                                banner_buf, sizeof banner_buf,
+                                "WARM #%d %s  COR %.2f  RET %s",
+                                transfer_debug.warm_replan_number,
+                                transfer_mc.last_warm_used() ? "W" : "C",
+                                transfer_debug.warm_corr_dv,
+                                transfer_debug.warm_retarget_last ? "Y" : "N");
+                            transfer_warm_banner = banner_buf;
+                            transfer_warm_banner_time = 0.8;
+                        }
                     }
                     // HOT (O(1), every fixed step): the fast VGO drives
                     // attitude and the finite correction burn.
@@ -4226,6 +4456,8 @@ int main(int argc, char** argv) {
         // simulation or any subsystem.
         const bool transfer_cold_debug_mode =
             debug_mode == lander::DebugSubsystem::TransferCold;
+        const bool transfer_warm_debug_mode =
+            debug_mode == lander::DebugSubsystem::TransferWarm;
         if (transfer_cold_debug_mode && transfer_cold_frame_locked) {
             if (pending_wheel != 0) {
                 const double step = 1.0 + cam.params().wheel_step;
@@ -4239,6 +4471,19 @@ int main(int argc, char** argv) {
                 transfer_cold_frame_locked = false;
             }
         }
+        if (transfer_warm_debug_mode && transfer_warm_frame_locked) {
+            if (pending_wheel != 0 && transfer_warm_debug_camera.initialized) {
+                const double step = 1.0 + cam.params().wheel_step;
+                transfer_warm_debug_camera.zoom *=
+                    (pending_wheel > 0) ? step : 1.0 / step;
+                transfer_warm_debug_camera.zoom = std::clamp(
+                    transfer_warm_debug_camera.zoom, 1.0e-3,
+                    cam.params().zoom_max);
+            }
+            if (pending_cam_toggle) {
+                transfer_warm_frame_locked = false;
+            }
+        }
         cam.update(dt, render_state.x, render_state.y, altitude,
                    pending_wheel, pending_cam_toggle, target_angle);
         pending_wheel = 0;
@@ -4248,6 +4493,9 @@ int main(int argc, char** argv) {
             cam.set_debug_frame(transfer_cold_display.fit_center.x,
                                 transfer_cold_display.fit_center.y, 0.0,
                                 transfer_cold_debug_zoom);
+        }
+        if (transfer_warm_debug_mode && transfer_warm_frame_locked) {
+            update_transfer_warm_debug_frame(render_state);
         }
 
         // M06-R18: the flame is only present when the engine can actually
@@ -4563,6 +4811,19 @@ int main(int argc, char** argv) {
                     "PAUSED FOR COLD TRANSFER INSPECTION   [P] RUN", 118, 1,
                     pause_c);
             }
+        }
+        if (debug_mode == lander::DebugSubsystem::TransferWarm) {
+            if (!transfer_mc.active() && transfer_warm_display.valid) {
+                transfer_warm_display = lander::TransferColdDisplay{};
+                transfer_warm_banner.clear();
+                transfer_warm_banner_time = 0.0;
+            }
+            draw_transfer_warm_debug(
+                renderer, cam, transfer_warm_seed_display,
+                transfer_warm_display, render_state, transfer_mc,
+                sim.binary(), body_name(transfer_debug.target),
+                sim.sim_time(), transfer_warm_banner_time > 0.0,
+                transfer_warm_banner);
         }
         // M06-R15: node-edit scene overlay. Drawn ONLY in the `node-edit`
         // isolation, in the same branch the pre/post arc is visible, so the

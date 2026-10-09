@@ -563,6 +563,50 @@ TransferCameraFit transfer_cold_camera_fit(
     return f;
 }
 
+TransferCameraFit update_transfer_debug_camera(
+    TransferDebugCameraState& state, const Vec2& target_center,
+    const Vec2& target_half, double window_width, double window_height,
+    double base_scale, double min_zoom, double max_zoom,
+    double min_half_extent) {
+    Vec2 half = target_half;
+    if (min_half_extent > 0.0) {
+        half.x = std::max(half.x, min_half_extent);
+        half.y = std::max(half.y, min_half_extent);
+    }
+    const TransferCameraFit target = transfer_cold_camera_fit(
+        target_center, half, window_width, window_height, base_scale,
+        min_zoom, max_zoom);
+    const double floor_zoom = std::max(min_zoom, 1.0e-3);
+    const double ceiling = std::max(max_zoom, floor_zoom);
+    if (!state.initialized || state.zoom <= 0.0) {
+        state.initialized = true;
+        state.center = target.center;
+        state.zoom = std::clamp(target.zoom, floor_zoom, ceiling);
+        TransferCameraFit out = target;
+        out.center = state.center;
+        out.zoom = state.zoom;
+        return out;
+    }
+
+    constexpr double kAlpha = 0.20;
+    constexpr double kMaxZoomStep = 1.35;
+    const double center_x =
+        state.center.x + kAlpha * (target.center.x - state.center.x);
+    const double center_y =
+        state.center.y + kAlpha * (target.center.y - state.center.y);
+    double ratio = target.zoom / state.zoom;
+    ratio = std::clamp(ratio, 1.0 / kMaxZoomStep, kMaxZoomStep);
+    const double zoom = std::clamp(state.zoom * ratio, floor_zoom, ceiling);
+
+    state.center = {center_x, center_y};
+    state.zoom = zoom;
+    TransferCameraFit out;
+    out.center = state.center;
+    out.angle = 0.0;
+    out.zoom = zoom;
+    return out;
+}
+
 // END CANONICAL ALGORITHM: inter-moon transfer cold display geometry
 
 }  // namespace lander

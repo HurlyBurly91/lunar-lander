@@ -382,7 +382,11 @@ std::optional<ManeuverNode> plan_circularize(
 std::optional<ManeuverNode> plan_transfer(
     const BinarySystem& bin, const Config& config, const State& start,
     double t0, int reference_body,
-    const std::optional<ManeuverNode>& existing, TransferSolution* cache) {
+    const std::optional<ManeuverNode>& existing, TransferSolution* cache,
+    bool* warm_used_out) {
+    if (warm_used_out) {
+        *warm_used_out = false;
+    }
     const int source = start.landed ? start.landed_body : reference_body;
     // M06-R13: the legacy two-body transfer route is strictly 0<->1. The outer
     // moonlet is neither a source nor a destination: an out-of-route source
@@ -406,12 +410,13 @@ std::optional<ManeuverNode> plan_transfer(
     const BallisticState pre = propagate_ballistic(bin, initial, steps,
                                                    config.fixed_dt);
 
-    // M06-R5: warm-first, cold-fallback transfer targeting from the predicted
-    // pre-burn state. A valid cached solution for this route is re-aimed with
-    // a bounded differential correction; any warm failure (or an empty /
-    // mismatched cache) drops to the full coarse search, which reseeds the
-    // cache. When no cache pointer is supplied this is exactly the original
-    // pure-cold behaviour.
+    // M06-R5 / M06-R23: warm-first, cold-fallback transfer targeting from the
+    // predicted pre-burn state. A valid cached solution for this route is
+    // re-aimed with a bounded differential correction toward the cached
+    // absolute arrival epoch, seeded from the previous solution's departure
+    // velocity; any warm failure (or an empty / mismatched cache) drops to the
+    // full coarse search, which reseeds the cache. When no cache pointer is
+    // supplied this is exactly the original pure-cold behaviour.
     Vec2 departure{};
     bool solved = false;
     if (cache && cache->valid && cache->source == safe_source &&
@@ -423,6 +428,9 @@ std::optional<ManeuverNode> plan_transfer(
             *cache = warm;
             departure = warm.departure_velocity;
             solved = true;
+            if (warm_used_out) {
+                *warm_used_out = true;
+            }
         }
     }
     if (!solved) {

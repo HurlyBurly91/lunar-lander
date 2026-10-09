@@ -228,13 +228,13 @@ While VGO is nonzero:
 The ordinary attitude controller points the spacecraft thrust vector toward
 that direction.
 
-When the remaining vector is small, its direction can rotate rapidly or flip
-as the final partial impulses are delivered, because each delivered impulse
-is applied along the previous step's nose, which lags the vector. This is not
-an additional steering law; it is handled by the continuous alignment safety
-in the burn-completion rules below, which keeps the engine off whenever the
-direction is materially misaligned, so the remaining vector only ever
-shrinks.
+The vector's direction can rotate as each delivered impulse is applied along
+the previous step's nose, which lags the vector; the effect is most acute
+near the end of a burn, but an off-axis burn is unsafe at any magnitude.
+This is not an additional steering law; it is handled by the continuous
+alignment safety in the burn-completion rules below, which keeps the engine
+off whenever the direction is materially misaligned, so the remaining vector
+only ever shrinks.
 
 No direct state mutation is permitted.
 
@@ -357,21 +357,21 @@ remove all latent executor output.
 
 Alignment is checked at every physics step, not only at burn entry.
 
-The direction of the remaining VGO is stable while its magnitude is large,
-but can rotate rapidly or flip when the remaining vector is small (near the
-end of a burn), because each delivered impulse is applied along the previous
-step's nose, which lags the vector. Sustained thrust in that small zone can
-therefore deliver off-axis impulse in the wrong direction and rotate or flip
-the remaining vector. The safety is magnitude-gated to match that hazard:
+An off-axis impulse is hazardous at every VGO magnitude. When the nose lags
+the remaining vector, the delivered impulse can rotate the vector, and the
+next step points at the rotated vector; with enough initial misalignment or
+angular rate this becomes a self-reinforcing spin in which the tracked VGO
+can grow instead of shrink. A re-target can also hand the executor a new
+VGO direction while the craft is still rotating. The safety is therefore
+continuous and full-range:
 
-- While the remaining VGO is large (outside a small deterministic threshold,
-  a few physical steps of delivered impulse), the executor burns
-  unconditionally; the direction is stable there and the burn is safe.
-- While the remaining VGO is small (inside that threshold) and the craft is
-  materially misaligned, the executor stops the physical thrust and returns
-  to the alignment state:
+- While the remaining VGO is nonzero and the craft is inside the alignment
+  band, the executor burns (subject to ignition timing and the final partial
+  throttle).
+- While the craft is materially misaligned, the executor stops the physical
+  thrust and returns to the alignment state, regardless of VGO magnitude:
 
-    BURN  --(small VGO, materially misaligned)-->  ALIGN
+    BURN  --(materially misaligned)-->  ALIGN
     ALIGN --(aligned, ignition already reached)-->  BURN
 
 Rules:
@@ -380,8 +380,8 @@ Rules:
   keeps steering toward the current VGO with the unchanged bang-bang law.
 - A misaligned step never delivers a thrust impulse, so the remaining VGO
   can only shrink on the aligned burn steps that resume.
-- The small-zone threshold and the misalignment band are deterministic
-  constants that may be tuned; they do not relax the entry alignment gate.
+- The misalignment band and angular-rate band are deterministic constants
+  that may be tuned; they do not relax the entry alignment gate.
 - After ignition, the re-entry from ALIGN goes straight back to BURN; the
   executor never returns to WAIT once ignition has been reached.
 - The bang-bang attitude law, the VGO accounting, the ignition timing, and
@@ -391,11 +391,11 @@ Rules:
   as the node-time gate above.
 
 When a higher-rate guidance layer re-arms the node (a re-target) and the
-craft is already within a small deterministic band of the new VGO direction
-with low angular rate, the executor enters BURN directly, skipping the
-ALIGN swing. This is an arming convenience only; it does not relax the
-alignment safety, and the magnitude-gated re-entry above applies equally to
-a continuing burn.
+craft is already inside the same strict alignment band used for burn
+continuation, with bounded angular rate, the executor may enter BURN
+directly, skipping the ALIGN swing. This is an arming convenience only; it
+must not use a wider band than the continuous alignment safety, and the
+full-range re-entry above applies equally to a continuing burn.
 
 ## Complexity invariant
 

@@ -84,7 +84,7 @@ public:
     int frame_body() const noexcept { return frame_body_; }
     bool late() const noexcept { return late_; }
 
-private:
+    private:
     bool aligned(const State& state) const;
 
     ExecutorState state_{ExecutorState::Idle};
@@ -157,6 +157,10 @@ public:
     const TransferSolution& cache() const noexcept { return cache_; }
     const std::optional<ManeuverNode>& node() const noexcept { return node_; }
     const NodeExecutor& fast() const noexcept { return fast_; }
+    double last_corr_dv() const noexcept { return last_corr_dv_; }
+    bool last_retargeted() const noexcept { return last_retargeted_; }
+    bool last_slow_valid() const noexcept { return last_slow_valid_; }
+    bool last_warm_used() const noexcept { return last_warm_used_; }
 
 private:
     NodeExecutor fast_{};
@@ -167,6 +171,10 @@ private:
     double last_replan_{0.0};
     int slow_plans_{0};
     int retargets_{0};
+    double last_corr_dv_{0.0};
+    bool last_retargeted_{false};
+    bool last_slow_valid_{false};
+    bool last_warm_used_{false};
 };
 
 }  // namespace lander

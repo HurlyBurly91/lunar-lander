@@ -171,14 +171,17 @@ std::optional<ManeuverNode> plan_circularize(
 // the current node time; on any warm failure (or an empty / mismatched `cache`)
 // it falls back to the full coarse COLD search. A successful solve (warm or
 // cold) updates `*cache` for the next call. `cache` is optional, so call sites
-// that pass nothing keep the pure cold behaviour. Returns the planned node on
-// success, or `std::nullopt` when no valid transfer exists (the caller then
-// leaves any existing node unchanged).
+// that pass nothing keep the pure cold behaviour. When `warm_used_out` is
+// non-null it receives whether the successful node came from the WARM bounded
+// correction (true) or from the COLD fallback (false); it is false for a
+// failed solve. Returns the planned node on success, or `std::nullopt` when no
+// valid transfer exists (the caller then leaves any existing node unchanged).
 std::optional<ManeuverNode> plan_transfer(
     const BinarySystem& bin, const Config& config, const State& start,
     double t0, int reference_body,
     const std::optional<ManeuverNode>& existing,
-    TransferSolution* cache = nullptr);
+    TransferSolution* cache = nullptr,
+    bool* warm_used_out = nullptr);
 
 // Velocity-match the moving destination pad. If no node exists yet, the node
 // is placed near the predicted closest approach to that pad.

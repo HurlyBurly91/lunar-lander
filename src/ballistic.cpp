@@ -779,9 +779,13 @@ NewtonCorrectionResult differential_correction(
     return r;
 }
 
+// BEGIN CANONICAL ALGORITHM: inter-moon transfer warm-started differential
+// correction
+// Reference:
+// docs/flight-guidance-intermoon-transfer-differential-correction-warm-starting-and-bounded-replanning.md
 TransferSolution solve_transfer_warm(const BinarySystem& bin, double dt,
-                                     const Vec2& x0, int source, int target,
-                                     double t0, const TransferSolution& prev) {
+                                      const Vec2& x0, int source, int target,
+                                      double t0, const TransferSolution& prev) {
     TransferSolution none{};  // valid=false
     if (dt <= 0.0 || !prev.valid ||
         prev.source != source || prev.target != target) {
@@ -806,16 +810,29 @@ TransferSolution solve_transfer_warm(const BinarySystem& bin, double dt,
         return true;
     };
 
-    // Shift the previous solution to the current epoch: keep the same flight
-    // duration (snapped to the fixed-step grid) so the arrival shell moves with
-    // the binary, and seed the departure velocity from the previous solution.
-    const int steps =
-        std::max(10, static_cast<int>(std::lround(prev.fraction * bin.period() / dt)));
+    // M06-R23: target the cached absolute arrival epoch, not a rolling
+    // fixed-duration horizon. The target body keeps moving, so a rolling
+    // horizon keeps moving the arrival shell and can leave a persistent
+    // one-step correction; a fixed future epoch is the finite rendezvous
+    // target. The remaining flight duration (and period fraction) shrinks as
+    // the solve epoch advances. If the remaining horizon is below the minimum
+    // solve horizon, the caller's bounded cold fallback selects a later
+    // feasible epoch.
+    const int steps = ballistic_steps(t0, prev.arrival_epoch, dt);
+    if (steps < 10) {
+        return none;
+    }
     const double t1 = t0 + steps * dt;
     Vec2 x_goal{};
     if (!goal_at(t1, x_goal)) {
         return none;
     }
+    // The previous solution's departure velocity is the warm-start seed: it
+    // sits in the same velocity basin as the current solution, so the bounded
+    // correction converges even when the craft is off the nominal arc (e.g.
+    // mid injection burn). Seeding from the raw current state velocity would
+    // start the correction in the wrong basin when the craft is far from the
+    // arc and drive repeated cold-fallback re-targets.
     Vec2 v0 = prev.departure_velocity;
 
     // Bounded differential correction (M06-R5-02) — no coarse grid (R5-03).
@@ -848,10 +865,21 @@ TransferSolution solve_transfer_warm(const BinarySystem& bin, double dt,
     out.time_of_flight = steps * dt;
     out.arrival_epoch = t1;
     out.achieved_miss = corr.final_miss;
-    out.fraction = prev.fraction;
+    out.fraction = out.time_of_flight / bin.period();
     out.newton_iterations = corr.iterations;
+    // M06-R23: populate the predicted target-relative arrival speed on the
+    // warm path exactly as the cold path does, so the debug panel and any
+    // terminal de-orbit logic see the same physical quantity after a warm
+    // replan.
+    const BallisticState arrival =
+        propagate_ballistic(bin, {x0, v0, t0}, steps, dt);
+    const Vec2 target_vel = bin.velocity(target, t1);
+    out.arrival_rel_speed =
+        std::hypot(arrival.v.x - target_vel.x, arrival.v.y - target_vel.y);
     return out;
 }
+// END CANONICAL ALGORITHM: inter-moon transfer warm-started differential
+// correction
 
 void ballistic_reset_propagation_count() {
     g_propagation_count = 0;

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 
 namespace {
 
@@ -147,16 +148,22 @@ void test_warm_matches_cold() {
     if (!warm.valid) {
         return;
     }
-    // Same accepted basin: the same flight-time fraction and an arrival epoch
-    // / miss / departure velocity within a small tolerance of the cold solve.
-    check_close(warm.fraction, cold.fraction, 1e-9,
-                "warm uses the same flight-time basin (fraction)");
-    check_close(warm.arrival_epoch, cold.arrival_epoch, 2.0,
-                "warm arrival epoch within 2 s of cold");
+    // M06-R23: the warm replan targets the cold solution's absolute arrival
+    // epoch. After one fixed step the remaining flight duration and period
+    // fraction shrink by one step, while the arrival epoch itself stays
+    // fixed. Seeded from the previous solution's departure velocity, the
+    // bounded correction converges to the propagated cold-arc velocity.
+    check_close(warm.arrival_epoch, cold.arrival_epoch, 1.0e-9,
+                "warm holds the cold solution's absolute arrival epoch");
+    check_close(warm.time_of_flight, cold.time_of_flight - kDt, 1.0e-9,
+                "warm remaining flight duration shrinks by one fixed step");
+    check_close(warm.fraction,
+                (cold.arrival_epoch - t1) / bin.period(), 1.0e-9,
+                "warm period fraction matches the fixed-epoch remaining TOF");
     check_close(warm.achieved_miss, cold.achieved_miss, 10.0,
                 "warm terminal miss within 10 m of cold");
-    check_close_vec(warm.departure_velocity, cold.departure_velocity, 3.0,
-                    "warm departure velocity within 3 m/s of cold");
+    check_close_vec(warm.departure_velocity, s1.v, 3.0,
+                    "warm departure velocity stays near the predicted state");
     check_close(warm.achieved_miss, cold.achieved_miss, 12.0,
                 "warm stays in the cold solver's acceptance bound");
 }
@@ -503,9 +510,10 @@ void test_benchmark() {
     }
     const BallisticState s0{x0, cold.departure_velocity, t0};
     // Shift by one fixed step: the normal per-planning-cycle replan cadence.
-    // For the well-conditioned warm-start seed this lands within the acceptance
-    // bound with zero Newton iterations (a genuinely cheap replan); the bounded
-    // Newton loop itself is exercised separately in test_bounded_failure.
+    // Seeded from the previous solution's departure velocity, this lands within
+    // the acceptance bound with zero Newton iterations (a genuinely cheap
+    // replan); the bounded Newton loop itself is exercised separately in
+    // test_bounded_failure.
     const int kShiftSteps = 1;
     const BallisticState s1 = propagate_ballistic(bin, s0, kShiftSteps, kDt);
     const double t_shift = t0 + kShiftSteps * kDt;
@@ -564,7 +572,27 @@ struct MidcourseRun {
     bool landed{false};
     double start_target_dist{0.0};
     double min_target_dist{1.0e30};
+    int bad_full_thrust{0};
+    int bad_big_vgo{0};
+    double max_bad_err{0.0};
+    double max_bad_omega{0.0};
+    double max_vgo_regression{0.0};
 };
+
+bool midcourse_aligned_mirror(const Vec2& dv, const State& s) {
+    const double r = std::hypot(dv.x, dv.y);
+    if (r < 1.0e-12) {
+        return true;
+    }
+    const double desired = std::atan2(-dv.x, dv.y);
+    double err =
+        std::fmod(desired - s.angle + lander::kPi, lander::kTwoPi);
+    if (err < 0.0) {
+        err += lander::kTwoPi;
+    }
+    err -= lander::kPi;
+    return std::abs(err) <= 0.05 && std::abs(s.omega) <= 0.1;
+}
 
 MidcourseRun run_midcourse(const BinarySystem& seed_bin, const Config& cfg,
                            const State& start, const TransferSolution& seed,
@@ -591,6 +619,8 @@ MidcourseRun run_midcourse(const BinarySystem& seed_bin, const Config& cfg,
     mc.arm(arm_node, seed, seed.source >= 0 ? seed.source : 0, arm_basis,
            now0, cfg);
 
+    bool in_burn_segment = false;
+    double segment_start_vgo = 0.0;
     for (int i = 0; i < ticks; ++i) {
         const State before = sim.state();
         const double now = sim.sim_time();
@@ -600,6 +630,39 @@ MidcourseRun run_midcourse(const BinarySystem& seed_bin, const Config& cfg,
         const Input input =
             mc.make_input(before, now, cfg, /*manual_left=*/false,
                           /*manual_right=*/false);
+
+        if (input.main_throttle > 0.0) {
+            const Vec2& dv = mc.fast().dv_remaining();
+            const double vgo = std::hypot(dv.x, dv.y);
+            if (!midcourse_aligned_mirror(dv, before)) {
+                ++r.bad_full_thrust;
+                if (vgo >= 1.0) {
+                    ++r.bad_big_vgo;
+                }
+                const double desired = std::atan2(-dv.x, dv.y);
+                double err =
+                    std::fmod(desired - before.angle + lander::kPi,
+                              lander::kTwoPi);
+                if (err < 0.0) {
+                    err += lander::kTwoPi;
+                }
+                err -= lander::kPi;
+                r.max_bad_err = std::max(r.max_bad_err, std::abs(err));
+                r.max_bad_omega = std::max(r.max_bad_omega,
+                                           std::abs(before.omega));
+            }
+            if (!in_burn_segment) {
+                in_burn_segment = true;
+                segment_start_vgo = vgo;
+            }
+            if (vgo > segment_start_vgo + 1.0e-9) {
+                r.max_vgo_regression =
+                    std::max(r.max_vgo_regression, vgo - segment_start_vgo);
+            }
+        } else if (in_burn_segment) {
+            in_burn_segment = false;
+        }
+
         sim.step_once(input);
         mc.after_step(before, sim.state(), input, sim.sim_time(), cfg);
 
@@ -703,13 +766,16 @@ void test_two_level_closed_loop() {
 
     std::printf("  [R5-V08] ticks=%d  slow_plans=%d  retargets=%d  "
                 "start_dist=%.1f  min_dist=%.1f  ratio=%.2f  crashed=%d  "
-                "landed=%d\n",
+                "landed=%d  bad=%d  bad_big=%d  max_err=%.4f  "
+                "max_omega=%.4f  vgo_regr=%.6f\n",
                 r.ticks, r.slow_plans, r.retargets, r.start_target_dist,
                 r.min_target_dist,
                 r.start_target_dist > 0.0 ? r.min_target_dist /
                                                 r.start_target_dist
                                           : 0.0,
-                r.crashed ? 1 : 0, r.landed ? 1 : 0);
+                r.crashed ? 1 : 0, r.landed ? 1 : 0, r.bad_full_thrust,
+                r.bad_big_vgo, r.max_bad_err, r.max_bad_omega,
+                r.max_vgo_regression);
     check(r.slow_plans > 0, "closed loop: the slow planner ran");
     check(r.slow_plans < r.ticks,
           "closed loop: the slow planner ran fewer times than the fixed steps");
@@ -720,29 +786,581 @@ void test_two_level_closed_loop() {
     // Regression ceiling on the closed-loop approach ratio.
     //
     // The original 0.60 proxy predates M06-R19 and assumed the node executor
-    // could burn continuously through the small-VGO endgame. M06-R19's
-    // continuous alignment safety (higher authority than this proxy) is
-    // magnitude-gated: when the residual VGO is within a few physical steps of
-    // zero and the craft is materially misaligned, the engine is cut and the
-    // executor re-enters ALIGN until re-aligned. That bounded zero-throttle
-    // re-entry interval causally costs a small, irreducible amount of closing
-    // progress, and is NOT a permission to degrade the transfer generally.
+    // could burn continuously. M06-R19 introduced continuous alignment safety,
+    // but its magnitude-gated form only protected the small-VGO endgame; the
+    // M06-R21-H01 human transfer-warm run showed that the same off-axis
+    // impulse mechanism can grow the VGO and spin the craft at larger
+    // magnitudes. M06-R22 therefore supersedes the R19 rule with a full-range
+    // gate: thrust is emitted only while the nose is inside the 0.05 rad /
+    // 0.1 rad/s alignment band, at every VGO magnitude, and a misaligned burn
+    // re-enters ALIGN with the VGO preserved.
     //
-    // Measured under the R19 gate, with the pre-R19 ballistic (HEAD): the
-    // approach ratio is 0.631 (warm-start seed variant: 0.626). The 0.65
-    // ceiling is the smallest bound containing those measured safe cases,
-    // leaving only ~0.019 margin over the worst case. It encodes exactly the
-    // bounded safety cost and nothing more; a regression back toward 1.0 (or a
-    // failure to re-target / crash) still fails this check.
-    //
-    // This bound is only valid in the presence of the R19 continuous
-    // alignment-safety gate, which the node-executor regression test
-    // (test_flight_computer.cpp, M06-R19-03 / whole-run invariant
-    // `main_throttle > 0 => aligned`) keeps mandatory. Reintroducing
-    // off-axis thrust to buy back transfer margin is a defect, not an
-    // improvement, and that guard must keep failing on it.
-    check(r.min_target_dist < 0.65 * r.start_target_dist,
+    // Measured under the full-range gate on this exact fixture (seed 503,
+    // 1% departure perturbation, 5 Hz WARM, 0.25 m/s miss tolerance, 4000
+    // fixed steps): the approach ratio is 0.779, with zero bad-thrust steps,
+    // zero crash, and monotonic VGO progress inside every uninterrupted burn
+    // segment. The previous 0.65 bound was calibrated to the magnitude-gated
+    // R19 behaviour and is superseded to 0.80 to contain the bounded
+    // full-range safety cost (~0.021 margin). A regression back toward 1.0, a
+    // crash, a loss of re-targeting, or off-axis full-thrust burn still fails
+    // this check or the R22 node-executor invariant. Reintroducing off-axis
+    // thrust to buy back transfer margin is a defect, not an improvement.
+    check(r.min_target_dist < 0.80 * r.start_target_dist,
           "closed loop: the craft converged toward the target body");
+    check(r.bad_full_thrust == 0,
+          "closed loop: no full-thrust step outside the alignment envelope "
+          "(full-range invariant)");
+    check(r.bad_big_vgo == 0,
+          "closed loop: no materially misaligned full-thrust step with a "
+          "large VGO");
+    check(r.max_vgo_regression <= 1.0e-6,
+          "closed loop: uninterrupted burn segments reduce the tracked VGO");
+}
+
+// ---- M06-R22-V04: the deterministic human transfer-warm fixture (seed 1007,
+// the debug-fixture orbit around body 0, COLD 0->1, 10 Hz WARM, 0.25 m/s miss
+// tolerance) reaches the target encounter non-crashed through the planned
+// arrival epoch. This is the exact scenario the M06-R21-H01 human gate
+// exercised; it must stay crash-free and satisfy the full-range thrust
+// invariant under the corrected node executor.
+void test_r22_transfer_warm_no_crash_through_arrival() {
+    Config cfg{};
+    Simulation sim;
+    sim.reset(1007ULL);
+    const BinarySystem& bin = sim.binary();
+
+    const lander::Body& b = bin.body(0);
+    const double r = b.terrain.max_surface_radius() + 20.0;
+    const Vec2 p0 = bin.position(0, 0.0);
+    const Vec2 v0 = bin.velocity(0, 0.0);
+    const double speed = std::sqrt(b.mu / r);
+    State orbit{};
+    orbit.x = p0.x;
+    orbit.y = p0.y + r;
+    orbit.vx = v0.x + speed;
+    orbit.vy = v0.y;
+    orbit.angle = 0.0;
+    orbit.fuel = cfg.fuel;
+    sim.set_state(orbit);
+
+    const double t0 = sim.sim_time();
+    const State st = sim.state();
+    Vec2 v_out{};
+    TransferSolution cold{};
+    if (!solve_transfer_velocity(bin, cfg.fixed_dt, {st.x, st.y}, 0, 1, t0,
+                                 v_out, &cold)) {
+        std::printf(
+            "  [R22-V04] no cold transfer for the human fixture; skipping\n");
+        return;
+    }
+
+    // Run through the planned arrival encounter with a short post-arrival
+    // margin, matching the human fixture's timeline.
+    int ticks = (int)std::llround((cold.arrival_epoch + 2.0 - t0) / cfg.fixed_dt);
+    if (ticks < 240) {
+        ticks = 240;
+    }
+    if (ticks > 8000) {
+        ticks = 8000;
+    }
+
+    TransferMidcourse mc;
+    ManeuverNode arm_node{};
+    arm_node.time = t0;
+    arm_node.frame_body = 0;
+    const NodeBasis basis = compute_node_basis(
+        bin, t0, 0, {st.x, st.y}, {st.vx, st.vy});
+    mc.arm(arm_node, cold, 0, basis, t0, cfg);
+
+    const Vec2 target0 = bin.position(1, t0);
+    double min_dist = std::hypot(st.x - target0.x, st.y - target0.y);
+    const double start_dist = min_dist;
+    int retargets = 0;
+    int bad_full_thrust = 0;
+    int bad_big_vgo = 0;
+    double max_bad_err = 0.0;
+    double max_bad_omega = 0.0;
+    double max_vgo_regression = 0.0;
+    bool in_burn_segment = false;
+    double segment_start_vgo = 0.0;
+
+    const bool trace = std::getenv("LL_WARM_TRACE") != nullptr;
+    lander::ExecutorState prev_fast_state = mc.fast().state();
+    for (int i = 0; i < ticks; ++i) {
+        const State before = sim.state();
+        const double now = sim.sim_time();
+        const TransferSolution prev_cache = mc.cache();
+        const bool replanned =
+            mc.maybe_replan(bin, cfg, before, now, 0.1, 0.25);
+        if (replanned && mc.last_retargeted()) {
+            ++retargets;
+        }
+        const Input input =
+            mc.make_input(before, now, cfg, /*manual_left=*/false,
+                          /*manual_right=*/false);
+        if (trace) {
+            const TransferSolution& c = mc.cache();
+            const auto& f = mc.fast();
+            const Vec2 fdv = f.dv_remaining();
+            const Vec2 tpos0 = bin.position(1, now);
+            const Vec2 tvel0 = bin.velocity(1, now);
+            std::fprintf(
+                stderr,
+                "T %.3f plan=%d valid=%d warm=%d TOF %.3f/%.3f frac %.4f/%.4f "
+                "t1 %.3f miss %.3f/%.3f arr_rel %.3f corr %.3f ret %d fast %s "
+                "vgo %.3f thr %.3f dist %.3f rel %.3f\n",
+                now, mc.slow_plans(), mc.last_slow_valid() ? 1 : 0,
+                mc.last_warm_used() ? 1 : 0, prev_cache.time_of_flight,
+                c.time_of_flight, prev_cache.fraction, c.fraction,
+                c.arrival_epoch, prev_cache.achieved_miss, c.achieved_miss,
+                c.arrival_rel_speed, mc.last_corr_dv(),
+                mc.last_retargeted() ? 1 : 0,
+                lander::executor_state_name(f.state()),
+                std::hypot(fdv.x, fdv.y), input.main_throttle,
+                std::hypot(before.x - tpos0.x, before.y - tpos0.y),
+                std::hypot(before.vx - tvel0.x, before.vy - tvel0.y));
+        }
+
+        if (input.main_throttle > 0.0) {
+            const Vec2& dv = mc.fast().dv_remaining();
+            const double vgo = std::hypot(dv.x, dv.y);
+            if (!midcourse_aligned_mirror(dv, before)) {
+                ++bad_full_thrust;
+                if (vgo >= 1.0) {
+                    ++bad_big_vgo;
+                }
+                const double desired = std::atan2(-dv.x, dv.y);
+                double err =
+                    std::fmod(desired - before.angle + lander::kPi,
+                              lander::kTwoPi);
+                if (err < 0.0) {
+                    err += lander::kTwoPi;
+                }
+                err -= lander::kPi;
+                max_bad_err = std::max(max_bad_err, std::abs(err));
+                max_bad_omega = std::max(max_bad_omega,
+                                         std::abs(before.omega));
+            }
+            if (!in_burn_segment) {
+                in_burn_segment = true;
+                segment_start_vgo = vgo;
+            }
+            if (vgo > segment_start_vgo + 1.0e-9) {
+                max_vgo_regression =
+                    std::max(max_vgo_regression, vgo - segment_start_vgo);
+            }
+        } else if (in_burn_segment) {
+            in_burn_segment = false;
+        }
+
+        sim.step_once(input);
+        mc.after_step(before, sim.state(), input, sim.sim_time(), cfg);
+
+        if (trace) {
+            const lander::ExecutorState post_state = mc.fast().state();
+            if (post_state != prev_fast_state) {
+                std::fprintf(stderr,
+                             "T %.3f fast %s -> %s thr %.3f vgo %.3f\n",
+                             sim.sim_time(),
+                             lander::executor_state_name(prev_fast_state),
+                             lander::executor_state_name(post_state),
+                             input.main_throttle,
+                             std::hypot(mc.fast().dv_remaining().x,
+                                        mc.fast().dv_remaining().y));
+            }
+            if (post_state == lander::ExecutorState::Complete &&
+                input.main_throttle > 0.0) {
+                std::fprintf(stderr,
+                             "T %.3f COMPLETE with throttle %.3f vgo %.3f\n",
+                             sim.sim_time(), input.main_throttle,
+                             std::hypot(mc.fast().dv_remaining().x,
+                                        mc.fast().dv_remaining().y));
+            }
+            prev_fast_state = post_state;
+        }
+
+        const State& after = sim.state();
+        const Vec2 tpos = bin.position(1, sim.sim_time());
+        const double d = std::hypot(after.x - tpos.x, after.y - tpos.y);
+        if (d < min_dist) {
+            min_dist = d;
+        }
+        if (!mc.active()) {
+            break;
+        }
+    }
+
+    std::printf(
+        "  [R22-V04] ticks=%d  arrival=%.2f  retargets=%d  slow_plans=%d  "
+        "start_dist=%.1f  min_dist=%.1f  ratio=%.2f  crashed=%d  landed=%d  "
+        "bad=%d  bad_big=%d  max_err=%.4f  max_omega=%.4f  "
+        "vgo_regr=%.6f\n",
+        ticks, cold.arrival_epoch, retargets, mc.slow_plans(), start_dist,
+        min_dist, start_dist > 0.0 ? min_dist / start_dist : 0.0,
+        sim.state().crashed ? 1 : 0, sim.state().landed ? 1 : 0,
+        bad_full_thrust, bad_big_vgo, max_bad_err, max_bad_omega,
+        max_vgo_regression);
+
+    check(!sim.state().crashed,
+          "human fixture: the craft did not crash through the arrival "
+          "encounter");
+    check(!sim.state().landed,
+          "human fixture: the transfer-warm flight stayed in the flight "
+          "phase");
+    check(retargets > 0,
+          "human fixture: a miss beyond tolerance re-targeted the fast VGO");
+    check(bad_full_thrust == 0,
+          "human fixture: no full-thrust step outside the alignment envelope "
+          "(full-range invariant)");
+    check(bad_big_vgo == 0,
+          "human fixture: no materially misaligned full-thrust step with a "
+          "large VGO");
+    check(max_vgo_regression <= 1.0e-6,
+          "human fixture: uninterrupted burn segments reduce the tracked VGO");
+    check(min_dist < 0.5 * start_dist,
+          "human fixture: the craft reached the target encounter region");
+}
+
+// ---- M06-R23-05 / D07: the deterministic full-encounter closed-loop
+// regression. Drives the exact human transfer-warm fixture (seed 1007, the
+// body-0 orbit, COLD 0->1) through and past the WARM arrival epoch, twice:
+// once WITH the bounded WARM replan (the guided flight) and once WITHOUT any
+// replan (the uncorrected COLD baseline). The guided flight must physically
+// pass through the companion arrival region (a real closest approach at the
+// canonical arrival shell, not just a small predicted miss), must not crash,
+// must keep the arrival epoch bounded (finite rendezvous, not an indefinitely
+// receding encounter), must beat the uncorrected COLD baseline, and must hold
+// the R22 full-range thrust-alignment invariant.
+struct FullEncounter {
+    double ticks_run = 0.0;
+    double start_dist = 0.0;
+    double min_dist = 0.0;
+    double closest_time = 0.0;
+    double rel_speed_at_closest = 0.0;
+    int retargets = 0;
+    int slow_plans = 0;
+    int burn_cycles = 0;
+    int bad_full_thrust = 0;
+    double max_bad_err = 0.0;
+    double max_bad_omega = 0.0;
+    double max_vgo_regression = 0.0;
+    double initial_epoch = 0.0;
+    double max_latest_epoch = 0.0;
+    double fuel_consumed = 0.0;
+    int epoch_changes = 0;
+    bool crashed = false;
+    bool landed = false;
+};
+
+// Run the 1007 human fixture through one full transfer encounter. When
+// `with_replan` is true the bounded WARM replan runs at the 0.1 s / 0.25 m/s
+// policy; when false the controller is armed with the initial COLD solution
+// and never re-plans (the uncorrected baseline). The window runs a fixed
+// generous span well past the (possibly re-targeted) arrival epoch and stops
+// early only on land/crash, matching the 200 s human recording's horizon.
+FullEncounter run_full_encounter(const Config& cfg, bool with_replan) {
+    FullEncounter r{};
+    Simulation sim;
+    sim.reset(1007ULL);
+    const BinarySystem& bin = sim.binary();
+
+    const lander::Body& b = bin.body(0);
+    const double r0 = b.terrain.max_surface_radius() + 20.0;
+    const Vec2 p0 = bin.position(0, 0.0);
+    const Vec2 v0 = bin.velocity(0, 0.0);
+    const double speed = std::sqrt(b.mu / r0);
+    State orbit{};
+    orbit.x = p0.x;
+    orbit.y = p0.y + r0;
+    orbit.vx = v0.x + speed;
+    orbit.vy = v0.y;
+    orbit.angle = 0.0;
+    orbit.fuel = cfg.fuel;
+    sim.set_state(orbit);
+
+    const double t0 = sim.sim_time();
+    const State st = sim.state();
+    Vec2 v_out{};
+    TransferSolution cold{};
+    if (!solve_transfer_velocity(bin, cfg.fixed_dt, {st.x, st.y}, 0, 1, t0,
+                                 v_out, &cold)) {
+        return r;  // no cold transfer; caller treats as skip
+    }
+    r.initial_epoch = cold.arrival_epoch;
+    r.max_latest_epoch = cold.arrival_epoch;
+
+    // Generous fixed window: long enough to fly well past a re-targeted
+    // arrival epoch (~78 s in this fixture) and complete the encounter.
+    // Override the horizon with LL_FULL_SECONDS for diagnostic sweeps.
+    const double window_sec =
+        std::getenv("LL_FULL_SECONDS")
+            ? std::atof(std::getenv("LL_FULL_SECONDS"))
+            : 120.0;
+    const int ticks = (int)std::llround(window_sec / cfg.fixed_dt);
+    const bool trace = std::getenv("LL_WARM_TRACE") != nullptr;
+
+    TransferMidcourse mc;
+    ManeuverNode arm_node{};
+    arm_node.time = t0;
+    arm_node.frame_body = 0;
+    const NodeBasis basis =
+        compute_node_basis(bin, t0, 0, {st.x, st.y}, {st.vx, st.vy});
+    mc.arm(arm_node, cold, 0, basis, t0, cfg);
+
+    const Vec2 target0 = bin.position(1, t0);
+    r.start_dist = std::hypot(st.x - target0.x, st.y - target0.y);
+    r.min_dist = r.start_dist;
+
+    bool in_burn_segment = false;
+    double segment_start_vgo = 0.0;
+    bool was_burning = false;
+    double last_epoch = r.initial_epoch;
+
+    for (int i = 0; i < ticks; ++i) {
+        const State before = sim.state();
+        const double now = sim.sim_time();
+        if (with_replan) {
+            mc.maybe_replan(bin, cfg, before, now, 0.1, 0.25);
+        }
+        if (trace && with_replan) {
+            const TransferSolution& c = mc.cache();
+            const Vec2 tpos0 = bin.position(1, now);
+            const Vec2 tvel0 = bin.velocity(1, now);
+            std::fprintf(
+                stderr,
+                "T %.3f plan=%d valid=%d warm=%d TOF %.3f t1 %.3f "
+                "miss %.3f arr_rel %.3f corr %.3f ret %d dist %.3f rel %.3f\n",
+                now, mc.slow_plans(), mc.last_slow_valid() ? 1 : 0,
+                mc.last_warm_used() ? 1 : 0, c.time_of_flight, c.arrival_epoch,
+                c.achieved_miss, c.arrival_rel_speed, mc.last_corr_dv(),
+                mc.last_retargeted() ? 1 : 0,
+                std::hypot(before.x - tpos0.x, before.y - tpos0.y),
+                std::hypot(before.vx - tvel0.x, before.vy - tvel0.y));
+        }
+        r.slow_plans = mc.slow_plans();
+        r.retargets = mc.retargets();
+        r.max_latest_epoch =
+            std::max(r.max_latest_epoch, mc.cache().arrival_epoch);
+        // R23-02 churn metric: count how many times the cached arrival epoch
+        // actually jumps to a materially different absolute epoch (the defect
+        // is the epoch being dragged forward, not the per-cycle fast-VGO
+        // re-arms counted by retargets above).
+        const double cur_epoch = mc.cache().arrival_epoch;
+        if (std::fabs(cur_epoch - last_epoch) > 0.5) {
+            ++r.epoch_changes;
+            last_epoch = cur_epoch;
+        }
+
+        const Input input =
+            mc.make_input(before, now, cfg, /*manual_left=*/false,
+                          /*manual_right=*/false);
+        const bool burning = input.main_throttle > 0.0;
+        if (burning) {
+            if (!was_burning) {
+                ++r.burn_cycles;  // a new burn segment started
+            }
+            const Vec2& dv = mc.fast().dv_remaining();
+            const double vgo = std::hypot(dv.x, dv.y);
+            if (!midcourse_aligned_mirror(dv, before)) {
+                ++r.bad_full_thrust;
+                const double desired = std::atan2(-dv.x, dv.y);
+                double err =
+                    std::fmod(desired - before.angle + lander::kPi,
+                              lander::kTwoPi);
+                if (err < 0.0) {
+                    err += lander::kTwoPi;
+                }
+                err -= lander::kPi;
+                r.max_bad_err = std::max(r.max_bad_err, std::abs(err));
+                r.max_bad_omega = std::max(r.max_bad_omega,
+                                           std::abs(before.omega));
+            }
+            if (!in_burn_segment) {
+                in_burn_segment = true;
+                segment_start_vgo = vgo;
+            }
+            if (vgo > segment_start_vgo + 1.0e-9) {
+                r.max_vgo_regression =
+                    std::max(r.max_vgo_regression, vgo - segment_start_vgo);
+            }
+        } else if (in_burn_segment) {
+            in_burn_segment = false;
+        }
+        was_burning = burning;
+
+        sim.step_once(input);
+        mc.after_step(before, sim.state(), input, sim.sim_time(), cfg);
+
+        const State& after = sim.state();
+        const Vec2 tpos = bin.position(1, sim.sim_time());
+        const double d = std::hypot(after.x - tpos.x, after.y - tpos.y);
+        if (d < r.min_dist) {
+            r.min_dist = d;
+            r.closest_time = sim.sim_time();
+            const Vec2 tvel = bin.velocity(1, sim.sim_time());
+            r.rel_speed_at_closest =
+                std::hypot(after.vx - tvel.x, after.vy - tvel.y);
+        }
+        if (!mc.active()) {
+            break;  // landed or crashed: the encounter is over
+        }
+    }
+
+    r.ticks_run = sim.sim_time() / cfg.fixed_dt;
+    r.fuel_consumed = cfg.fuel - sim.state().fuel;
+    r.crashed = sim.state().crashed;
+    r.landed = sim.state().landed;
+    return r;
+}
+
+void test_r23_full_encounter() {
+    Config cfg{};
+    const auto bin =
+        BinarySystem::canonical(cfg.mu, 1007ULL, companion_seed(1007ULL));
+    // The companion arrival shell: the canonical target region the transfer
+    // solver flies to (target radius + the 15 m clearance shell).
+    const double arrival_shell =
+        bin.body(1).terrain.max_surface_radius() + 15.0;
+
+    const FullEncounter warm = run_full_encounter(cfg, /*with_replan=*/true);
+    const FullEncounter cold = run_full_encounter(cfg, /*with_replan=*/false);
+
+    std::printf(
+        "  [R23-05] WARM  ticks=%.0f  start=%.1f  min_dist=%.1f  closest@%.2f "
+        "rel=%.2f  retargets=%d  epochs=%d  slow=%d  burns=%d  epoch %.2f->%.2f "
+        "fuel=%.0f  crash=%d\n",
+        warm.ticks_run, warm.start_dist, warm.min_dist, warm.closest_time,
+        warm.rel_speed_at_closest, warm.retargets, warm.epoch_changes,
+        warm.slow_plans, warm.burn_cycles, warm.initial_epoch,
+        warm.max_latest_epoch, warm.fuel_consumed, warm.crashed ? 1 : 0);
+    std::printf(
+        "  [R23-05] COLD  ticks=%.0f  start=%.1f  min_dist=%.1f  closest@%.2f "
+        "rel=%.2f  retargets=%d  epochs=%d  slow=%d  burns=%d  epoch %.2f->%.2f "
+        "fuel=%.0f  crash=%d\n",
+        cold.ticks_run, cold.start_dist, cold.min_dist, cold.closest_time,
+        cold.rel_speed_at_closest, cold.retargets, cold.epoch_changes,
+        cold.slow_plans, cold.burn_cycles, cold.initial_epoch,
+        cold.max_latest_epoch, cold.fuel_consumed, cold.crashed ? 1 : 0);
+
+    check(warm.min_dist > 0.0, "R23-05: the guided encounter was simulated");
+    check(!warm.crashed,
+          "R23-05: the guided craft did not crash through the encounter");
+    check(!warm.landed,
+          "R23-05: the guided transfer flight stayed in the flight phase");
+    // Finite rendezvous: the closest approach actually reaches the companion
+    // arrival region (a physical passage, not a small predicted miss).
+    check(warm.min_dist < arrival_shell + 20.0,
+          "R23-05: the guided craft physically passed the companion arrival "
+          "region");
+    // Finite (not receding): the arrival epoch stayed bounded, not driven
+    // indefinitely forward.
+    check(warm.max_latest_epoch < warm.initial_epoch + 60.0,
+          "R23-05: the arrival epoch stayed bounded (finite rendezvous, not "
+          "an indefinitely receding encounter)");
+    // Bounded re-targeting: the arrival epoch was not dragged forward in a
+    // repeating churn (the R21/R22 defect drove it to a new later epoch at
+    // every reached epoch, indefinitely). It should change at most a couple of
+    // times over the whole encounter (here: the one early off-arc correction).
+    check(warm.epoch_changes <= 3,
+          "R23-05: the arrival epoch did not churn forward (bounded retarget "
+          "persistence)");
+    // The guided flight beats the uncorrected COLD baseline at closest
+    // approach.
+    check(warm.min_dist < cold.min_dist,
+          "R23-05: the guided WARM craft passed closer than the uncorrected "
+          "COLD baseline");
+    // R22 full-range thrust-alignment invariant (preservation P01).
+    check(warm.bad_full_thrust == 0,
+          "R23-05: no full-thrust step outside the alignment envelope "
+          "(R22 full-range invariant preserved)");
+    check(warm.max_vgo_regression <= 1.0e-6,
+          "R23-05: uninterrupted burn segments reduce the tracked VGO");
+}
+
+// ---- M06-R21-V01: the bounded midcourse's retarget telemetry reports the
+// exact correction delta-v magnitude used by the retarget decision, in m/s,
+// and it is separate from the accepted solution's terminal miss, in metres.
+void test_r21_telemetry_semantics() {
+    Config cfg{};
+    const auto bin =
+        BinarySystem::canonical(cfg.mu, 503ULL, companion_seed(503ULL));
+
+    Vec2 x0{};
+    TransferSolution cold{};
+    if (!find_cold(bin, 0, 1, 0.0, x0, cold)) {
+        std::printf("  [R21-V01] no cold transfer; skipping\n");
+        return;
+    }
+
+    auto expected_corr_dv = [&](const State& st) {
+        TransferSolution cache_copy = cold;
+        ManeuverNode corr{};
+        corr.time = 0.0;
+        corr.frame_body = 0;
+        const std::optional<ManeuverNode> solved =
+            plan_transfer(bin, cfg, st, 0.0, 0, corr, &cache_copy);
+        return solved
+                   ? std::hypot(solved->dv_prograde, solved->dv_radial)
+                   : 0.0;
+    };
+
+    {
+        State st{};
+        st.x = x0.x;
+        st.y = x0.y;
+        st.vx = cold.departure_velocity.x;
+        st.vy = cold.departure_velocity.y;
+        st.fuel = 1000.0;
+
+        TransferMidcourse mc;
+        const NodeBasis basis = compute_node_basis(
+            bin, 0.0, 0, {st.x, st.y}, {st.vx, st.vy});
+        mc.arm(ManeuverNode{}, cold, 0, basis, 0.0, cfg);
+
+        const bool replanned =
+            mc.maybe_replan(bin, cfg, st, 0.0, 0.0, 1.0e9);
+        check(replanned, "R21 hold: the bounded re-plan was evaluated");
+        check(mc.last_slow_valid(),
+              "R21 hold: the slow WARM solution is valid");
+        check(mc.last_warm_used(),
+              "R21 hold: a valid cached route is re-aimed by the WARM correction");
+        check(mc.last_corr_dv() >= 0.0,
+              "R21 hold: the correction delta-v magnitude is non-negative");
+        check(!mc.last_retargeted(),
+              "R21 hold: a correction below the threshold does not re-target");
+        check_close(mc.last_corr_dv(), expected_corr_dv(st), 1.0e-9,
+                    "R21 hold: the reported correction delta-v matches the solver node");
+    }
+
+    {
+        State st{};
+        st.x = x0.x;
+        st.y = x0.y;
+        st.vx = cold.departure_velocity.x * 1.02;
+        st.vy = cold.departure_velocity.y * 1.02;
+        st.fuel = 1000.0;
+
+        TransferMidcourse mc;
+        const NodeBasis basis = compute_node_basis(
+            bin, 0.0, 0, {st.x, st.y}, {st.vx, st.vy});
+        mc.arm(ManeuverNode{}, cold, 0, basis, 0.0, cfg);
+
+        const bool replanned =
+            mc.maybe_replan(bin, cfg, st, 0.0, 0.0, 1.0e-9);
+        check(replanned, "R21 retarget: the bounded re-plan was evaluated");
+        check(mc.last_slow_valid(),
+              "R21 retarget: the slow WARM solution is valid");
+        check(mc.last_warm_used(),
+              "R21 retarget: a valid cached route is re-aimed by the WARM correction");
+        check(mc.last_corr_dv() > 1.0e-9,
+              "R21 retarget: the correction delta-v magnitude is nonzero");
+        check(mc.last_retargeted(),
+              "R21 retarget: a correction above the threshold re-targets the fast VGO");
+        check(mc.retargets() == 1,
+              "R21 retarget: the re-target count advanced by one");
+        check_close(mc.last_corr_dv(), expected_corr_dv(st), 1.0e-9,
+                    "R21 retarget: the reported correction delta-v matches the solver node");
+    }
 }
 
 }  // namespace
@@ -759,6 +1377,9 @@ int main() {
     test_benchmark();
     test_two_level_bounded_rate();
     test_two_level_closed_loop();
+    test_r22_transfer_warm_no_crash_through_arrival();
+    test_r23_full_encounter();
+    test_r21_telemetry_semantics();
 
     if (failures == 0) {
         std::printf("All lander_transfer_warm_tests passed\n");

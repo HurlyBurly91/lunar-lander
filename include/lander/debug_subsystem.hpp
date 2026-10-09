@@ -130,7 +130,13 @@ struct TransferDebugResult {
     double warm_miss_after{};
     int warm_propagations_last{};
     int warm_propagations_total{};
-    bool warm_fallback_last{false};  // last re-plan used the COLD fallback
+    bool warm_fallback_last{false};
+    double warm_corr_dv{};
+    double warm_corr_dv_threshold{};
+    bool warm_retarget_last{false};
+    int warm_replan_number{};
+    double warm_replan_time{};
+    bool warm_slow_valid_last{false};
 };
 
 // Bundle of the live subsystems (owned by gui.cpp's main) that a debug scenario
@@ -398,14 +404,31 @@ struct TransferCameraFit {
     double zoom = 0.0;
 };
 
+struct TransferDebugCameraState {
+    bool initialized = false;
+    Vec2 center{};
+    double zoom = 0.0;
+};
+
 TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
-                                          const TransferSolution& sol,
-                                          double fixed_dt, int samples);
+                                           const TransferSolution& sol,
+                                           double fixed_dt, int samples);
 
 TransferCameraFit transfer_cold_camera_fit(
     const Vec2& center, const Vec2& half, double window_width,
     double window_height, double base_scale, double min_zoom,
     double max_zoom);
+
+// Presentation-only temporal stabiliser for the live transfer-warm debug
+// frame. It applies a minimum context extent to the requested fit, then
+// eases the stored centre / zoom toward that fit with a bounded per-frame
+// zoom ratio, so ordinary bounded re-plans cannot pump the zoom. The state
+// is presentation-only and never feeds back into the simulation or solver.
+TransferCameraFit update_transfer_debug_camera(
+    TransferDebugCameraState& state, const Vec2& target_center,
+    const Vec2& target_half, double window_width, double window_height,
+    double base_scale, double min_zoom, double max_zoom,
+    double min_half_extent = 0.0);
 
 // END CANONICAL ALGORITHM: inter-moon transfer cold display geometry
 

@@ -25,22 +25,19 @@ Vec2 normalize_safe(const Vec2& v) {
     return {v.x / r, v.y / r};
 }
 
-// Continuous alignment safety (M06-R19): a burn is only held while the nose
+// Continuous alignment safety (M06-R22): a burn is held only while the nose
 // is within kAlignAngleBand of the current VGO direction and the spin stays
-// below kAlignOmegaBand; otherwise the executor drops back to ALIGN.
+// below kAlignOmegaBand; otherwise the executor cuts thrust and drops back to
+// ALIGN. The gate is full-range: an off-axis impulse can rotate the tracked
+// vector and feed the next step's pointing error at any VGO magnitude, so no
+// large-VGO unconditional-burn exemption is allowed.
 constexpr double kAlignAngleBand = 0.05;
 constexpr double kAlignOmegaBand = 0.1;
-// The tracked VGO is in the "small vector" (flip-danger) regime when its
-// magnitude is at most this many full-thrust steps. A single lagged,
-// off-axis step is then a large fraction of the vector and can rotate or
-// flip its direction by O(1) rad inside one step, beyond what the bang-bang
-// can track (M06-R19: a step delivered against a ~1.5-step vector flipped
-// it 1.57 rad and the burn chased the flip for the rest of the tank). Above
-// it, the VGO direction is stable enough that the ordinary bang-bang
-// tracking oscillation is safe while thrusting, so the continuous
-// re-check uses the strict alignment band only in the small-vector regime.
-constexpr double kSmallVgoSteps = 1.5;
-constexpr double kContinuationAngleBand = 0.2;
+// A re-target may enter BURN directly only when the craft is already inside
+// the strict continuation band of the new VGO direction with bounded angular
+// rate. This is an arming convenience; the continuous full-range gate above
+// still applies on every step of a continuing burn.
+constexpr double kContinuationAngleBand = 0.05;
 
 // FLIGHT-COMPUTER TIER: HOT
 // BEGIN CANONICAL ALGORITHM: bang-bang attitude control
@@ -243,24 +240,16 @@ Input NodeExecutor::make_input(const State& state, double now,
     // time passed. The first burning step must already carry the thrust
     // command, otherwise the finite burn would slip one fixed step.
     //
-    // Continuous alignment safety is magnitude-gated (M06-R19): while the
-    // burn holds, thrust requires the strict alignment band only in the
-    // small-vector flip-danger regime (|VGO| <= kSmallVgoSteps full steps,
-    // where one lagged off-axis step can flip the VGO direction); above it,
-    // the bang-bang tracks the (slowly rotating) VGO direction while
-    // thrusting, so the burn continues without a per-step re-check. In both
-    // regimes a step that fails the required check delivers no impulse and
-    // after_step re-enters ALIGN.
+    // Continuous alignment safety is full-range (M06-R22): every thrust step
+    // requires the strict alignment band, because an off-axis impulse can
+    // rotate the tracked VGO and feed the next step's pointing error at any
+    // magnitude. A misaligned burn step therefore delivers no impulse, and
+    // after_step re-enters ALIGN until the bang-bang law settles the nose.
     const bool is_aligned = aligned(state);
-    const double step_dv = config.main_accel * config.fixed_dt;
-    const bool small_vgo =
-        step_dv > 0.0 &&
-        vec_length(dv_remaining_) <= kSmallVgoSteps * step_dv;
     const bool burning =
-        (state_ == ExecutorState::Burn &&
-         (!small_vgo || is_aligned)) ||
+        (state_ == ExecutorState::Burn && is_aligned) ||
         (state_ == ExecutorState::Align && now >= ignite_time_ &&
-         is_aligned) ||
+          is_aligned) ||
         (state_ == ExecutorState::Wait && now >= ignite_time_ && is_aligned);
 
     if (state_ == ExecutorState::Align || state_ == ExecutorState::Wait ||
@@ -346,20 +335,13 @@ void NodeExecutor::after_step(const State& before, const State& after,
             state_ = ExecutorState::Incomplete;
             return;
         }
-        // Continuous alignment safety (M06-R19), magnitude-gated: in the
-        // small-vector flip-danger regime (|VGO| <= kSmallVgoSteps full
-        // steps), a lagged off-axis impulse can rotate or flip the VGO
-        // direction by O(1) rad inside a step, beyond what the bang-bang
-        // tracks, so alignment is re-checked every step and a misaligned
-        // state stops the physical thrust and returns to ALIGN (the Align
-        // transition re-enters BURN once aligned; never back to WAIT after
-        // ignition). Above the regime the VGO direction is stable, the
-        // bang-bang tracks it while thrusting, and the burn holds without
-        // the per-step re-check.
-        const double gate_step_dv = config.main_accel * config.fixed_dt;
-        if (gate_step_dv > 0.0 &&
-            vec_length(dv_remaining_) <= kSmallVgoSteps * gate_step_dv &&
-            !aligned(after)) {
+        // Continuous alignment safety (M06-R22), full-range: the tracked
+        // VGO direction can rotate or flip after a lagged off-axis impulse
+        // at any magnitude, so alignment is re-checked every step. A
+        // misaligned state stops the physical thrust and returns to ALIGN;
+        // the Align transition re-enters BURN once aligned (never back to
+        // WAIT after ignition).
+        if (!aligned(after)) {
             state_ = ExecutorState::Align;
         }
     }
@@ -395,11 +377,19 @@ void TransferMidcourse::arm(const ManeuverNode& node,
     last_replan_ = now;
     slow_plans_ = 0;
     retargets_ = 0;
+    last_corr_dv_ = 0.0;
+    last_retargeted_ = false;
+    last_slow_valid_ = false;
+    last_warm_used_ = false;
 }
 
 void TransferMidcourse::abort() {
     engaged_ = false;
     fast_.abort();
+    last_corr_dv_ = 0.0;
+    last_retargeted_ = false;
+    last_slow_valid_ = false;
+    last_warm_used_ = false;
 }
 
 // FLIGHT-COMPUTER TIER: HOT
@@ -441,20 +431,57 @@ bool TransferMidcourse::maybe_replan(const BinarySystem& bin,
     }
     last_replan_ = now;
 
+    const int source = cache_.source >= 0 ? cache_.source : reference_body_;
+    const int target = 1 - source;
+
+    // M06-R23 / D05 (bounded retarget persistence / safe-boundary
+    // retargeting): once the guided craft reaches the destination's clearance
+    // shell the transfer objective -- a finite passage through the target
+    // region -- is achieved. Complete here: disengage the slow planner and the
+    // fast correction so the craft coasts through, instead of letting the cold
+    // fallback drag a passed arrival epoch forward to a later one. The R21/R22
+    // defect was exactly this: at each reached epoch the craft sat inside the
+    // shell, the warm solver could not target a now-past epoch, the cold
+    // fallback picked the next later epoch, and the repeated re-aims (the last
+    // a degenerate ~36 m/s impulse) drove the craft into the companion.
+    // Checking before the slow solve means a burn-state gate cannot preempt
+    // completion, and the coast cannot violate the R22 alignment invariant
+    // because no thrust is commanded.
+    {
+        const Vec2 tpos = bin.position(target, now);
+        const double dst = std::hypot(state.x - tpos.x, state.y - tpos.y);
+        const double shell =
+            bin.body(target).terrain.max_surface_radius() + 15.0;
+        if (dst <= shell) {
+            engaged_ = false;
+            fast_.abort();
+            last_corr_dv_ = 0.0;
+            last_retargeted_ = false;
+            last_slow_valid_ = false;
+            last_warm_used_ = false;
+            return true;
+        }
+    }
+
     // WARM slow planner: re-aim a midcourse correction from the current time.
     // plan_transfer is warm-first (bounded differential correction reusing the
     // cache) and falls back to the coarse cold search only on warm failure.
     // The source frame is held stable for the whole transfer (the cache's
     // route), so the reference-body switch near the target does not flip the
     // transfer direction.
-    const int source = cache_.source >= 0 ? cache_.source : reference_body_;
     ManeuverNode corr{};
     corr.time = now;
     corr.frame_body = source;
+    bool warm_used = false;
     const auto solved =
-        plan_transfer(bin, config, state, now, source, corr, &cache_);
+        plan_transfer(bin, config, state, now, source, corr, &cache_,
+                      &warm_used);
     ++slow_plans_;
+    last_slow_valid_ = solved.has_value();
+    last_warm_used_ = warm_used;
     if (!solved) {
+        last_corr_dv_ = 0.0;
+        last_retargeted_ = false;
         return true;  // no solution this cycle; hold the current node
     }
 
@@ -462,7 +489,9 @@ bool TransferMidcourse::maybe_replan(const BinarySystem& bin,
     // tolerance, so re-target the fast VGO with the corrected node. Otherwise
     // the ship is on the planned arc and the fast controller simply holds it.
     const double corr_dv = std::hypot(solved->dv_prograde, solved->dv_radial);
+    last_corr_dv_ = corr_dv;
     if (corr_dv <= miss_tolerance) {
+        last_retargeted_ = false;
         return true;
     }
 
@@ -486,6 +515,7 @@ bool TransferMidcourse::maybe_replan(const BinarySystem& bin,
     fast_.arm(*solved, basis, now, config, direct);
     node_ = *solved;
     ++retargets_;
+    last_retargeted_ = true;
     return true;
 }
 // END CANONICAL ALGORITHM: bounded-rate warm transfer midcourse

@@ -44,9 +44,11 @@ std::vector<BallisticState> predict_zero_thrust(const BinarySystem& bin,
 // M06-R5: a cached inter-body transfer solution — the warm-start record. A
 // successful (cold) solve stores the source/target bodies, the solve epoch
 // and departure state/velocity, the time of flight / arrival epoch, and the
-// achieved terminal miss. A later WARM replan shifts this to the current
-// epoch and reuses the departure velocity and flight time as the differential
-// correction's initial guess instead of re-running the coarse grid.
+// achieved terminal miss. A later WARM replan targets the cached absolute
+// arrival epoch from the current epoch: the remaining flight duration (and
+// its period fraction) shrinks as time advances, while the previous
+// departure velocity seeds the bounded differential correction instead of
+// re-running the coarse grid.
 struct TransferSolution {
     bool valid{false};
     int source{-1};
@@ -110,17 +112,22 @@ NewtonCorrectionResult differential_correction(
     const Vec2& goal, Vec2 v0, int max_iters, double accept_miss,
     double newton_step);
 
-// M06-R5-01: a warm-started transfer replan. Shifts a previously accepted
-// solution to the current epoch, seeds the departure velocity and flight time
-// from it, runs a bounded differential correction (M06-R5-02), and validates
-// authoritatively (a full 1/120 propagation plus the same terrain-clearance
-// gate the cold solver uses). It never repeats the coarse speed/direction grid
-// (M06-R5-03), so an ordinary warm replan is O(K·N) with a small fixed K.
+// M06-R5-01 / M06-R23: a warm-started transfer replan. It targets the
+// previously accepted solution's absolute arrival epoch from the current
+// epoch, seeds the departure velocity from the previous solution, runs a
+// bounded differential correction (M06-R5-02), and validates authoritatively
+// (a full 1/120 propagation plus the same terrain-clearance gate the cold
+// solver uses). The remaining flight duration (and its period fraction)
+// shrinks as the solve epoch advances; if the remaining horizon falls below
+// the minimum solve horizon, the result is invalid and the caller's bounded
+// cold fallback selects a later feasible epoch. It never repeats the coarse
+// speed/direction grid (M06-R5-03), so an ordinary warm replan is O(K·N) with
+// a small fixed K.
 // Pure; returns a valid solution or a valid=false result that the caller
 // turns into a cold-solve fallback.
 TransferSolution solve_transfer_warm(const BinarySystem& bin, double dt,
-                                     const Vec2& x0, int source, int target,
-                                     double t0, const TransferSolution& prev);
+                                      const Vec2& x0, int source, int target,
+                                      double t0, const TransferSolution& prev);
 
 // M06-R5 telemetry: zero-thrust-propagation counters for the transfer solvers.
 // `ballistic_reset_propagation_count` zeroes the running count; a subsequent

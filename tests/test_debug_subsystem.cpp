@@ -70,11 +70,16 @@ using lander::to_screen_point;
 using lander::transfer_arrival_target;
 using lander::transfer_cold_camera_fit;
 using lander::transfer_cold_display;
+using lander::update_transfer_debug_camera;
+using lander::TransferDebugCameraState;
 using lander::ZeroEffortQuery;
 
 // M06-R15: the pure node-edit geometry helpers under test.
 using lander::NodeBasis;
 using lander::NodeEditArrows;
+using lander::NodeExecutorOverlay;
+using lander::node_executor_overlay;
+using lander::screen_arrow_tip;
 
 int failures = 0;
 
@@ -1435,6 +1440,271 @@ void test_transfer_cold_mode_isolation_and_invalid() {
           "R20 V06: the zero-length fit keeps the departure marker in view");
 }
 
+bool same_transfer_solution(const TransferSolution& a,
+                            const TransferSolution& b) {
+    return a.valid == b.valid && a.source == b.source && a.target == b.target &&
+           a.solve_epoch == b.solve_epoch &&
+           a.departure_state == b.departure_state &&
+           a.departure_velocity == b.departure_velocity &&
+           a.time_of_flight == b.time_of_flight &&
+           a.arrival_epoch == b.arrival_epoch &&
+           a.achieved_miss == b.achieved_miss && a.fraction == b.fraction &&
+           a.newton_iterations == b.newton_iterations &&
+           a.arrival_rel_speed == b.arrival_rel_speed;
+}
+
+struct WarmFixture {
+    Simulation sim;
+    RecedingHorizonPredictor live;
+    RecedingHorizonPredictor coast;
+    NodeExecutor exec;
+    TransferMidcourse mc;
+    LandingAutopilot ap;
+    AttitudeMode att = AttitudeMode::Off;
+    TransferDebugResult result{};
+    LandingConfig lcfg{};
+    std::optional<ManeuverNode> node;
+
+    WarmFixture() {
+        ZeroEffortQuery zero_effort = [](double) { return BallisticState{}; };
+        DebugSubsystems subs{sim, exec, mc, ap, live, coast, lcfg, node, att,
+                             &result, zero_effort};
+        setup_debug_scenario(DebugSubsystem::TransferWarm, subs);
+    }
+
+    const BinarySystem& bin() const { return sim.binary(); }
+    double dt() const { return sim.config().fixed_dt; }
+    bool valid() const {
+        return result.computed && result.cold.valid && mc.active() &&
+               mc.cache().valid;
+    }
+};
+
+void test_transfer_warm_display_preserves_seed_and_advances_warm() {
+    WarmFixture f;
+    if (!f.valid()) {
+        return;
+    }
+
+    const TransferColdDisplay seed0 =
+        transfer_cold_display(f.bin(), f.result.cold, f.dt(), 256);
+    TransferSolution warm_sol = f.mc.cache();
+    const TransferColdDisplay warm0 =
+        transfer_cold_display(f.bin(), warm_sol, f.dt(), 256);
+
+    check(seed0.valid, "R21 V02: the COLD seed display is valid");
+    check(warm0.valid, "R21 V02: the WARM plan display is valid");
+
+    warm_sol.departure_velocity.x += 0.75;
+    warm_sol.departure_velocity.y -= 0.35;
+    const TransferColdDisplay warm1 =
+        transfer_cold_display(f.bin(), warm_sol, f.dt(), 256);
+    const TransferColdDisplay seed1 =
+        transfer_cold_display(f.bin(), f.result.cold, f.dt(), 256);
+
+    check(warm1.valid, "R21 V02: the advanced WARM display remains valid");
+    check(seed1.valid, "R21 V02: the COLD seed display remains valid");
+    check(seed0.dep == seed1.dep && seed0.arr == seed1.arr &&
+              seed0.fit_center == seed1.fit_center &&
+              seed0.fit_half == seed1.fit_half &&
+              seed0.solve_epoch == seed1.solve_epoch &&
+              seed0.arrival_epoch == seed1.arrival_epoch,
+          "R21 V02: advancing the WARM cache leaves the COLD seed unchanged");
+
+    bool warm_changed =
+        warm0.arr != warm1.arr || warm0.target_at_arrival != warm1.target_at_arrival ||
+        warm0.arc.size() != warm1.arc.size();
+    if (!warm_changed && warm0.arc.size() == warm1.arc.size()) {
+        for (std::size_t i = 0; i < warm0.arc.size(); ++i) {
+            if (std::hypot(warm0.arc[i].p.x - warm1.arc[i].p.x,
+                           warm0.arc[i].p.y - warm1.arc[i].p.y) > 1.0e-6 ||
+                std::hypot(warm0.arc[i].v.x - warm1.arc[i].v.x,
+                           warm0.arc[i].v.y - warm1.arc[i].v.y) > 1.0e-6) {
+                warm_changed = true;
+                break;
+            }
+        }
+    }
+    check(warm_changed,
+          "R21 V02: a changed WARM cache changes only the WARM display");
+}
+
+void test_transfer_warm_display_no_mutation() {
+    WarmFixture f;
+    if (!f.valid()) {
+        return;
+    }
+
+    const State state_before = f.sim.state();
+    const double time_before = f.sim.sim_time();
+    const TransferSolution warm_before = f.mc.cache();
+    const TransferSolution cold_before = f.result.cold;
+    const int count_before = ballistic_propagation_count();
+    const double probe_t0 = f.sim.sim_time();
+    const double probe_t1 = probe_t0 + 12.345;
+    std::vector<Vec2> pos_before(BinarySystem::kBodyCount);
+    std::vector<Vec2> vel_before(BinarySystem::kBodyCount);
+    for (int i = 0; i < BinarySystem::kBodyCount; ++i) {
+        pos_before[i] = f.bin().position(i, probe_t0);
+        vel_before[i] = f.bin().velocity(i, probe_t1);
+    }
+
+    const TransferColdDisplay seed =
+        transfer_cold_display(f.bin(), f.result.cold, f.dt(), 256);
+    const TransferColdDisplay warm =
+        transfer_cold_display(f.bin(), f.mc.cache(), f.dt(), 256);
+    const TransferCameraFit fit =
+        transfer_cold_camera_fit(warm.fit_center, warm.fit_half, 1280.0, 720.0,
+                                 14.0, 1.0e-3, 4.0);
+    (void)seed;
+    (void)fit;
+
+    check(f.sim.state() == state_before,
+          "R21 V04: building WARM display arcs does not mutate the simulation");
+    check_close(f.sim.sim_time(), time_before, 1.0e-12,
+                "R21 V04: building WARM display arcs does not advance sim time");
+    check(same_transfer_solution(f.mc.cache(), warm_before),
+          "R21 V04: building WARM display arcs does not mutate the WARM cache");
+    check(same_transfer_solution(f.result.cold, cold_before),
+          "R21 V04: building WARM display arcs does not mutate the COLD seed");
+    check(ballistic_propagation_count() == count_before,
+          "R21 V07: display construction reports no propagation cost");
+    for (int i = 0; i < BinarySystem::kBodyCount; ++i) {
+        check_close_vec(f.bin().position(i, probe_t0), pos_before[i], 1.0e-12,
+                        "R21 V04: primary/companion positions are unchanged");
+        check_close_vec(f.bin().velocity(i, probe_t1), vel_before[i], 1.0e-12,
+                        "R21 V04: primary/companion velocities are unchanged");
+    }
+}
+
+void test_transfer_warm_display_arrival_target_future() {
+    WarmFixture f;
+    if (!f.valid()) {
+        return;
+    }
+
+    const TransferColdDisplay d =
+        transfer_cold_display(f.bin(), f.mc.cache(), f.dt(), 256);
+
+    check(d.valid, "R21 V03: the WARM display is valid");
+    check(d.arrival_epoch > f.sim.sim_time(),
+          "R21 V03: the WARM arrival marker is a future epoch");
+    const Vec2 expected = f.bin().position(d.target, d.arrival_epoch);
+    check_close_vec(d.target_at_arrival, expected, 1.0e-9,
+                    "R21 V03: the arrival marker is the target at the WARM arrival epoch");
+}
+
+void test_transfer_warm_display_cost_not_reported() {
+    WarmFixture f;
+    if (!f.valid()) {
+        return;
+    }
+
+    const int count_before = ballistic_propagation_count();
+    const TransferColdDisplay seed =
+        transfer_cold_display(f.bin(), f.result.cold, f.dt(), 256);
+    const TransferColdDisplay warm =
+        transfer_cold_display(f.bin(), f.mc.cache(), f.dt(), 256);
+
+    check(seed.valid && warm.valid,
+          "R21 V07: both display arcs build from the accepted records");
+    check(ballistic_propagation_count() == count_before,
+          "R21 V07: display arc construction does not increment solver propagation");
+}
+
+void test_transfer_warm_fast_executor_overlay() {
+    WarmFixture f;
+    if (!f.mc.active()) {
+        return;
+    }
+
+    const State st = f.sim.state();
+    const Vec2 dv = f.mc.fast().dv_remaining();
+    const NodeExecutorOverlay o =
+        node_executor_overlay(Vec2{0.0, 0.0}, st.angle, dv, 0.0, 46.0);
+
+    check_close(o.vgo_mps, std::hypot(dv.x, dv.y), 1.0e-12,
+                "R21 V05: the overlay reports the exact remaining VGO magnitude");
+    check(o.vgo_present == (o.vgo_mps > 1.0e-3),
+          "R21 V05: a nonzero VGO is visible and a zero VGO is hidden");
+    if (o.vgo_present) {
+        check(o.vgo_tip != Vec2{0.0, 0.0},
+              "R21 V05: a present VGO ray has a nonzero tip");
+    } else {
+        check_close_vec(o.vgo_tip, Vec2{0.0, 0.0}, 1.0e-12,
+                        "R21 V05: a zero VGO ray collapses to the anchor");
+    }
+
+    const NodeExecutorOverlay zero =
+        node_executor_overlay(Vec2{0.0, 0.0}, st.angle, Vec2{0.0, 0.0}, 0.0,
+                              46.0);
+    check(!zero.vgo_present, "R21 V05: the zero-VGO overlay hides the VGO ray");
+    check_close_vec(zero.vgo_tip, Vec2{0.0, 0.0}, 1.0e-12,
+                    "R21 V05: the hidden VGO ray is anchored at the ship");
+    check_close_vec(zero.act_tip,
+                    screen_arrow_tip(Vec2{0.0, 0.0}, thrust_hat(st.angle), 0.0,
+                                     46.0),
+                    1.0e-12,
+                    "R21 V05: the ACT ray follows the ship's thrust axis");
+
+    const State state_before = f.sim.state();
+    const TransferSolution cache_before = f.mc.cache();
+    (void)node_executor_overlay(Vec2{0.0, 0.0}, st.angle, dv, 0.0, 46.0);
+    check(f.sim.state() == state_before,
+          "R21 V05: overlay construction does not mutate the simulation");
+    check(same_transfer_solution(f.mc.cache(), cache_before),
+          "R21 V05: overlay construction does not mutate the WARM cache");
+}
+
+// M06-R21-F01-V01 / D01: the presentation-only transfer-warm debug camera
+// stabiliser must bound the per-frame zoom change while the requested context
+// keeps changing. The test only exercises the pure presentation helper, so it
+// proves the camera cannot pump in response to ordinary bounded re-plans
+// without running SDL or the simulation.
+void test_transfer_debug_camera_stability() {
+    TransferDebugCameraState state{};
+    const CameraParams p{};
+
+    // Initial frame: the state adopts the requested fit immediately.
+    TransferCameraFit fit = update_transfer_debug_camera(
+        state, Vec2{0.0, 0.0}, Vec2{700.0, 500.0}, p.window_width,
+        p.window_height, p.base_scale, 1.0e-3, p.zoom_max, 200.0);
+    check(state.initialized,
+          "R21-F01 V01: the first debug frame initialises the camera state");
+    check(fit.zoom > 0.0 && std::isfinite(fit.zoom),
+          "R21-F01 V01: the initial debug fit is finite and positive");
+
+    const double initial_zoom = fit.zoom;
+    bool ratio_ok = true;
+    bool finite_ok = true;
+    // A sequence of aggressive ordinary re-plan target changes (wide route ->
+    // tight arrival context -> wide again) with a minimum context extent.
+    for (int i = 0; i < 60; ++i) {
+        const bool wide = (i % 2) == 0;
+        const Vec2 center{10.0 * std::sin(i * 0.31), 8.0 * std::cos(i * 0.17)};
+        const Vec2 half{wide ? 750.0 : 130.0, wide ? 550.0 : 130.0};
+        const TransferCameraFit next = update_transfer_debug_camera(
+            state, center, half, p.window_width, p.window_height,
+            p.base_scale, 1.0e-3, p.zoom_max, 200.0);
+        const double ratio = state.zoom / initial_zoom;
+        if (!std::isfinite(next.center.x) || !std::isfinite(next.center.y) ||
+            !std::isfinite(next.zoom) || next.zoom <= 0.0) {
+            finite_ok = false;
+        }
+        if (i > 0) {
+            const double step = next.zoom / fit.zoom;
+            if (step < 1.0 / 1.35 - 1.0e-9 || step > 1.35 + 1.0e-9) {
+                ratio_ok = false;
+            }
+        }
+        fit = next;
+        (void)ratio;
+    }
+    check(finite_ok, "R21-F01 V01: the stabilised debug camera stays finite");
+    check(ratio_ok,
+          "R21-F01 V01: ordinary re-plans cannot produce unbounded zoom jumps");
+}
+
 }  // namespace
 
 int main() {
@@ -1463,6 +1733,12 @@ int main() {
     test_transfer_cold_temporal_epochs_and_inertial_frame();
     test_transfer_cold_display_cost_not_reported();
     test_transfer_cold_mode_isolation_and_invalid();
+    test_transfer_warm_display_preserves_seed_and_advances_warm();
+    test_transfer_warm_display_no_mutation();
+    test_transfer_warm_display_arrival_target_future();
+    test_transfer_warm_display_cost_not_reported();
+    test_transfer_warm_fast_executor_overlay();
+    test_transfer_debug_camera_stability();
 
     if (failures == 0) {
         std::printf("All lander_debug_subsystem_tests passed\n");

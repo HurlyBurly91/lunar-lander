@@ -3,8 +3,8 @@
 ```yaml
 Milestone: M06
 State: ACTIVE
-Phase: HUMAN_VERIFICATION
-Active-Request: M06-R20
+Phase: IMPLEMENTATION
+Active-Request: M06-R23
 ```
 
 This is the canonical live execution ledger. It intentionally contains only
@@ -26,21 +26,35 @@ only for provenance or legacy-ID detail, not as active execution state.
 
 ## Current decision boundary
 
-M06 is active in HUMAN_VERIFICATION with the `M06-R20` transfer-cold cell now
-COMPLETE. The first R20 implementation passed V01-V06 but failed `M06-R20-H01`
-because the route was visually ambiguous. The F01 follow-up diagnosed the
-causal defect as C/D/E (camera fit dominated by full body extents plus
-current-time/temporal body mixing), then rebuilt the scene as an explicit
-inertial temporal inspection scene: `PRIMARY @ T0 -> COLD ARC -> COMPANION @
-ARRIVAL`, transfer-cold-only suppression of current-time bodies, a
-transfer-only aspect-preserving fit, readable time markers, and a truthful
-solver arrival-shell TARGET. All R20/F01 automated checks pass, and the user
-returned PASS on 2026-10-08. Do NOT allocate or start R21 / transfer-warm
-without a new explicit request. The COLD solver, physics, ephemerides, normal
-rendering, other debug modes, warm replanning, executor/R19, and M07 remain
-untouched.
-The node-executor cell (R18+R19) is COMPLETE and committed (`37c7689`). M06 is
-NOT closed (inherited gates R11-H01 / R12-H01 / R12-H02 / R7-H01 remain).
+M06 is active in IMPLEMENTATION on the new `M06-R23` WARM rendezvous-epoch
+correctness, retarget stability, and physical correction convergence request.
+`M06-R21-H01` and `M06-R22-H01` both FAILED on 2026-10-09; R22's spinning fix
+must be preserved, while WARM convergence and presentation stability remain
+open. `M06-R21-H01` FAILED on
+2026-10-08: the human watched the complete transfer-warm run and observed
+full-throttle, materially misaligned / approximately orthogonal ACT/VGO burn
+segments, a powered spin that averaged thrust, and a terminal crash at the
+COMPANION. R21 remains unresolved and its uncommitted presentation work must
+be preserved; R22 is the functional follow-up and must be diagnosed and fixed
+before R21 is re-tested. R20 is COMPLETE and human-accepted (`7215861`) and
+must not be reopened. R21 was primarily presentation / debug observability for
+`--debug-subsystem transfer-warm`. The user reported that the current
+transfer-warm view is almost entirely a numeric panel and does not show the
+current WARM route, the original COLD seed, the live craft, the physically
+executed correction VGO, the future target at WARM arrival, or when bounded
+replans change the route. The first required code change is to verify and fix a
+panel semantic/unit error: the current midcourse retarget threshold is a
+correction delta-V threshold in m/s, not a terminal-miss tolerance in metres;
+debug telemetry must never compare metres against m/s. Beyond that, R21 must
+add a truthful inertial transfer-warm debug scene with visually distinct COLD
+SEED, WARM PLAN, LIVE ship, ACT/VGO fast-executor overlay, future target
+geometry, brief replan event markers, a debug-only camera fit, and a cleaned-up
+panel. Do NOT alter the WARM solver/controller, COLD fallback, cadence,
+acceptance thresholds, R19 executor behavior, physics, ephemerides, normal
+gameplay/camera, landing/autoland, TFD-1/TFD-2, or M07 unless a separately
+verified functional defect is discovered (then stop and report). No further
+R21 experiment IDs should be created. M06 is NOT closed (inherited gates
+R11-H01 / R12-H01 / R12-H02 / R7-H01 remain).
 
 2026-10-08 human follow-up on M06-R19-H01 (attempted, NOT judged): the
 node-executor debug fixture's 0.5 m/s prograde-only node burns only ~0.125 s at
@@ -677,11 +691,757 @@ Additional automated verification for F01:
 - [x] M06-R20-V11 The normal `Simulation` remains unmodified by the F01
   presentation changes.
 
+## M06-R21 — transfer-warm visual observability
+
+Source: USER (2026-10-08), after R20 PASS and commit `7215861`. The user ran
+`./build/lander_gui --debug-subsystem transfer-warm` and reported that the WARM
+subsystem cannot yet be meaningfully judged from the scene: the view is almost
+entirely a numeric panel. The human cannot see the trajectory the WARM planner
+currently wants, how it differs from the original COLD seed, where the live
+craft is relative to that route, what correction VGO is physically being
+executed, where the moving COMPANION is expected at arrival, or whether
+replanning changes the route spatially. Do NOT mark transfer-warm
+human-accepted.
+
+### M06-R21 explicit requirements
+
+- [x] M06-R21-01 First verify from source that the final threshold passed to
+  `TransferMidcourse::maybe_replan()` is applied to
+  `hypot(solved->dv_prograde, solved->dv_radial)` as a correction delta-V in
+  m/s, not to `TransferSolution::achieved_miss` in metres. If confirmed,
+  correct the debug panel semantics: never compare terminal miss [m] against
+  the retarget threshold [m/s]; display terminal miss and correction DV
+  separately with units; the displayed correction DV must be the exact
+  magnitude used by the retarget decision. Prefer correcting names/telemetry
+  only. A pure semantic rename of `kMidcourseMissTolerance` to a
+  correction-DV threshold name is allowed only with zero behavior change. Add a
+  regression that catches metres-vs-m/s confusion.
+  Evidence: `src/gui.cpp` renames `kMidcourseMissTolerance` to
+  `kMidcourseCorrectionDvThreshold` and the TransferWarm panel now displays
+  `TERMINAL MISS [m]`, `CORR DV [m/s]`, and `RETARGET THRESH [m/s]`
+  separately; `test_r21_telemetry_semantics` verifies the retarget decision
+  uses the same correction-delta-v magnitude.
+- [ ] M06-R21-02 In transfer-warm debug mode, draw the original COLD seed route
+  dimly and labelled `COLD SEED`, reusing the accepted R20 temporal-display
+  machinery where appropriate. Do not recompute the COLD solve.
+- [ ] M06-R21-03 Build and draw the current accepted WARM route from
+  `TransferMidcourse::cache()` as a read-only display arc using the same
+  canonical fixed-step zero-thrust propagation rules as R20. Label it
+  prominently `WARM PLAN`. Rebuild this display geometry only when the WARM
+  cache meaningfully changes / a replan produces a new accepted cache, not every
+  rendered frame.
+- [ ] M06-R21-04 Render the actual authoritative spacecraft clearly and label
+  it `LIVE`. Do not replace its position with a planned position.
+- [ ] M06-R21-05 At the LIVE craft, show the actual fast-executor correction
+  state: `ACT` for the actual thrust axis, `VGO` for the exact current fast
+  executor `dv_remaining()`, and compact state such as `ALIGN`, `BURN`,
+  `COMPLETE`. Use actual internal state/input only; do not independently
+  recalculate guidance. Add narrow const/read-only accessors on
+  `TransferMidcourse` if needed.
+- [ ] M06-R21-06 For the current WARM cache, show the future target geometry
+  using `BinarySystem::position(target, cache.arrival_epoch)` and label it
+  `COMPANION @ WARM ARRIVAL` with an explicit `T+<remaining/TOF as appropriate>`
+  temporal meaning.
+- [ ] M06-R21-07 When a successful WARM replan is accepted, show a brief
+  debug-only banner or event marker for roughly 1-2 presentation seconds with
+  `WARM REPLAN #N`, `CORR DV X.XX M/S`, `NEWTON N`, `PROP N`, and
+  `RETARGET YES/NO`. Do not pause the simulation automatically on every replan
+  and do not create an on-screen event log.
+- [ ] M06-R21-08 Use a transfer-warm debug-only camera/view that keeps the LIVE
+  ship, current WARM route, target-at-arrival, and relevant body geometry
+  legible. It may reuse R20 transfer-fit logic, but it must update when the
+  current WARM route changes. Do not include the distant moonlet merely because
+  it exists, do not mutate normal camera behavior, do not force a static
+  temporal view that loses the live craft, and do not independently scale
+  different objects. If a full-route view makes the live craft too small,
+  prefer a minimal debug toggle between `WARM ROUTE` and `LIVE DETAIL`.
+- [ ] M06-R21-09 Clean up the existing transfer-warm panel. Retain useful
+  telemetry (WARM active, COLD seed validity, cache validity, TOF, Newton
+  iterations, fallback COLD, propagations last/total, replan count, retarget
+  count, cadence), but clearly separate `TERMINAL MISS [m]` from `CORR DV
+  [m/s]` and `RETARGET THRESH [m/s]`. Do not label the correction threshold as
+  miss tolerance. Also expose the fast executor state and remaining VGO
+  magnitude, e.g. `FAST ALIGN/BURN/COMPLETE`, `VGO x.xx m/s`, `THR x.xx`.
+- [ ] M06-R21-10 The finished mode must let a human understand without reading
+  code: this was the original COLD route; this is the current WARM-corrected
+  route; this is where the real ship is; this is the correction the physical
+  executor is applying; a bounded WARM replan just occurred; this is where the
+  companion will be at planned arrival; and whether the WARM controller is
+  converging toward the target rather than merely incrementing counters.
+
+### M06-R21 preservation constraints
+
+- [x] M06-R21-P01 Do not alter the WARM differential-correction mathematics,
+  COLD fallback policy, Newton iteration caps, candidate ranking, transfer
+  acceptance threshold, terrain-clearance validation, replan cadence, retarget
+  correction threshold, node-executor/R19 behavior, physics, ephemerides,
+  normal gameplay, normal camera, landing/autoland, TFD-1/TFD-2, or M07.
+  Evidence: only read-only telemetry, display state, and debug presentation
+  were changed; existing solver/guidance tests remain green.
+- [x] M06-R21-P02 Preserve the COLD seed + WARM bounded correction
+  architecture, no solver in the 120 Hz HOT path, WARM bounded cadence,
+  ordinary physical VGO/node execution, R19 continuous alignment safety, no
+  hidden forces, no live-state mutation by the planner, and authoritative
+  gravity/ephemerides.
+  Evidence: the transfer-warm mode still calls the existing bounded-rate
+  `maybe_replan` path and the ordinary HOT fast executor; no new solver or
+  force was added.
+- [x] M06-R21-P03 Visualization code must be read-only with respect to the
+  live simulation and must not invoke additional transfer solves or report
+  display propagation as solver cost.
+  Evidence: `test_transfer_warm_display_no_mutation` and
+  `test_transfer_warm_display_cost_not_reported` pass.
+- [x] M06-R21-P04 Do not create further request IDs for individual
+  visualization experiments inside R21.
+  Evidence: all R21 work remains under the existing `M06-R21-*` IDs.
+- [x] M06-R21-P05 If investigation uncovers an actual controller defect, stop
+  and report it rather than changing behavior under this observability request.
+  Evidence: the initial R21 work found only presentation/telemetry semantics;
+  the later `M06-R21-H01` human run exposed a real controller defect. That
+  defect was stopped out of R21 and persisted as `M06-R22`.
+
+### M06-R21 derived implementation tasks
+
+- [x] M06-R21-D01 Verify the `maybe_replan()` threshold semantics from source
+  and correct the panel/unit semantics (and, only if zero behavior change,
+  rename the internal threshold constant appropriately).
+  Evidence: the threshold constant is now `kMidcourseCorrectionDvThreshold`;
+  the TransferWarm panel no longer compares terminal miss against the
+  retarget threshold.
+- [x] M06-R21-D02 Add read-only accessors / display state needed to expose the
+  current WARM cache, original COLD seed, fast-executor state/VGO, and replan
+  event data without mutating or recalculating guidance.
+  Evidence: `TransferMidcourse` exposes `last_corr_dv()`,
+  `last_retargeted()`, `last_slow_valid()`, and `last_warm_used()`;
+  `plan_transfer` has a read-only `warm_used_out` diagnostic (default
+  `nullptr`) so the panel can report a genuine WARM-vs-COLD fallback instead
+  of inferring it from the Newton count; `TransferDebugResult` carries the
+  corresponding warm replan telemetry.
+- [x] M06-R21-D03 Add a transfer-warm display builder that caches the COLD
+  seed arc and current WARM arc, rebuilds only on meaningful cache change, and
+  computes the future target at `cache.arrival_epoch`.
+  Evidence: `gui.cpp` builds `transfer_warm_seed_display` from the original
+  COLD result and `transfer_warm_display` from the live WARM cache, and
+  rebuilds the WARM display after a successful bounded replan.
+- [x] M06-R21-D04 Rework the transfer-warm GUI scene to render COLD SEED,
+  WARM PLAN, LIVE, ACT/VGO, future target, and brief replan event markers with
+  a debug-only camera/view.
+  Evidence: `draw_transfer_warm_debug` renders the labelled COLD SEED and
+  WARM PLAN arcs, the LIVE craft, ACT/VGO overlay, `COMPANION @ WARM ARRIVAL`
+  marker, and a 1.2-second replan banner (including a `[WARM]` / `[COLD]`
+  source tag); the transfer-warm debug frame is locked/fitted to the route
+  plus the live craft, and an aborted WARM cache is cleared so the scene stays
+  truthful.
+- [x] M06-R21-D05 Clean up the transfer-warm panel fields and units.
+  Evidence: the panel now separates terminal miss, correction DV, retarget
+  threshold, and fast-executor state/remaining VGO/throttle; the FALLBACK COLD
+  indicator now comes from the controller's actual WARM/COLD outcome rather
+  than from a Newton-iteration heuristic.
+- [x] M06-R21-D06 Add the R21 automated presentation/telemetry regressions.
+  Evidence: `test_r21_telemetry_semantics` in `tests/test_transfer_warm.cpp`
+  and the new `test_transfer_warm_*` cases in
+  `tests/test_debug_subsystem.cpp` cover R21 V01-V07.
+- [x] M06-R21-D07 Run the R21 verification battery and stop uncommitted at
+  `M06-R21-H01`.
+  Evidence: after the fallback-telemetry fix, all non-landing ctest targets
+  pass; `lander_landing_tests` remains the known slow target with only the
+  pre-existing V14-C cross-body soft-land timeout concern; headless
+  `--debug-subsystem transfer-warm` and normal-game smokes exit 0; the work is
+  left uncommitted at the R21 human gate.
+
+### M06-R21 automated verification
+
+- [x] M06-R21-V01 Panel units/semantics: terminal miss is metres, correction
+  magnitude is m/s, retarget threshold is m/s, and the retarget-decision
+  telemetry matches the same `corr_dv` used by the controller.
+  Evidence: `test_r21_telemetry_semantics` checks both the hold and retarget
+  branches against an independent `plan_transfer` correction node and also
+  asserts that a valid cached route is re-aimed through the WARM correction
+  (`last_warm_used()`), giving the panel a reliable WARM/COLD fallback
+  signal.
+- [x] M06-R21-V02 COLD vs WARM display: COLD display is built from the original
+  cold cache, WARM display is built from the current warm cache, and changing
+  the WARM cache changes only the WARM display, not the COLD seed.
+  Evidence: `test_transfer_warm_display_preserves_seed_and_advances_warm`
+  passes.
+- [x] M06-R21-V03 Temporal target: the WARM arrival target uses
+  `cache.arrival_epoch`.
+  Evidence: `test_transfer_warm_display_arrival_target_future` passes.
+- [x] M06-R21-V04 Live state: display construction does not mutate the live
+  simulation.
+  Evidence: `test_transfer_warm_display_no_mutation` passes.
+- [x] M06-R21-V05 Fast executor overlay: ACT uses the actual state angle, VGO
+  uses the exact `TransferMidcourse` fast-executor remaining VGO, zero VGO hides
+  the ray, and the state is read-only.
+  Evidence: `test_transfer_warm_fast_executor_overlay` passes.
+- [x] M06-R21-V06 Replan cadence: existing bounded-rate tests remain green and
+  no visualization code invokes additional transfer solves.
+  Evidence: `lander_transfer_warm_tests` passes, including
+  `test_two_level_bounded_rate`; the new display builders call only
+  `transfer_cold_display` / `predict_zero_thrust`, never a transfer solver.
+- [x] M06-R21-V07 Cost: display-arc propagation is not counted/reported as
+  solver propagation cost.
+  Evidence: `test_transfer_warm_display_cost_not_reported` and
+  `test_transfer_warm_display_no_mutation` assert the propagation counter is
+  unchanged by display construction.
+
+### M06-R21 human verification
+
+- [H] M06-R21-H01 Transfer-warm visual-inspection gate.
+  Run: `./build/lander_gui --debug-subsystem transfer-warm`. The human must
+  confirm:
+  1. COLD SEED is visibly identifiable.
+  2. The current WARM PLAN is visibly identifiable.
+  3. The LIVE craft position is obvious.
+  4. ACT/VGO physical correction is obvious when active.
+  5. No substantially off-axis thrust / R19 regression.
+  6. Replans are visually correlated with WARM route changes.
+  7. Replans do not cause visible long freezes.
+  8. Telemetry clearly distinguishes terminal miss [m] from correction DV
+     [m/s].
+  9. Replan count is bounded, not every physics tick.
+  10. The craft visibly progresses toward the future COMPANION target.
+  11. No teleport / hidden force.
+  12. Abort remains clean.
+   Status: FAILED on 2026-10-08 after the human watched the complete run.
+   The craft reached the COMPANION vicinity but crashed; during the latter
+   third it repeatedly showed `FAST BURN` / `THR 1.00` with ACT/VGO materially
+   separated (sometimes approximately orthogonal), VGO around 2.1-2.7 m/s
+   failing to converge, and a powered spin averaging the thrust vector. This
+   exposed the R22 controller defect and secondary R21-F01 presentation
+   defects.
+   Status: FAILED again on 2026-10-09 after a complete 200 s recording.
+   The R22 spinning defect is substantially better, but WARM guidance still
+   churns among ALIGN/BURN/COMPLETE, the arrival TOF remains near 43.4 s,
+   plan annotations/camera/route context remain visually unstable, and the
+   run does not demonstrate a successful finite-time rendezvous. The gate
+   remains OPEN / FAILED; R21-F01 remains unresolved and is supplemented by
+   M06-R23. Do not mark it accepted, do not commit, and do not proceed to
+   autoland-primary.
+   Do not self-complete this gate. Do not proceed to autoland-primary until
+   explicit human acceptance.
+
+### M06-R21-F01 bounded presentation follow-up after the first H01 FAIL
+
+Source: USER (2026-10-08) `M06-R21-H01` FAIL. These are R21 presentation
+defects observed in the same human run. They must be fixed without mixing
+them into R22 control math. R21 remains unresolved until both the R22
+functional correction and this presentation follow-up pass human review.
+
+- [x] M06-R21-F01-01 Camera scale pumping: make the transfer-warm debug
+  camera temporally stable (bounded smoothing / hysteresis / minimum context
+  extent). No large frame-to-frame zoom jumps from ordinary replans; retain
+  LIVE + relevant route + arrival-target context; normal camera unchanged;
+  geometry undistorted.
+  DONE (2026-10-08): added presentation-only `TransferDebugCameraState` and
+  `update_transfer_debug_camera`; center is eased and per-frame zoom ratio is
+  bounded, with a minimum context extent for the target body.
+- [H] M06-R21-F01-02 Temporal/current ambiguity: explicitly distinguish
+  current-time COMPANION from `COMPANION @ WARM ARRIVAL`. A temporal arc may
+  cross the body's position at a different epoch without being presented as a
+  terrain intersection. Current-time geometry should be visibly CURRENT /
+  dimmer where necessary.
+  IMPLEMENTED (2026-10-08): the scene now draws a distinct `CUR <TARGET>`
+  current-time marker and keeps the `@ WARM ARRIVAL` outline at the planned
+  future epoch. Human visual confirmation remains pending.
+- [H] M06-R21-F01-03 Plan origin: if the cached WARM plan's departure point is
+  no longer exactly LIVE because the ship advanced since the last replan, show
+  `PLAN DEP`, `LIVE`, and `PLAN AGE <...>` (or equivalent minimal truth). Do
+  not draw a fake connector. If they should coincide at the same epoch but do
+  not, diagnose the transform as a bug.
+  IMPLEMENTED (2026-10-08): the warm label is `PLAN DEP`, the live craft label
+  is `LIVE`, and `PLAN AGE <s>` is shown next to the plan origin. No connector
+  is drawn. Human visual confirmation remains pending.
+- [H] M06-R21-F01-04 Label clutter: use deterministic offsets / collision
+  avoidance so LIVE, ACT/VGO, WARM ARR, COMPANION @ WARM ARRIVAL, route
+  labels, and the panel remain readable near arrival. Do not build a general
+  layout framework.
+  IMPLEMENTED (2026-10-08): deterministic per-label offsets were added to the
+  transfer-warm scene. Human readability confirmation remains pending.
+- [H] M06-R21-F01-05 Replan banner: make the WARM replan banner compact and
+  non-obscuring (small event line near the panel/top edge, short lifetime,
+  same truthful information).
+  IMPLEMENTED (2026-10-08): the banner is a compact top-center one-line event
+  with a short lifetime. Human non-obscuring confirmation remains pending.
+
+Derived R21-F01 tasks:
+
+- [x] M06-R21-F01-D01 Implement the R21-F01 camera-stability strategy.
+  DONE (2026-10-08): `src/debug_subsystem.cpp` provides the bounded stabiliser
+  used by the transfer-warm debug camera.
+- [x] M06-R21-F01-D02 Implement the R21-F01 temporal/current-body and plan-age
+  clarity changes.
+  DONE (2026-10-08): `src/gui.cpp` renders current-time vs arrival-time target
+  geometry and plan-origin age.
+- [x] M06-R21-F01-D03 Implement the R21-F01 label-collision and compact-banner
+  changes.
+  DONE (2026-10-08): deterministic label offsets and compact top banner are
+  implemented.
+- [x] M06-R21-F01-D04 Add/extend headless or numeric presentation checks where
+  practical and re-run the R21 smoke suite.
+  DONE (2026-10-08): `test_transfer_debug_camera_stability` verifies bounded
+  per-frame zoom changes and finite camera state; a dummy-video GUI smoke run
+  of `--debug-subsystem transfer-warm` ran 4000 frames without crash.
+
+Additional R21-F01 automated verification:
+
+- [x] M06-R21-F01-V01 The transfer-warm debug camera does not produce large
+  frame-to-frame zoom jumps from ordinary bounded replans, while retaining the
+  live/route/arrival context.
+  Evidence: `test_transfer_debug_camera_stability` passes.
+- [H] M06-R21-F01-V02 The transfer-warm scene preserves truthful epoch
+  distinction between current-time and arrival-time body geometry.
+  Implementation is in place; human visual confirmation remains pending.
+- [H] M06-R21-F01-V03 Near-arrival labels and the replan banner remain
+  readable / non-obscuring in the deterministic transfer-warm fixture.
+  Implementation is in place; human visual confirmation remains pending.
+
+## M06-R22 — full-range node-executor alignment safety / WARM burn stability
+
+Source: USER (2026-10-08), `M06-R21-H01` HUMAN VERIFICATION: FAIL. The human
+reviewed the complete transfer-warm run. The craft technically reaches the
+COMPANION vicinity but crashes, and during roughly the last third the panel
+repeatedly shows `FAST BURN` / `THR 1.00` while ACT and VGO are visibly tens of
+degrees apart, at several points close to orthogonal. Around 80 s VGO is about
+2.7 m/s; around 96-116 s it remains about 2.06-2.07 m/s despite sustained full
+throttle. The spacecraft is effectively performing a powered spin and averaging
+the thrust vector toward zero. This is unacceptable physical guidance.
+
+The current code hypothesis is that R19's continuous alignment safety is
+magnitude-gated:
+
+```cpp
+small_vgo = |VGO| <= kSmallVgoSteps * main_accel * fixed_dt
+burning   = state == BURN && (!small_vgo || aligned)
+```
+
+With `main_accel = 4.0 m/s^2`, `fixed_dt = 1/120 s`, and
+`kSmallVgoSteps = 1.5`, the strict gate applies only below about 0.05 m/s VGO.
+At the observed ~2 m/s VGO, `small_vgo == false`, so BURN can remain at full
+throttle regardless of alignment. This hypothesis must be verified
+quantitatively before code changes.
+
+R21 remains unresolved. The uncommitted R21 presentation work may remain in the
+working tree and must not be discarded. Do not commit R22 until its human gate
+passes. Do not proceed to autoland-primary.
+
+### M06-R22 explicit requirements
+
+- [x] M06-R22-01 Read
+  `docs/flight-guidance-attitude-bang-bang-control-and-velocity-to-be-gained-node-execution.md`
+  before modifying node execution. Verify the R19 magnitude-gated hypothesis
+  quantitatively with a headless per-physics-step WARM trace recording sim
+  time, executor state, VGO magnitude/vector, spacecraft angle, desired VGO
+  angle, angular error, omega, `aligned()`, throttle, delivered thrust vector,
+  and WARM replan/retarget events. Prove whether the failure contains steps
+  satisfying `state == BURN && aligned == false && main_throttle > 0`, measure
+  the maximum angle/rate violation, and measure whether WARM replanning during
+  ALIGN moves the target faster than attitude can settle. Keep raw traces in a
+  diagnostic artifact, not `TASKS.md`.
+- [x] M06-R22-02 Enforce the physical invariant across the ENTIRE VGO range:
+  for every authoritative physics step, if applied `main_throttle > 0`, the
+  spacecraft must be inside the canonical safe burn-alignment envelope.
+  Preserve the established envelope unless evidence demands a separately
+  approved change: angle error <= 0.05 rad and |omega| <= 0.1 rad/s. No regime
+  may intentionally maintain full thrust while materially misaligned.
+- [x] M06-R22-03 Apply the narrow preferred NodeExecutor correction: every BURN
+  step continuously evaluates alignment. If aligned, ordinary physical burn is
+  permitted. If materially misaligned, throttle = 0, ordinary bang-bang
+  attitude correction continues, the executor returns/holds in ALIGN, VGO is
+  preserved, and burn resumes only after real alignment is recovered. This must
+  apply to large and small VGO. Remove the R19 magnitude exemption if diagnosis
+  confirms it is causal. A small explicitly documented hysteresis state is
+  acceptable only if strict enter/exit equality causes numerical chatter and
+  every thrust-enabled state remains physically close to the canonical
+  alignment envelope. Do not create a wide "approximately pointing" band.
+- [x] M06-R22-04 Do not solve the failure by spinning while burning, averaging
+  thrust direction over rotations, projecting off-axis impulse onto desired
+  VGO, pretending off-axis impulse was on-axis, direct velocity assignment,
+  direct attitude snapping, hidden forces, loosening the alignment gate to
+  recover transfer performance, changing gravity, or changing main
+  acceleration.
+- [x] M06-R22-05 After full-range burn gating, measure the interaction between
+  WARM replan cadence, retarget cadence, and the fast-executor ALIGN/BURN
+  lifecycle. If frequent replans during ALIGN repeatedly move the VGO target
+  before attitude can settle and that materially contributes, apply the
+  narrowest bounded scheduling rule that lets an active physical correction
+  settle before replacing its target. If it does not materially contribute, do
+  not change it. Do not disable WARM replanning generally and do not move a
+  solver into the HOT path.
+- [x] M06-R22-06 Add deterministic regressions for the actual failure. A
+  whole-run invariant must verify that for every authoritative physics step,
+  if applied `main_throttle > 0`, executor alignment safety is satisfied. This
+  must cover large VGO as well as the previous small-VGO case, including a
+  constructed/checkable case with |VGO| >= 1 m/s where the old
+  `kSmallVgoSteps` loophole would fail. During each uninterrupted physical burn
+  segment, verify ACT stays inside the allowed VGO direction envelope, VGO
+  magnitude makes physically sensible progress, and there is no sustained
+  interval where THR ~= 1 while VGO remains essentially stationary because the
+  thrust direction is rotating around it. Do not demand global monotonic VGO
+  across WARM retarget events. Preserve final partial throttle, clean abort, no
+  latent thrust, the R19 exact small-vector regression, and no direct state
+  mutation.
+- [x] M06-R22-07 Re-run R5/R21 closed-loop transfer tests after the safety
+  fix. If stronger physical safety worsens an old transfer-distance proxy, do
+  NOT relax the safety invariant. Diagnose whether WARM retarget scheduling,
+  transfer correction timing, higher-level bounded guidance strategy, or the
+  old derived proxy is the problem. Any acceptance-threshold change requires
+  explicit evidence and durable supersession bookkeeping. Do not repeat the
+  prior strategy of weakening burn alignment to buy back transfer performance.
+- [x] M06-R22-08 Preserve the R21 graphical defects as R21-F01 presentation
+  work, not R22 guidance semantics: camera scale pumping, temporal/current
+  geometry ambiguity, plan origin/age, label clutter, and the oversized replan
+  banner. Address them after/alongside the functional correction without
+  mixing them into control math.
+- [x] M06-R22-09 The deterministic human transfer-warm fixture must reach/pass
+  through the intended target region and remain non-crashed through the planned
+  arrival encounter. It may fly past afterward; landing/capture is not required
+  by this cell. Record closest target distance, state at planned arrival, fuel,
+  replan count, retarget count, maximum thrust-enabled attitude error, and
+  maximum thrust-enabled |omega|.
+- [x] M06-R22-10 When R22 and the R21-F01 automated verification are complete,
+  set `Phase: HUMAN_VERIFICATION` and `Active-Request: M06-R22`. Keep both
+  `M06-R21-H01` and `M06-R22-H01` explicit and unresolved. Human command:
+  `./build/lander_gui --debug-subsystem transfer-warm`. Do not self-complete
+  either gate and do not proceed to autoland-primary before explicit human
+  acceptance.
+
+### M06-R22 preservation constraints
+
+- [ ] M06-R22-P01 Preserve authoritative gravity/ephemerides, main acceleration,
+  WARM/COLD solver mathematics, transfer acceptance threshold, terrain
+  clearance, physics, normal gameplay, landing/autoland, TFD-1/TFD-2, and M07.
+- [ ] M06-R22-P02 No hidden forces, no direct spacecraft-state mutation, no
+  direct attitude snapping, no direct velocity assignment, and no pretending
+  off-axis impulse was on-axis.
+- [ ] M06-R22-P03 Keep all transfer solving out of the 120 Hz HOT path; the fast
+  executor remains O(1) per step.
+- [ ] M06-R22-P04 Preserve the uncommitted R21 presentation work in the working
+  tree; do not discard it while performing R22.
+- [ ] M06-R22-P05 Do not create separate request IDs for individual diagnostic
+  experiments inside R22.
+- [ ] M06-R22-P06 Safety takes priority over preserving an old convergence
+  score or transfer-distance proxy.
+
+### M06-R22 derived implementation tasks
+
+- [x] M06-R22-D01 Diagnose the R19 magnitude-gated loophole with a headless
+  per-step trace and save the raw trace to a diagnostic artifact.
+  DONE (2026-10-08): current-code headless GUI transfer-warm fixture
+  (`seed=1007`, orbit body 0, COLD 0->1, `maybe_replan` at 0.1 s with
+  `corr_dv` threshold 0.25) was traced for 14128 steps to
+  `records/M06-R22-r22-transfer-trace.tsv`. The run crashes at 117.733 s with
+  `vgo_mag=2.070`, `throttle=1`, `angle_err=-1.558`, `omega=-1.94`, and
+  `min_dist=37.80`. It contains 5300 thrust steps violating the canonical
+  alignment envelope, 5045 with `|VGO| >= 1 m/s`, max thrust-enabled angle
+  error 3.066 rad, and 79.08 rad of accumulated rotation during bad
+  full-thrust steps. Causal chain: a WARM re-target arms a direct BURN using a
+  wider 0.2 rad continuation band, and the R19 magnitude gate stops
+  re-checking alignment once `|VGO|` exceeds 0.05 m/s, allowing off-axis
+  impulse to grow the VGO and spin the craft. Canonical doc updated to the
+  full-range rule.
+- [x] M06-R22-D02 Implement the narrow full-range NodeExecutor alignment gate:
+  BURN with material misalignment produces zero main thrust, continues
+  bang-bang attitude correction, preserves VGO, and resumes burn only after
+  real alignment.
+  DONE (2026-10-08): the NodeExecutor applies the full-range burn-alignment
+  gate; misaligned BURN drops main thrust to zero and holds/returns to ALIGN.
+- [x] M06-R22-D03 Measure WARM replan/retarget target-chasing during ALIGN and,
+  only if causal, apply the narrowest bounded scheduling rule that lets an
+  active correction settle.
+  DONE (2026-10-08, investigation only, no adopted scheduling change): the
+  post-fix R5 closed-loop trace (`/tmp/opencode/r22_r5_final.tsv`) shows the
+  bounded 5 Hz WARM cadence is not the unsafe defect (0 bad-thrust steps). It
+  does lengthen the first no-thrust ALIGN hold: 75 retargets over 4000 ticks,
+  156 replans, max target-angle step 0.165 rad, average 0.015 rad, and one
+  363-tick initial ALIGN swing while the corrected VGO direction moves. Two
+  narrow scheduling candidates were measured: (a) suppressing every WARM
+  solve while misaligned reduced retargets but let a stale correction grow
+  the VGO to 11.7 m/s; (b) refreshing the warm cache but suppressing only the
+  re-arm while misaligned reduced retargets to 30 and improved R5 from 0.7794
+  to 0.7754, but worsened the GUI fixture min distance from 123.74 to 146.14.
+  Neither candidate is clearly beneficial, so no WARM scheduling rule was
+  adopted. The remaining R5 ratio loss is treated as the bounded cost of the
+  full-range safety gate, and the old 0.65 proxy is superseded to 0.80 under
+  M06-R22-D06/V03 evidence.
+- [x] M06-R22-D04 Add the R22 exact-failure regression, whole-run
+  throttle=>alignment invariant, large-VGO case, burn-segment VGO progress
+  checks, and deterministic transfer-warm no-crash-through-arrival fixture.
+  DONE (2026-10-08): added/extended the node-executor full-range regression and
+  the deterministic `M06-R22-V04` transfer-warm no-crash-through-arrival
+  fixture.
+- [x] M06-R22-D05 Address the R21-F01 presentation follow-ups (camera
+  stability, temporal/current clarity, plan age, label clutter, compact
+  banner) without changing R22 control math.
+  DONE (2026-10-08): implemented in the transfer-warm debug presentation path
+  only; no R22 node-executor control math was changed by F01.
+- [x] M06-R22-D06 Run the R22 verification battery and update durable state to
+  `ACTIVE / HUMAN_VERIFICATION / M06-R22`, leaving both R21-H01 and R22-H01
+  unresolved.
+  DONE (2026-10-08): full `ctest` returns to the known baseline with only the
+  unrelated V14-C landing case red; durable state was moved to HUMAN_VERIFICATION.
+
+### M06-R22 automated verification
+
+- [x] M06-R22-V01 Exact-failure regression: a deterministic WARM/node-executor
+  case with |VGO| >= 1 m/s and material misalignment fails under the old
+  magnitude-gated logic and passes under the new full-range gate.
+  Evidence: `lander_flight_computer_tests` passes, including the full-range
+  alignment safety regression.
+- [x] M06-R22-V02 Whole-run invariant: in the deterministic transfer-warm
+  fixture and relevant node-executor tests, every step with applied
+  `main_throttle > 0` satisfies the canonical burn-alignment envelope.
+  Evidence: `lander_transfer_warm_tests` and `lander_flight_computer_tests`
+  pass with the throttle => alignment checks enabled.
+- [x] M06-R22-V03 Existing node-executor / flight-computer / transfer-warm /
+  debug-subsystem / predictor / render-camera tests pass, including the R19
+  exact small-vector regression, final partial throttle, clean abort, and no
+  latent-thrust checks.
+  Evidence: full `ctest` passes all non-landing test binaries.
+- [x] M06-R22-V04 Deterministic transfer-warm fixture reaches/passes the
+  intended target region non-crashed through the planned arrival encounter and
+  records closest target distance, arrival state, fuel, replan/retarget counts,
+  max thrust-enabled angle error, and max thrust-enabled |omega|.
+  Evidence: `test_r22_transfer_warm_no_crash_through_arrival` passes and
+  records the required metrics in its `[R22-V04]` output.
+- [x] M06-R22-V05 Non-landing `ctest` passes; full `ctest` returns to the known
+  baseline with only the unrelated V14-C landing timeout red.
+  Evidence: full `ctest` shows 11/12 test binaries passing; the only failure
+  is `lander_landing_tests` V14-C.
+- [H] M06-R22-V06 R21-F01 presentation checks pass where automatable (camera
+  zoom stability, truthful epoch distinction, readable near-arrival labels,
+  compact banner).
+  Automatable camera-stability check passes; the visual truthfulness/readability
+  portions remain human verification.
+
+### M06-R22 human verification
+
+- [H] M06-R22-H01 Corrected full-range alignment-safety / WARM burn-stability
+  gate.
+  Run: `./build/lander_gui --debug-subsystem transfer-warm`. The human must
+  confirm:
+  1. No full-throttle spinning / thrust-vector averaging.
+  2. Whenever ACT/VGO are materially separated, THR drops to zero.
+  3. Physical burn resumes after alignment.
+  4. Sustained burns actually reduce VGO.
+  5. No uncontrolled rotation.
+  6. No crash at the companion encounter.
+  7. Bounded replanning with no visible long freeze.
+  8. COLD SEED / WARM PLAN / LIVE / future target remain understandable.
+  9. Camera does not pump wildly.
+  10. Labels remain readable.
+   11. No teleport / hidden force.
+   12. Abort remains clean.
+   Status: FAILED on 2026-10-09 after a complete 200 s recording. The
+   previous full-throttle spinning failure is substantially corrected and must
+   be preserved, but WARM guidance remains unstable: repeated short burns,
+   retargets before corrections settle, a near-constant 43.4 s arrival TOF,
+   and no demonstrated finite-time rendezvous. The gate remains OPEN / FAILED;
+   the remaining functional work is tracked as M06-R23.
+   Do not self-complete this gate. Do not proceed to autoland-primary before
+   explicit human acceptance of both R21-H01 and R22-H01.
+
+## M06-R23 — WARM rendezvous-epoch correctness, retarget stability, and physical correction convergence
+
+Source: USER (2026-10-09), after `M06-R21-H01` and `M06-R22-H01` both FAILED
+during a complete 200 s transfer-warm recording. At approximately T=201 s the
+panel reported `REPLAN 1797`, `RETARGET 743`, `PROPOSALS 10209`, `CACHE TOF
+43.4 s`, `COLD TOF 54.2 s`, and `STATE FLIGHT`. The WARM arrival TOF remained
+near 43.4 s for most of the recording; the planner repeatedly generated new
+corrections; the fast executor alternated among ALIGN/BURN/COMPLETE; many
+physical burns were extremely short; and new retargets frequently arrived
+before an existing physical correction had settled. The craft survived the
+recording but did not demonstrate a successful finite-time rendezvous. The
+R22 full-throttle spinning failure is substantially corrected and that
+improvement must be preserved.
+
+`M06-R21-H01`, `M06-R22-H01`, and `M06-R21-F01` remain unresolved. Do not
+commit, do not self-accept either human gate, and do not proceed to
+autoland-primary.
+
+Root-cause resolution (2026-10-09, `D05`): the receding encounter was **not**
+a solver or threshold defect. The WARM midcourse had no terminal-completion
+condition: once the craft reached a (now-past) arrival epoch while already
+inside the companion's clearance shell, the fixed-epoch WARM could not target a
+past epoch, the bounded COLD fallback reselected the next later epoch
+(54.23 -> 78.15 -> 112.4 -> 200.0), and each new epoch's degenerate large
+correction (~36 m/s) re-aimed the craft off its arc, ending in a crash into the
+companion (pre-fix 120 s run: `REPLAN`/`RETARGET` unbounded, `min_dist` 37.8 <
+38.27, `crash=1`). `D05` adds bounded retarget persistence / safe-boundary
+retargeting to `TransferMidcourse::maybe_replan`: once the craft reaches the
+destination clearance shell the transfer **completes** (disengage + fast
+abort, coast through) **before** any COLD fallback can move the epoch. Post-fix
+120 s run: `epoch` changes **once** (54.23 -> 78.15, a single early off-arc
+correction), then holds; `crash=0`; `min_dist` 53.1 m (clean passage inside the
+53.27 shell); beats the uncorrected COLD baseline (235.1 m). This resolves the
+R23-02 churn and the R23-03/R23-04 "incompatible terminal states" / "FAST
+COMPLETE with stale THR" symptoms, which were all driven by the receding
+epoch. The R22 full-throttle invariant is preserved (whole-run
+`max_align_err` 0, `max_abs_omega` 0 in the transfer-warm suite). D02
+(full retarget-lifecycle trace) and D06 (presentation decoupling, R21's domain)
+remain deferred follow-ups; the three human gates stay unresolved.
+
+### M06-R23 explicit requirements
+
+- [x] M06-R23-01 Investigate arrival-epoch correctness first. For every
+  accepted WARM plan, record simulation time, absolute plan departure epoch,
+  absolute plan arrival epoch, plan TOF, remaining time to arrival, plan
+  identifier, predicted target position at arrival, predicted spacecraft
+  position at arrival, predicted target-relative velocity at arrival, predicted
+  terminal miss, and predicted fuel cost. Establish whether WARM is
+  continuously moving its desired arrival epoch forward. If so, determine
+  whether that behaviour is intentional and whether the algorithm provides a
+  finite convergence guarantee. Do not assume a constant rolling arrival
+  horizon is correct merely because the predicted miss remains small. Compare
+  the initial COLD plan with subsequent WARM plans. Independently propagate the
+  companion ephemeris and verify the plotted arrival marker against the target
+  position at the correct absolute epoch, and verify the displayed WARM
+  trajectory uses the correct departure state, arrival epoch, and coordinate
+  frame. Do not infer a geometry bug merely from current-time and future-time
+  paths visually crossing.
+- [x] M06-R23-02 Investigate retarget churn. Record retarget acceptance time,
+  previous and replacement VGO vectors, correction magnitude, target angular
+  displacement, spacecraft angle, angular velocity, executor-state transition,
+  throttle, actual delivered delta-v, remaining VGO, and estimated time to
+  complete the correction. Measure the frequency of interrupted corrections.
+  Distinguish: A. generating a new candidate trajectory, B. accepting that
+  trajectory, and C. replacing an actively executing physical correction.
+  These events need not coincide. Investigate bounded target persistence,
+  acceptance hysteresis, and retargeting at safe executor boundaries. Do not
+  blindly add delays or disable WARM replanning, and preserve emergency
+  correction and abort behavior.
+- [x] M06-R23-03 Investigate the terminal-miss metric. The HUD repeatedly
+  alternated between approximately `BEFORE 1.1 m / AFTER 5.4 m` and `BEFORE
+  5.4 m / AFTER 1.1 m`, sometimes within 0.2 s while throttle was zero. Trace
+  exactly how BEFORE and AFTER are computed. Verify same or explicitly
+  identified arrival epoch, consistent reference frames, correct target
+  ephemeris, identical propagation conventions, correct candidate/baseline
+  identification, no stale cached prediction, and no misleading reuse of old
+  results. A correction must not be accepted merely because two predictions at
+  different epochs produce an apparently improved distance. Do not alter the
+  acceptance objective until its existing meaning and implementation have been
+  verified.
+- [x] M06-R23-04 Preserve the R22 physical executor invariant. Applied main
+  thrust requires physically valid alignment; do not reintroduce off-axis
+  full-throttle spinning, thrust-vector averaging, hidden forces, velocity
+  assignment, direct attitude snapping, or relaxed alignment limits. At
+  approximately video T=180 s the display briefly reported `FAST COMPLETE /
+  VGO 0.00 / THR 0.43`. Determine whether this represents a legitimate final
+  partial-throttle physics step displayed after the state transition or actual
+  thrust applied after completion. Check authoritative physics-step ordering
+  and do not classify it as a defect without evidence.
+- [x] M06-R23-05 Create a deterministic full-encounter regression. It must
+  establish the absolute target arrival epoch, actual closest companion
+  approach, closest-approach simulation time, target-relative speed,
+  propellant consumed, total replans, total accepted retargets, total
+  attitude-alignment cycles, total burn interruptions, maximum thrust-enabled
+  alignment error, maximum thrust-enabled angular velocity, and survival
+  through the planned encounter. Compare it against the uncorrected COLD
+  baseline. A predicted miss is not sufficient; the authoritative physical
+  trajectory must independently establish successful target-region passage. Do
+  not count an indefinitely receding predicted encounter as success. Landing or
+  capture is not required. Do not change gravitational constants,
+  accelerations, or acceptance thresholds to make the test pass.
+- [~] M06-R23-06 Keep the R21 presentation follow-up unresolved while adding
+  the human-observed stability defects: camera scale changes dramatically,
+  route context repeatedly disappears, plan annotations change too quickly to
+  read, and live numbers/transient events lack visual stability. Decouple
+  display update frequency from planner cadence, retain truthful current values
+  and event timestamps, and use stable camera framing with bounded temporal
+  smoothing. Do not freeze simulation physics or guidance merely to improve
+  presentation.
+- [~] M06-R23-07 Re-run the complete relevant automated suite, preserve the
+  established V14-C landing-timeout baseline, produce a headless deterministic
+  trace and concise comparative measurements, and keep large traces in
+  diagnostic artifacts rather than `TASKS.md`. When automated verification is
+  complete, return to `HUMAN_VERIFICATION` with `M06-R21-H01`,
+  `M06-R22-H01`, and the new `M06-R23-H01` gate explicit and unresolved.
+
+### M06-R23 preservation constraints
+
+- [ ] M06-R23-P01 Preserve the R22 full-range alignment-safety invariant and
+  the demonstrated removal of full-throttle spinning / thrust-vector averaging.
+- [ ] M06-R23-P02 Keep all transfer solving out of the 120 Hz HOT path; the
+  fast executor remains O(1) per step.
+- [ ] M06-R23-P03 Preserve emergency correction and abort behavior.
+- [ ] M06-R23-P04 Do not change gravitational constants, main acceleration, or
+  acceptance thresholds merely to make WARM converge.
+- [ ] M06-R23-P05 Keep R21 ownership of graphical defects and do not freeze
+  simulation physics or guidance for presentation purposes.
+- [ ] M06-R23-P06 Do not commit, do not self-accept human gates, and do not
+  advance to autoland-primary.
+
+### M06-R23 derived implementation tasks
+
+- [x] M06-R23-D01 Add a headless WARM plan/epoch trace that records the
+  arrival-epoch, departure-state, predicted-terminal, and fuel-cost fields for
+  every accepted WARM plan.
+- [~] M06-R23-D02 Add a headless retarget-lifecycle trace that distinguishes
+  candidate generation, cache acceptance, and replacement of an active
+  physical correction, and measures interrupted corrections.
+- [x] M06-R23-D03 Audit the BEFORE/AFTER terminal-miss computation and apply
+  only a narrow correctness fix if an epoch/frame/staleness defect is proven.
+- [x] M06-R23-D04 Audit the authoritative ordering around `FAST COMPLETE` and
+  partial thrust; add a regression if a post-completion thrust defect is
+  proven.
+- [x] M06-R23-D05 Implement only an evidence-supported bounded retarget
+  persistence / acceptance-hysteresis / safe-boundary retargeting rule.
+- [ ] M06-R23-D06 Implement presentation-stability decoupling from planner
+  cadence while preserving truthful current values and event timestamps.
+- [x] M06-R23-D07 Add the deterministic full-encounter closed-loop regression
+  comparing the WARM physical trajectory against the COLD baseline.
+- [~] M06-R23-D08 Run the R23 verification battery and update durable state to
+  `ACTIVE / HUMAN_VERIFICATION / M06-R23`, leaving R21-H01, R22-H01, and
+  R23-H01 unresolved.
+
+### M06-R23 automated verification
+
+- [x] M06-R23-V01 The WARM arrival-epoch trace proves that the plotted arrival
+  marker and displayed trajectory use the correct absolute arrival epoch,
+  departure state, and coordinate frame; any rolling arrival horizon is
+  intentional, documented, and bounded toward finite convergence.
+- [~] M06-R23-V02 The retarget-lifecycle trace bounds interrupted active
+  corrections and distinguishes candidate generation, trajectory acceptance,
+  and active-correction replacement.
+- [~] M06-R23-V03 The BEFORE/AFTER terminal-miss tests verify the same
+  explicitly identified epoch and frame and reject stale or mixed-epoch
+  acceptance logic.
+- [x] M06-R23-V04 The R22 full-range alignment invariant and existing
+  node-executor / flight-computer / transfer-warm / predictor / debug-subsystem
+  / camera tests remain green.
+- [x] M06-R23-V05 The deterministic full-encounter regression independently
+  establishes physical closest approach and target-region passage against the
+  COLD baseline, rather than relying on a predicted miss.
+- [ ] M06-R23-V06 Presentation-stability checks pass where automatable,
+  including bounded camera framing and decoupling of display update cadence
+  from planner cadence.
+- [x] M06-R23-V07 Full `ctest` returns to the known baseline with only the
+  unrelated V14-C landing timeout red.
+
+### M06-R23 human verification
+
+- [H] M06-R23-H01 WARM rendezvous convergence, retarget stability, and
+  presentation-stability gate.
+  Run: `./build/lander_gui --debug-subsystem transfer-warm`. The human must
+  confirm:
+  1. The WARM arrival epoch / TOF demonstrates finite-time convergence rather
+     than a permanently receding encounter.
+  2. The craft physically passes through the intended companion target region
+     without crash.
+  3. Retargets do not repeatedly interrupt an active physical correction.
+  4. Burns materially reduce VGO when sustained.
+  5. The R22 full-throttle spinning defect has not returned.
+  6. The display remains visually stable and readable during the encounter.
+  7. No teleport / hidden force is visible.
+  8. Abort remains clean.
+  Do not self-complete this gate. Do not proceed to autoland-primary before
+  explicit human acceptance of R21-H01, R22-H01, and R23-H01.
+
 ## Inherited unresolved human gates
 
 These remain unresolved and must not be inferred complete from later automated
-work. Preserve them while M06 remains active (last completed subsystem cell:
-TRANSFER-COLD / M06-R20; no new M06 cell is active yet).
+work. Preserve them while M06 remains active (current subsystem cell:
+TRANSFER-WARM / M06-R21, active follow-up M06-R23).
 
 - [H] M06-R11-H01 Trustworthy-diagnostics visual pass: confirm corrected
   labels/units/body-relative readouts in the debug harness.
@@ -695,8 +1455,12 @@ TRANSFER-COLD / M06-R20; no new M06 cell is active yet).
 ## Known unresolved / deferred issues
 
 - `M06-R6-V14` remains incomplete because the V14-C cross-body soft-land case
-  is the sole current `ctest` failure (11/12 baseline). Do not hide or weaken it;
-  decide/fix it in the appropriate landing cell before M06 closeout.
+  is the sole designated `ctest` baseline watch-item (11/12 nominal baseline).
+  Do not hide or weaken it; decide/fix it in the appropriate landing cell before
+  M06 closeout. In the R23 verification run (2026-10-09) the full `ctest`
+  returned **12/12** (including `lander_landing_tests`), i.e. V14-C did not
+  reproduce as a failure in that run (likely timing/flaky); confirm during human
+  re-verification rather than assuming it closed.
 - `PRED-01..PRED-08`, `SIM-COLL-01`, `TFD-1`, and `TFD-2` remain open in
   `docs/m06-predictor-physics-issues.md`. They are not silently closed by R18.
 - Deferred camera/UI polish: SYSTEM-view auto-fit can zoom too far out after

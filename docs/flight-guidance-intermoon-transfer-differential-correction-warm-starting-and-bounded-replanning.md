@@ -256,6 +256,37 @@ When:
 
 start from the previous solution.
 
+A warm replan targets the cached absolute arrival epoch.
+
+As the solve epoch advances, the remaining flight duration and its period
+fraction shrink. The solver does not roll a fixed TOF horizon forward, because
+the target body is moving and a rolling horizon keeps moving the arrival shell
+and can leave a persistent one-step correction.
+
+The previous departure velocity is the warm-start seed. It sits in the same
+velocity basin as the current solution, so the bounded correction converges
+even when the craft is off the nominal arc (for example mid injection burn).
+Seeding instead from the raw current state velocity starts the correction in
+the wrong basin when the craft is far from the arc and drives repeated
+cold-fallback re-targets, so it is not used.
+
+If the fixed-epoch correction fails, or if the remaining horizon falls below
+the minimum solve horizon, a bounded cold fallback may select a new later
+feasible arrival epoch.
+
+That fallback is bounded by a terminal-completion rule (bounded retarget
+persistence / safe-boundary retargeting). Once the guided craft reaches the
+destination body's clearance shell, the transfer objective -- a finite passage
+through the target region -- is achieved. The midcourse completes at that
+boundary: it disengages the slow planner and the fast correction so the craft
+coasts through, and it does not run another cold fallback that would drag the
+arrival epoch forward to a later one. Without this rule the cold fallback
+reselects a later epoch at every reached epoch, the arrival recedes
+indefinitely, and the repeated re-aims (the last a degenerate large impulse)
+drive the craft into the companion. The rule runs before the slow solve so a
+burn-state gate cannot preempt completion, and because it commands no thrust it
+cannot violate the full-range alignment-safety invariant.
+
 Ordinary warm replanning should be:
 
     previous solution
