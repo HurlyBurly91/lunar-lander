@@ -11,8 +11,9 @@ Resume autonomous development from durable repository state.
 
 4. Read `PROJECT.md` for product direction.
 
-5. Read `STATUS.md` to identify milestone, State, Phase, active request, active
-   specification, and whether experience retrieval is enabled.
+5. Read `STATUS.md` to identify milestone, State, Phase, active request, selected
+   `Next-Gate` when present, active specification, and whether experience
+   retrieval is enabled.
 
 6. Read the active milestone specification and `TASKS.md`. Reconstruct unresolved
    requirements, preservation constraints, dependencies, evidence coverage,
@@ -75,8 +76,29 @@ Resume autonomous development from durable repository state.
     not impossibility. Revalidate or narrow a typed conclusion when its evidence,
     scope, repository bindings, or assumptions changed.
 
-20. Update `STATUS.md` only when milestone State, Phase, or active request
-    changes.
+20. Update `STATUS.md` only when milestone State, Phase, active request, or the
+    selected human `Next-Gate` changes.
+
+20a. Before entering or resuming `HUMAN_VERIFICATION`, read
+     `.durable-state/framework/HUMAN_GATE_READINESS.md`.
+
+20b. Select the exact pending `[H]` task in `STATUS.md` as `Next-Gate` when more
+     than one human gate is pending. Set `Active-Request` to that gate's request
+     group. Do not keep the preceding engineering follow-up as active merely
+     because it produced the human-test target.
+
+20c. Verify the selected gate's full `Requires` / `Blocked-By` closure. Resolve
+     all pre-gate `Dxx` / `Vxx` work in the active request. Open machine work may
+     remain only when it explicitly depends on the selected human gate.
+
+20d. When human verification depends on committed, pushed, deployed, packaged,
+     or otherwise published work, represent that boundary as a `Dxx`/`Vxx`
+     prerequisite of the human gate and record the actual revision and external
+     equality. Intended publication is not established readiness.
+
+20e. If any readiness condition is false, remain in `IMPLEMENTATION`,
+     `AUTOMATED_VERIFICATION`, or `FOLLOW_UP`; do not advance to
+     `HUMAN_VERIFICATION` merely because it is the eventual destination.
 
 21. Retrieve a small set of experience only when enabled and precedent may
     materially alter strategy. Skip routine trial-to-trial retrieval.
