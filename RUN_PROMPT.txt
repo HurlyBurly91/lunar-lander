@@ -22,3 +22,8 @@ Lunar Lander resume additions:
    push workflow. Never force-push or rewrite history.
 8. Stop at required human-visible verification rather than attempting visual
    inspection with the text-only agent.
+9. Validate schema-2 project state using the installed local validator:
+   `python3 .durable-state/framework/validator.py --strict .`
+   This does not require a separately cloned central framework checkout.
+   Historical-recorded verification is archival provenance, not a freshly
+   executed test or authorization to accept outstanding human gates.
