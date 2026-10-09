@@ -5,6 +5,7 @@ Milestone: M06
 State: ACTIVE
 Phase: HUMAN_VERIFICATION
 Active-Request: M06-R23
+Next-Gate: M06-R23-H01
 Previous: M05
 Spec: milestones/M06-flight-computer-and-maneuver-planning.md
 Ledger: TASKS.md
@@ -30,10 +31,15 @@ every 2.5 s, banner shown 3.0 s, replaced route kept on screen faded for
 oracle was reworked (WARM completes at 73.81 s, closest approach 42.1 m,
 minimum clearance 4.49 m, 14 burns, fuel 96/1000, no crash; the COLD baseline
 never completes). The verification battery returns 12/12 ctest (V14-C did not
-reproduce). This follow-up work is uncommitted on top of provisional
-checkpoint `f1c2449`; that commit is not human acceptance.
+reproduce). The completed R23 follow-up implementation was provisionally committed and
+published at `45b804944cdd013c9e7e7b56fc9aadbb74931c2a`. This is the
+engineering checkpoint for the pending GUI review, not human acceptance.
 
 The three unresolved human gates remain: `M06-R21-H01` (FAILED on
 2026-10-09), `M06-R22-H01` (FAILED on 2026-10-09), and `M06-R23-H01`
 (awaiting human review, including the presentation-stability observation).
 Schema-2 migration remains a metadata/evidence-ledger change only.
+
+Human verification is next for `M06-R23-H01` against the published R23
+implementation; R21-H01 and R22-H01 are still failed and require explicit
+re-verification. The framework update does not modify the game implementation.

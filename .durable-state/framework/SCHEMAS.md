@@ -181,6 +181,14 @@ loaders consume only explicitly accepted and validated runtime schemas.
 
 ## 4. `TASKS.md` — bounded live execution ledger
 
+Existing stable identifiers are preserved. Numeric milestones such as `M14` and
+uppercase letter-suffixed milestones such as `M14A` are both valid. This
+applies consistently to status headers, requests, task IDs, references and
+follow-ups (for example `M14A-R1-D04` and `M14A-R2-F01-01`).
+Do not rename an existing milestone to satisfy a validator; lowercase
+suffixes and malformed IDs remain invalid.
+
+
 `TASKS.md` is authoritative live execution state, not permanent history.
 
 Header:

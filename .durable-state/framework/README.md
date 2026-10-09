@@ -42,14 +42,31 @@ hash. The updater refuses to overwrite locally modified framework files.
 
 ## Schema 2 executable semantics
 
-Schema 2 preserves the bounded state model and adds three mechanically supported
-semantics. Framework 1.1.1 additionally recognizes historical follow-up IDs
-and provenance-bound legacy evidence when migrating existing repositories:
+Schema 2 preserves the bounded state model and adds mechanically supported
+semantics:
 
 ```text
 typed decision-shaping conclusions
 explicit bidirectional requirement-to-evidence coverage
 deterministic state/evidence validation
+human-gate readiness and prerequisite closure
+```
+
+Framework 1.1.1 added historical follow-up IDs and provenance-bound legacy
+evidence for migrations. Framework 1.1.3 adds established-state enforcement for
+`HUMAN_VERIFICATION`, including selected-gate disambiguation, active-request
+alignment, transitive prerequisite checks, and rejection of unresolved pre-gate
+machine work. Framework 1.1.3 excludes Python-generated `__pycache__/` and
+`.pyc` files from payload checksums and installed snapshots, preventing
+validator execution from invalidating its own immutable source-payload hash.
+
+Relevant framework-owned contracts:
+
+```text
+AGENTS.md
+SCHEMAS.md
+HUMAN_GATE_READINESS.md
+RUN_PROMPT.txt
 ```
 
 `validator.py` is part of the versioned payload. It checks mechanically decidable

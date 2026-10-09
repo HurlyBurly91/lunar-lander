@@ -10,5 +10,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # historical evidence HEADs must be resolvable
+      - name: Initialize pinned SDL3 source
+        run: git submodule update --init --depth 1 third_party/SDL
+      - name: Configure headless regressions
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSDL_UNIX_CONSOLE_BUILD=ON
+      - name: Build headless test targets
+        run: |
+          cmake --build build --parallel 4 --target \
+            lander_tests lander_binary_tests lander_camera_tests \
+            lander_starfield_tests lander_guarded_actions_tests \
+            lander_render_geom_tests lander_flight_computer_tests \
+            lander_predictor_tests lander_landing_tests \
+            lander_transfer_warm_tests lander_debug_subsystem_tests \
+            lander_pred_frame_tests
+      - name: Run recorded R23 regression commands
+        run: |
+          ./build/lander_transfer_warm_tests
+          ./build/lander_debug_subsystem_tests
+          ctest --test-dir build --output-on-failure --parallel 2 --timeout 600
+      - name: Print material fingerprint for current CI-tested tree
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+          script = Path('.durable-state/framework/validator.py').resolve()
+          spec = importlib.util.spec_from_file_location('r23_validator', script)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          result = module.Validator(Path('.')).worktree_fingerprint(
+              '45b804944cdd013c9e7e7b56fc9aadbb74931c2a'
+          )
+          print('R23_TESTED_MATERIAL_FINGERPRINT=' + str(result))
+          PY
       - name: Validate durable state
         run: python3 .durable-state/framework/validator.py --strict .
+      - name: Verify managed framework payload checksum
+        shell: bash
+        run: |
+          expected=$(awk -F= '$1 == "PAYLOAD_SHA256" { print $2 }' .durable-state/MANIFEST)
+          actual=$(
+            (
+              cd .durable-state/framework
+              while IFS= read -r -d '' path; do
+                printf '%s\0' "${path#./}"
+                sha256sum -- "$path" | awk '{print $1}'
+              done < <(find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z)
+            ) | sha256sum | awk '{print $1}'
+          )
+          test -n "$expected" && test "$actual" = "$expected"

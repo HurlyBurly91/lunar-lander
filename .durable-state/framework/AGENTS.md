@@ -7,10 +7,11 @@ specialize it in the project root `AGENTS.md`.
 The baseline durable-state control plane must remain complete when experience
 retrieval is disabled. Conversation history is not authoritative project state.
 
-Detailed generic schemas are in:
+Detailed generic schemas and transition contracts are in:
 
 ```text
 .durable-state/framework/SCHEMAS.md
+.durable-state/framework/HUMAN_GATE_READINESS.md
 ```
 
 ## Durable-state map
@@ -132,6 +133,39 @@ ACTIVE / HUMAN_VERIFICATION
 
 Preserve unresolved earlier human items. Never fabricate acceptance.
 
+## Human-gate readiness
+
+`HUMAN_VERIFICATION` is established state, not transition intent. Read
+`.durable-state/framework/HUMAN_GATE_READINESS.md` before entering or resuming
+that phase.
+
+The phase is legal only when:
+
+- a specific pending `[H]` task is selected;
+- `Active-Request` is the selected gate's request group;
+- every transitive `Requires:` / `Blocked-By:` prerequisite is verified or
+  superseded;
+- no unresolved pre-gate `Dxx` or `Vxx` task remains in the active request;
+- the exact artifact, revision, environment, or published target for human
+  inspection is durably identified;
+- repository-specific checkpoint/push/deploy/publication prerequisites are
+  complete when the gate depends on them.
+
+Write `Next-Gate: Mxx-Rn-Hnn` in `STATUS.md` when selecting the gate. A single
+pending gate may be inferred for compatibility; multiple pending gates require
+an explicit pointer.
+
+Open machine work may remain only when it explicitly depends on the selected
+human gate and therefore cannot execute before the human decision. If machine
+work, verification, checkpointing, or publication is still active, remain in
+`IMPLEMENTATION`, `AUTOMATED_VERIFICATION`, or `FOLLOW_UP`.
+
+Do not introduce a generic publication phase. Model publication/checkpoint work
+as a `Dxx`/`Vxx` prerequisite and link it to the human gate. Consequential
+publication should normally use a `Vxx` item recording actual revision and
+remote/deployment equality. Prose such as “publication finishing” is not
+completion evidence.
+
 ## Execution and checkpoint granularity
 
 For substantive work:
@@ -247,10 +281,11 @@ HEAD=<commit>; WORKTREE=CLEAN
 HEAD=<commit>; DIFF-SHA256=<material-worktree fingerprint>
 ```
 
-The framework fingerprint excludes only live ledger/provenance and vendored framework-management files whose own
-recording would otherwise be self-referential. Changes to implementation, tests,
-canonical docs, sources, configuration, or other material files can stale the
-evidence and require review or rerun.
+The framework fingerprint excludes only live ledger/provenance and vendored
+framework-management files whose own recording would otherwise be
+self-referential. Changes to implementation, tests, canonical docs, sources,
+configuration, or other material files can stale the evidence and require review
+or rerun.
 
 ## Deterministic validation
 
@@ -268,13 +303,17 @@ mechanically decidable claims, including:
 - explicit bidirectional requirement-to-evidence coverage;
 - required evidence fields and explicit human acceptance;
 - typed decision-shaping conclusion completeness;
+- human-gate selection, active-request alignment, prerequisite closure, and
+  absence of unresolved pre-gate work;
 - referenced canonical documents and implementation paths;
 - repository-state applicability warnings;
 - absence of unresolved work in a `COMPLETE` milestone.
 
 The validator does not execute project commands, determine mathematical truth,
-or replace human judgment. A clean validator result proves schema consistency,
-not application correctness.
+infer whether publication is required, or replace human judgment. Repository
+policy must express publication/checkpoint requirements as tasks and dependency
+links. A clean validator result proves schema consistency, not application
+correctness.
 
 ## Experience memory
 

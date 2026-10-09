@@ -32,8 +32,8 @@ correctness, retarget stability, and physical correction convergence request.
 must be preserved, while WARM convergence and presentation stability remain
 open. R23's automated follow-up work (D02/D06, the per-step completion
 refinement, the full-encounter oracle, and the 12/12 battery) is complete as
-of 2026-10-09 but uncommitted on top of provisional checkpoint f1c2449; the
-three human gates remain unresolved. `M06-R21-H01` FAILED on
+of 2026-10-09 and was provisionally published in commit 45b8049; that
+checkpoint does not accept any human gate. The three gates remain unresolved. `M06-R21-H01` FAILED on
 2026-10-08: the human watched the complete transfer-warm run and observed
 full-throttle, materially misaligned / approximately orthogonal ACT/VGO burn
 segments, a powered spin that averaged thrust, and a terminal crash at the
@@ -1773,8 +1773,8 @@ R23-02 churn and the R23-03/R23-04 "incompatible terminal states" / "FAST
 COMPLETE with stale THR" symptoms, which were all driven by the receding
 epoch. The R22 full-throttle invariant is preserved (whole-run
 `max_align_err` 0, `max_abs_omega` 0 in the transfer-warm suite). The
-2026-10-09 follow-up work (uncommitted on top of provisional checkpoint
-f1c2449) then completed D02, D06, and the battery: D05's terminal-completion
+2026-10-09 follow-up work (provisionally published in commit 45b8049,
+not human-accepted) then completed D02, D06, and the battery: D05's terminal-completion
 check moved from `maybe_replan` into an O(1) per-step check in
 `TransferMidcourse::after_step` (the arrival-shell crossing is detected at the
 crossing step and completion preempts any COLD fallback, keeping the solver
@@ -1963,7 +1963,8 @@ issues). The three human gates stay unresolved.
   Oracle: integration-or-end-to-end
   Expected: PASS with the lifecycle identities: total generations = holds + retargets; retargets = interrupted + re-aims; clean completion at the R23-05 entry epoch; no post-completion planner activity; interrupted corrections bounded; a single epoch change.
   Result: PASS (2026-10-09): 14400 fixed-step ticks (120 s window); completion at t=73.81 s (matches the R23-05 entry; landed=0); 584 candidate generations = 428 holds + 156 retargets (8 interrupted active corrections + 148 benign re-aims); 1445 planner invocations short-circuited by the R19 burn-boundary guard; 1 epoch change (54.23 -> 78.15); 0 post-completion activity; retarget/generation ratio 0.267; the window-end crash at t=98.26 s occurs only in the uncommanded return-orbit phase after completion, outside the transfer-lifecycle scope (the R23-05 safe-exit window covers terrain clearance to 84.1 s).
-  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Repository-State: HEAD=45b804944cdd013c9e7e7b56fc9aadbb74931c2a; DIFF-SHA256=4bc27ab0bb4fc09f9c173f77d09320dd26fc9239d3d1f1572030673bf358bd46
+  Reverified: PASS 2026-10-09 GitHub Actions run 38003379902, Ubuntu Release headless tests; ./build/lander_transfer_warm_tests; full CTest 12/12 (124.10 s); generated material fingerprint for all tested code/configuration
   Limitations:
     - Single deterministic fixture window; interrupted/re-aim classification relies on the harness' armed-VGO bookkeeping rather than an independent observer
 - [x] M06-R23-V03 The BEFORE/AFTER terminal-miss tests verify the same
@@ -1976,7 +1977,8 @@ issues). The three human gates stay unresolved.
   Oracle: independent-existing-regression
   Expected: The R21 telemetry-semantics checks pass (the reported correction delta-v matches the solver node recomputed at the same identified state; a below-threshold correction does not re-target) and the per-plan trace reports the achieved miss at the arrival epoch identified by each accepted plan.
   Result: PASS (2026-10-09): lander_transfer_warm_tests fully green, including test_r21_telemetry_semantics and the per-plan epoch/miss trace (each accepted WARM plan records its arrival epoch and achieved miss; no stale or mixed-epoch acceptance observed in the run).
-  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Repository-State: HEAD=45b804944cdd013c9e7e7b56fc9aadbb74931c2a; DIFF-SHA256=4bc27ab0bb4fc09f9c173f77d09320dd26fc9239d3d1f1572030673bf358bd46
+  Reverified: PASS 2026-10-09 GitHub Actions run 38003379902, Ubuntu Release headless tests; ./build/lander_transfer_warm_tests; full CTest 12/12 (124.10 s); generated material fingerprint for all tested code/configuration
   Limitations:
     - Headless arithmetic-identity and epoch-identification checks; visual BEFORE/AFTER observation remains with M06-R23-H01
 - [x] M06-R23-V04 The R22 full-range alignment invariant and existing
@@ -2003,7 +2005,8 @@ issues). The three human gates stay unresolved.
   Oracle: integration-or-end-to-end
   Expected: The WARM full-encounter run independently establishes physical closest approach, target-region passage, and finite completion against the uncorrected COLD baseline, with no threshold or physics change.
   Result: PASS (2026-10-09, reworked full-encounter oracle): WARM ticks 10090 (84.1 s window); completes at t=73.81 s (entry == completion, no landing); closest approach 42.1 m at t=76.38 s (relative speed 14.73 m/s); minimum clearance 4.49 m; safe exit 106.5; 156 retargets; 14 burns; 1 epoch change (54.23 -> 78.15); fuel 96/1000; no crash. COLD baseline (14400 ticks) never completes: closest 235.1 m, minimum clearance 17.40 m.
-  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Repository-State: HEAD=45b804944cdd013c9e7e7b56fc9aadbb74931c2a; DIFF-SHA256=4bc27ab0bb4fc09f9c173f77d09320dd26fc9239d3d1f1572030673bf358bd46
+  Reverified: PASS 2026-10-09 GitHub Actions run 38003379902, Ubuntu Release headless tests; ./build/lander_transfer_warm_tests; full CTest 12/12 (124.10 s); generated material fingerprint for all tested code/configuration
   Limitations:
     - Single deterministic fixture seed; the per-step shell-completion invariant is verified within the same binary (test_r23_terminal_completion_per_step, PASS)
     - The schema-1 historical record remains in records/M06-schema1-live-TASKS.snapshot.md
@@ -2018,7 +2021,8 @@ issues). The three human gates stay unresolved.
   Oracle: same-change-generated-test
   Expected: Held-zoom stabilisation: repeated aggressive re-plan target changes leave the camera zoom exactly unchanged while the centre keeps easing; the existing per-frame zoom ratio bound (1.35) still applies while easing is enabled; all values remain finite.
   Result: PASS (2026-10-09): the new test_transfer_debug_camera_zoom_hold (60 churn frames; zoom invariant; centre moving; finite) and the pre-existing test_transfer_debug_camera_stability both pass; the GUI now publishes the route display, banner, and numeric readout at most every 2.5 s of simulation time (banner shown 3.0 s; replaced route kept on screen faded for 8 s; camera scale held after the initial fit so the planner's re-fit cadence no longer drives the zoom) — presentation only, no physics or guidance change.
-  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Repository-State: HEAD=45b804944cdd013c9e7e7b56fc9aadbb74931c2a; DIFF-SHA256=4bc27ab0bb4fc09f9c173f77d09320dd26fc9239d3d1f1572030673bf358bd46
+  Reverified: PASS 2026-10-09 GitHub Actions run 38003379902, Ubuntu Release headless tests; ./build/lander_debug_subsystem_tests; full CTest 12/12 (124.10 s); generated material fingerprint for all tested code/configuration
   Limitations:
     - Headless verification of the pure presentation helper; on-screen visual stability during a live encounter remains with M06-R23-H01
 - [x] M06-R23-V07 Full `ctest` returns to the known baseline with only the
@@ -2030,7 +2034,8 @@ issues). The three human gates stay unresolved.
   Oracle: independent-existing-regression
   Expected: The full automated suite is green, or returns to the established baseline (the V14-C landing timeout is the only known watch item).
   Result: PASS (2026-10-09): 12/12 ctest green, including lander_landing_tests (V14-C did not reproduce; see Known unresolved / deferred issues); total wall time ~220 s.
-  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Repository-State: HEAD=45b804944cdd013c9e7e7b56fc9aadbb74931c2a; DIFF-SHA256=4bc27ab0bb4fc09f9c173f77d09320dd26fc9239d3d1f1572030673bf358bd46
+  Reverified: PASS 2026-10-09 GitHub Actions run 38003379902, Ubuntu Release headless tests; ctest --test-dir build --output-on-failure --parallel 2 --timeout 600; full CTest 12/12 (124.10 s); generated material fingerprint for all tested code/configuration
   Limitations:
     - V14-C is flaky, so a 12/12 result does not prove closure of M06-R6-V14; it remains a designated watch item
 ### M06-R23 human verification
@@ -2052,6 +2057,11 @@ issues). The three human gates stay unresolved.
   Do not self-complete this gate. Do not proceed to autoland-primary before
   explicit human acceptance of R21-H01, R22-H01, and R23-H01.
 
+  Requires:
+    - M06-R23-D08
+    - M06-R23-V05
+    - M06-R23-V06
+    - M06-R23-V07
   Covers:
     - M06-R23-02
     - M06-R23-03
