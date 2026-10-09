@@ -12,3 +12,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate durable state
         run: python3 .durable-state/framework/validator.py --strict .
+      - name: Verify managed framework payload checksum
+        shell: bash
+        run: |
+          expected=$(awk -F= '$1 == "PAYLOAD_SHA256" { print $2 }' .durable-state/MANIFEST)
+          actual=$(
+            (
+              cd .durable-state/framework
+              while IFS= read -r -d '' path; do
+                printf '%s\0' "${path#./}"
+                sha256sum -- "$path" | awk '{print $1}'
+              done < <(find . -type f ! -name '*.pyc' ! -path '*/__pycache__/*' -print0 | LC_ALL=C sort -z)
+            ) | sha256sum | awk '{print $1}'
+          )
+          test -n "$expected" && test "$actual" = "$expected"
