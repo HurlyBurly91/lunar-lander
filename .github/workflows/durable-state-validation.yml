@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # historical evidence HEADs must be resolvable
       - name: Validate durable state
         run: python3 .durable-state/framework/validator.py --strict .
       - name: Verify managed framework payload checksum
