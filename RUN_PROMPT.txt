@@ -1,105 +1,24 @@
-Resume autonomous development from durable repository state.
+Framework-Resume: .durable-state/framework/RUN_PROMPT.txt
 
-1. Read AGENTS.md and obey its operating invariants.
+Read and execute the generic resume procedure above, then apply the project
+specializations in root `AGENTS.md`.
 
-2. Read PROJECT.md for project direction and roadmap context.
+Lunar Lander resume additions:
 
-3. Read STATUS.md to identify the active milestone, current milestone state,
-   current execution phase when active, active request group if present, and
-   active milestone specification.
-
-4. Read the active milestone specification referenced by STATUS.md.
-
-5. Read only the docs/ files referenced by the active milestone or TASKS.md,
-   plus any additional canonical document directly required by the current
-   domain. Do not load the whole docs/ tree by default.
-
-6. While inspecting source, if a region contains BEGIN CANONICAL ALGORITHM and
-   Reference: docs/..., read that referenced document before modifying,
-   moving, or refactoring the marked implementation.
-
-7. Read TASKS.md and reconstruct unresolved user requirements, current tasks,
-   dependencies, relevant completed verification, blockers, pending human
-   verification, supersession links, and the current investigative question.
-
-8. Treat repository durable state as authoritative over missing or incomplete
-   conversation history.
-
-9. If this repository is still at M01 / NOT_STARTED, use the current explicit
-   user request to populate PROJECT.md, define the first milestone contract,
-   create M01-R1 and stable requirement IDs in TASKS.md, and transition
-   STATUS.md and TASKS.md to ACTIVE / IMPLEMENTATION before modifying code.
-   Do not fabricate experience records during bootstrap.
-
-10. If the current user request adds, changes, supersedes, or removes a
-    requirement, persist that change in TASKS.md with stable IDs before
-    implementation.
-
-11. If human feedback creates new implementation or automated-verification
-    work, persist a new request group, preserve unresolved human items, and
-    transition out of HUMAN_VERIFICATION before modifying code.
-
-12. Determine whether the next work is a durable decision boundary or routine
-    inner-loop experimentation under an already-persisted request/task.
-
-13. For a bounded investigative loop, reuse the existing request group and
-    derived task. Do not create a new durable ID for each capture, measurement,
-    parameter value, or candidate trial.
-
-14. Keep exhaustive experimental evidence in generated machine-readable
-    artifacts such as JSON, TSV, CSV, logs, captures, or analysis outputs.
-    Persist only the compact resume-critical conclusion, decisive evidence,
-    material uncertainty, artifact reference when useful, and next direction.
-
-15. Update STATUS.md only when the actual milestone state, execution phase, or
-    active request changes. Do not rewrite it merely because another
-    observation arrived.
-
-16. If `STATUS.md` says `Experience-Retrieval: ENABLED`, retrieve a small set of relevant
-    active experiences only when precedent may materially affect the current
-    strategy. Once a bounded investigative strategy is established, skip
-    retrieval for routine trial-to-trial iteration.
-
-17. Record retrieval telemetry only when retrieval occurred. Compare any
-    materially relevant precedent with the current situation, account for
-    differences, and record which precedent actually influenced the decision.
-
-18. Resume from the highest-priority non-blocked task consistent with
-    dependency ordering. A single investigative task may run multiple bounded
-    trials before another durable checkpoint is needed.
-
-19. Checkpoint durable state when the current decision would be expensive to
-    reconstruct after context loss: for example a changed requirement, causal
-    conclusion, accepted/rejected strategy or topology, blocker, human gate,
-    long interruption, handoff, or risky operation. Context growth or another
-    ordinary measurement is not sufficient by itself.
-
-20. Keep TASKS.md current at those durable boundaries. Do not turn it into an
-    exhaustive experimental notebook.
-
-21. Run relevant automated verification when implementation is ready and
-    attach concise evidence to the corresponding tasks.
-
-22. Do not mark human-verification requirements complete without explicit
-    human acceptance.
-
-23. Once the result of a precedent-influenced decision is observable, classify
-    materially used precedent as helpful, neutral, or misleading and associate
-    the resulting decision outcome where practical.
-
-24. Evaluate experience retention only after a materially informative outcome
-    or durable decision boundary. Do not retain ordinary inner-loop trials.
-
-25. Read historical records selectively when needed; do not load all records
-    or experiences by default.
-
-26. Do not use records/ as a running trial-by-trial laboratory notebook. Raw
-    evidence belongs in artifacts; records summarize meaningful causal
-    checkpoints and milestone closeout.
-
-27. Do not advance to the next milestone until acceptance criteria, required
-    human verification, accepted docs/ reconciliation, closeout record, status
-    update, and repository commit requirements are satisfied.
-
-28. If experience retrieval is disabled, skip retrieval/usefulness steps and
-    continue with the same bounded durable-state workflow.
+1. Treat `codex/`, `opencode/`, `evaluator/`, `_common/`, and `benchmark-runs/`
+   as historical benchmark material. Do not inspect, modify, stage, clean,
+   restore, or commit them during normal game work.
+2. Respect the text-only model boundary. Do not read image files or screenshots
+   back into the model. Generate visual artifacts only for explicit human review.
+3. Retrieve experience only when `STATUS.md` says
+   `Experience-Retrieval: ENABLED`.
+4. Read only the Lunar canonical docs relevant to current physics/guidance work,
+   including direct canonical source references.
+5. Initialize the pinned SDL3 submodule when a fresh checkout requires it; do
+   not substitute a machine-local SDL or update its revision incidentally.
+6. Stage only explicit active-project paths. Never use `git add .` or
+   `git add -A`.
+7. Preserve the tracked post-commit hook and ordinary `main` -> `origin/main`
+   push workflow. Never force-push or rewrite history.
+8. Stop at required human-visible verification rather than attempting visual
+   inspection with the text-only agent.
