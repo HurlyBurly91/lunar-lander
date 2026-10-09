@@ -3,7 +3,7 @@
 ```yaml
 Milestone: M06
 State: ACTIVE
-Phase: IMPLEMENTATION
+Phase: HUMAN_VERIFICATION
 Active-Request: M06-R23
 ```
 
@@ -26,7 +26,7 @@ only for provenance or legacy-ID detail, not as active execution state.
 
 ## Current decision boundary
 
-M06 is active in IMPLEMENTATION on the new `M06-R23` WARM rendezvous-epoch
+M06 is active in HUMAN_VERIFICATION on the new `M06-R23` WARM rendezvous-epoch
 correctness, retarget stability, and physical correction convergence request.
 `M06-R21-H01` and `M06-R22-H01` both FAILED on 2026-10-09; R22's spinning fix
 must be preserved, while WARM convergence and presentation stability remain
@@ -79,13 +79,15 @@ Source: USER (2026-10-06)
 State: COMPLETE
 
 - [x] M06-R18-01 Verify the "magic force" observation.
-  Conclusion: CONFIRMED presentation defect, not hidden physics. The authoritative
+  Finding: CONFIRMED presentation defect, not hidden physics. The authoritative
   simulation consumes the executor's real `Input.main_throttle`; the old plume
   renderer used the manual throttle knob, so executor/midcourse/autoland thrust
   could accelerate and burn fuel with no visible plume.
   Evidence: source-path inspection recorded in the pre-migration ledger; current
   implementation routes the exact applied throttle into presentation.
 
+  Verified-By:
+    - M06-R18-V01
 - [x] M06-R18-02 Render engine plume from the actual applied main-engine input.
   Files: `src/gui.cpp`, `include/lander/sim.hpp`, `src/sim.cpp`.
   Evidence: `test_node_executor_presentation` A-E passed 2026-10-06; manual,
@@ -93,6 +95,12 @@ State: COMPLETE
   applied-input presentation source; COMPLETE/ABORT/land/crash/empty-fuel leave
   no latent plume.
 
+  Verified-By:
+    - M06-R18-V01
+    - M06-R18-V02
+    - M06-R18-V03
+    - M06-R18-V04
+    - M06-R18-V05
 - [x] M06-R18-03 Add minimal node-executor scene visualization.
   Requirement: ACT ray from actual thrust axis; VGO ray from exact
   `node_executor.dv_remaining()`; compact executor-state label; fixed-screen
@@ -100,43 +108,106 @@ State: COMPLETE
   Files: `include/lander/debug_subsystem.hpp`, `src/gui.cpp`.
   Evidence: `test_node_executor_overlay` passed 2026-10-06.
 
+  Verified-By:
+    - M06-R18-V06
+    - M06-R18-H01
 - [x] M06-R18-04 Start `--debug-subsystem node-executor` paused with
   `PAUSED FOR NODE EXECUTOR [P] RUN`, leaving the existing executor armed and
   changing no node timing, delta-v, engine, controller, physics, or normal-play
   behavior.
   Evidence: headless fixture smoke produced `ticks=0`, fuel unchanged, rc=0.
 
+  Verified-By:
+    - M06-R18-V07
+    - M06-R18-H01
 ### M06-R18 preservation constraints
 
-- M06-R18-P01 Preserve the canonical node executor: no retune/redesign of
+- [ ] M06-R18-P01 Preserve the canonical node executor: no retune/redesign of
   bang-bang attitude, alignment thresholds, ignition, burn time, VGO accounting,
   final partial throttle, node planning/basis, transfer midcourse, landing
   autopilot, physics, prediction, camera, or M07 scope unless human evidence
   creates a new persisted follow-up request.
-- M06-R18-P02 Preserve the existing numeric executor panel (STATE / NODE / VGO /
+- [ ] M06-R18-P02 Preserve the existing numeric executor panel (STATE / NODE / VGO /
   THR / FUEL / RESULT).
-- M06-R18-P03 Preserve canonical source/document bindings in `src/autopilot.cpp`
+- [ ] M06-R18-P03 Preserve canonical source/document bindings in `src/autopilot.cpp`
   and applicable flight-guidance docs; R18 reads executor state only for display.
 
 ### M06-R18 automated verification
 
 - [x] M06-R18-V01 Applied executor throttle drives physical input and plume even
   when the manual throttle variable is zero.
+  Covers:
+    - M06-R18-01
+    - M06-R18-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R18-V02 ALIGN/WAIT own control with zero main throttle and no plume.
+  Covers:
+    - M06-R18-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R18-V03 BURN has applied throttle > 0, fuel decreases, VGO decreases,
   and per-step delta-v matches `main_accel * throttle * dt` against the zero-input
   reference run.
+  Covers:
+    - M06-R18-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R18-V04 Final partial step uses fractional throttle (~0.30 in the
   4.11 m/s regression) and presentation matches the applied fraction.
+  Covers:
+    - M06-R18-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R18-V05 COMPLETE and ABORT leave zero subsequent thrust/plume;
   landed/crashed/empty-fuel suppression remains.
+  Covers:
+    - M06-R18-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R18-V06 ACT/VGO debug geometry is fixed-screen, camera-rotation-only,
   read-only, and omits invalid/near-zero VGO.
+  Covers:
+    - M06-R18-03
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R18-V07 Build and focused suites pass; full `ctest` is 11/12.
   Sole red: pre-existing `lander_landing_tests` V14-C cross-body soft-land;
   R18 did not modify or mask it. Node-executor paused smoke and normal-game
   smoke both exit 0.
 
+  Covers:
+    - M06-R18-04
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 ### M06-R18 human verification
 
 - [x] M06-R18-H01 Node-executor human gate.
@@ -166,9 +237,24 @@ State: COMPLETE
   8. PHYSICALITY: acceleration coincides with engine thrust/fuel spend; no
      direct velocity snap or "magic force" appearance.
 
+  Covers:
+    - M06-R18-03
+    - M06-R18-04
+  Gate: HUMAN
+  Human-Decision: ACCEPTED
+  Decision-Source: records/M06-schema1-live-TASKS.snapshot.md (explicit human PASS recorded 2026-10-08)
 ### M06-R18 derived implementation tasks
 
 - [x] M06-R18-D01 Actual-applied-throttle presentation source.
+  Conclusion: The previously invisible engine plume was caused by using manual throttle rather than applied engine input for rendering.
+  Conclusion-Status: OBSERVED
+  Conclusion-Scope: Node-executor plume presentation diagnosis in the pre-schema-2 M06-R18 fixture.
+  Conclusion-Evidence:
+    - M06-R18-V01
+  Conclusion-Limitations:
+    - Historical source-path diagnosis and recorded tests; not a new physical-force measurement.
+  Conclusion-Recheck-On:
+    - Changes to applied-input or plume-rendering code.
 - [x] M06-R18-D02 Pure node-executor overlay geometry.
 - [x] M06-R18-D03 Node-executor scene overlay.
 - [x] M06-R18-D04 Paused node-executor fixture/banner.
@@ -207,6 +293,8 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   Files touched: temporary `tests/diag_node_executor.cpp` (+ CMake target;
   removed after the fix is verified) — no behavior change.
 
+  Verified-By:
+    - M06-R19-V01
 - [x] M06-R19-02 Narrow fix: continuous alignment safety during BURN. When the
   executor becomes materially misaligned while BURN -> `main_throttle = 0`
   (physical engine off), continue normal bang-bang attitude correction toward
@@ -232,6 +320,10 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   0.001667 delivery floor, the 0.25 replan tolerance, and the alignment band
   are all preserved unchanged.
 
+  Verified-By:
+    - M06-R19-V03
+    - M06-R19-V04
+    - M06-R19-H01
 - [x] M06-R19-03 Regression test with the exact human failure: arm a
   maneuver, enter BURN while aligned, construct a physically reachable
   attitude-rate / VGO geometry that loses alignment mid-burn; verify
@@ -253,6 +345,8 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   targets (off-axis thrust while misaligned in the small-VGO regime) fails on
   pre-fix code.
 
+  Verified-By:
+    - M06-R19-V02
 - [x] M06-R19-04 Human observability: keep the R18 ACT/VGO rays and numeric
   panel; add one compact diagnostic only if needed (`ERR` in degrees /
   `OMEGA` in rad/s, node-executor mode only, no clutter). A human must be able
@@ -264,6 +358,9 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   human see ACT converging onto VGO, THR dropping to 0 during material
   separation, and thrust resuming only when aligned.
 
+  Verified-By:
+    - M06-R19-V05
+    - M06-R19-H01
 - [x] M06-R19-05 R5-V08 derived-proxy supersession (USER decision, 2026-10-06).
   The R19 continuous alignment-safety re-entry is a bounded, magnitude-gated
   zero-throttle interval in the closed-loop transfer endgame; it causally
@@ -287,20 +384,22 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   Measured: `lander_transfer_warm_tests` R5-V08 ratio 0.63 (min_dist 456.8 /
   start_dist 724.1, 0 retarget-induced crash, 0 land) — PASSES under 0.65.
 
+  Verified-By:
+    - M06-R19-V04
 ### M06-R19 preservation constraints
 
-- M06-R19-P01 Preserve the canonical node executor per
+- [ ] M06-R19-P01 Preserve the canonical node executor per
   `docs/flight-guidance-attitude-bang-bang-control-and-velocity-to-be-gained-node-execution.md`:
   VGO reduced only by actually delivered thrust impulse; desired direction =
   `normalize(VGO)`; ordinary physical attitude/thrust only; no direct state
   mutation; no substantially off-axis forced burn; final partial throttle;
   O(1) HOT; clean abort/fuel/crash/landing. Do NOT replace bang-bang with
   PID/MPC or any other controller.
-- M06-R19-P02 Do not weaken existing tests; do not loosen the alignment
+- [ ] M06-R19-P02 Do not weaken existing tests; do not loosen the alignment
   threshold as the fix mechanism; do not touch physics, camera, M07 scope, or
   other cells. Do not advance to transfer-cold until this executor cell
   passes.
-- M06-R19-P03 Preserve R18 work (applied-throttle plume source, ACT/VGO rays,
+- [ ] M06-R19-P03 Preserve R18 work (applied-throttle plume source, ACT/VGO rays,
   paused fixture, numeric panel) and the canonical source/document bindings in
   `src/autopilot.cpp`. If the fix changes a documented algorithm, update the
   canonical document in the same work.
@@ -316,14 +415,38 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   step 606; raw per-step trace captured, then the temporary
   `tests/diag_node_executor.cpp` / `tests/diag_transfer_r19.cpp` + their CMake
   targets removed after the fix was verified.
+  Covers:
+    - M06-R19-01
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R19-V02 The regression test (M06-R19-03) fails on pre-fix code and
   passes post-fix.
   DONE: `test_node_executor_alignment_safety` fails on the pre-fix executor
   (unbounded off-axis burn) and passes post-fix (both scenarios A and B).
+  Covers:
+    - M06-R19-03
+  Gate: INVARIANT
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R19-V03 Whole-run invariant `main_throttle > 0 => aligned(state)`
   holds (within deterministic tolerance).
   DONE: holds over the entire post-fix run in both regression scenarios
   (magnitude-gated: asserted only in the small-VGO flip-danger regime).
+  Covers:
+    - M06-R19-02
+  Gate: INVARIANT
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R19-V04 Suites: focused node-executor tests,
   `lander_flight_computer_tests`, `lander_debug_subsystem_tests`,
   `lander_predictor_tests`, full `ctest` at the 11/12 baseline (sole red
@@ -333,6 +456,15 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   (pre-existing V14-C cross-body soft-land, failing as a timeout — it hangs on
   HEAD too; not a regression, not fixed here). R5-V08 is GREEN under the
    superseded 0.65 ceiling (M06-R19-05). Node-executor focused suites pass.
+  Covers:
+    - M06-R19-02
+    - M06-R19-05
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R19-V05 Fixture-contract regression (M06-R19-D06): a
   `lander_debug_subsystem_tests` test asserts the node-executor fixture node
   has frame == PRIMARY (0), time ~= t0 + 5 s, dv_prograde == +4.0,
@@ -354,6 +486,14 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   `lander_transfer_warm_tests`, `lander_predictor_tests` all pass; full ctest
   11/12 (sole red = pre-existing V14-C `lander_landing_tests` timeout).
 
+  Covers:
+    - M06-R19-04
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 ### M06-R19 human verification
 
 - [x] M06-R19-H01 Node-executor re-gate (covers M06-R18-H01).
@@ -376,6 +516,12 @@ separated). M06-R18-H01 stays unresolved and is re-run through M06-R19-H01.
   only when re-aligned); COMPLETE reached with no latent thrust; fresh-run
   P-then-X clean permanent ABORT. M06-R18-H01 (re-run here) also PASS.
 
+  Covers:
+    - M06-R19-02
+    - M06-R19-04
+  Gate: HUMAN
+  Human-Decision: ACCEPTED
+  Decision-Source: records/M06-schema1-live-TASKS.snapshot.md (explicit human PASS recorded 2026-10-08)
 ### M06-R19 derived implementation tasks
 
 - [x] M06-R19-D01 Diagnostic harness (temporary; per-step logger over the
@@ -439,6 +585,8 @@ ID per visualization experiment.
   transfer-cold --frames 20` exits 0 with `ticks=0` (paused start); all other
   `--debug-subsystem` modes still run `--frames 3` cleanly.
 
+  Verified-By:
+    - M06-R20-V06
 - [x] M06-R20-02 Render the ACTUAL accepted COLD arc. Build a READ-ONLY display
   trajectory from the accepted `TransferSolution` (`source` / `target` /
   `solve_epoch` / `departure_state` / `departure_velocity` / `time_of_flight` /
@@ -456,6 +604,9 @@ ID per visualization experiment.
    `predict_zero_thrust` on the existing fixed-step grid; it is cached once in
    the GUI fixture, and R20 V01/V02 verify the endpoint and no mutation.
 
+  Verified-By:
+    - M06-R20-V01
+    - M06-R20-V02
 - [x] M06-R20-03 Make the transfer route legible: (A) a `DEP` marker + label at
   the accepted departure state; (B) the full COLD zero-thrust arc drawn in one
   distinctive style/color and labelled `COLD ARC` (not confused with the live
@@ -469,6 +620,9 @@ ID per visualization experiment.
    Evidence: `draw_transfer_cold_debug` renders `DEP`, the labelled `COLD ARC`,
    `ARR`, and the `COMPANION @ ARRIVAL` ghost; no miss line is drawn.
 
+  Verified-By:
+    - M06-R20-V03
+    - M06-R20-H01
 - [x] M06-R20-04 Debug-only transfer fit / camera: in transfer-cold debug mode,
   a read-only debug-view framing that initially fits the PRIMARY/source region,
   the COMPANION/target region, the entire accepted COLD arc, the departure and
@@ -482,6 +636,9 @@ ID per visualization experiment.
    the source/target/arc geometry and leave normal camera behavior unchanged;
    R20 V04 verifies the fit contains the route and does not force body 2.
 
+  Verified-By:
+    - M06-R20-V04
+    - M06-R20-H01
 - [x] M06-R20-05 Keep the existing numeric COLD panel (COLD one-shot,
   PRIMARY -> COMPANION, RESULT SOLVED/NO SOLUTION, MISS, TOF, departure data,
   arrival-relative speed, TERRAIN validated, propagation count, wall time). Add
@@ -489,6 +646,8 @@ ID per visualization experiment.
    large data dump — the scene is meant to make the numbers understandable.
    Evidence: the existing numeric COLD panel in `src/gui.cpp` was left in place.
 
+  Verified-By:
+    - M06-R20-V05
 - [x] M06-R20-06 Solver-failure presentation: if the COLD solve returns no valid
   solution, show NO SOLUTION clearly, draw NO fake transfer arc, synthesize no
   arrival marker, and mutate no state to make a route exist. The debug
@@ -496,20 +655,22 @@ ID per visualization experiment.
    Evidence: `transfer_cold_display` returns invalid / empty for a no-solution
    result, and R20 V06 verifies that no arc, ARR, or target ghost is synthesized.
 
+  Verified-By:
+    - M06-R20-V06
 ### M06-R20 preservation constraints
 
-- M06-R20-P01 Do NOT change: the COLD coarse search, Newton correction,
+- [ ] M06-R20-P01 Do NOT change: the COLD coarse search, Newton correction,
   Jacobian, transfer acceptance miss threshold, terrain-clearance gate,
   transfer candidate ranking, transfer timing fractions, warm replan, the
   midcourse controller, the node executor, the R19 alignment safety, gravity,
   ephemerides, physics, normal camera behavior, normal gameplay, or M07.
-- M06-R20-P02 R20 is PRESENTATION / DEBUG-OBSERVABILITY only. Do not invent a
+- [ ] M06-R20-P02 R20 is PRESENTATION / DEBUG-OBSERVABILITY only. Do not invent a
   second planner or an approximate trajectory; render only the existing accepted
   `TransferSolution`. Do not feed any display geometry into planning or the
   simulation.
-- M06-R20-P03 Do not fix TFD-1 / TFD-2 (or other deferred predictor/transfer
+- [ ] M06-R20-P03 Do not fix TFD-1 / TFD-2 (or other deferred predictor/transfer
   defects) here. This request is observability only.
-- M06-R20-P04 Read-only: building the visual arc and the debug geometry must not
+- [ ] M06-R20-P04 Read-only: building the visual arc and the debug geometry must not
   mutate `Simulation`, `BinarySystem`, or the `TransferSolution`.
 
 ### M06-R20 automated verification
@@ -521,22 +682,62 @@ ID per visualization experiment.
    departure state/velocity, and all samples are finite.
    Evidence: `test_transfer_cold_display_accepted_arc` in
    `tests/test_debug_subsystem.cpp`; `lander_debug_subsystem_tests` passes.
+  Covers:
+    - M06-R20-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V02 No mutation: building the visual arc and the debug geometry
    does not mutate `Simulation`, `BinarySystem`, or the `TransferSolution`.
    Evidence: `test_transfer_cold_display_no_mutation` passes.
+  Covers:
+    - M06-R20-02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V03 Arrival target: the displayed arrival target body position
   comes from `BinarySystem::position(target, arrival_epoch)`, not the current
    simulation time.
    Evidence: `test_transfer_cold_display_arrival_target_future` passes.
+  Covers:
+    - M06-R20-03
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V04 View bounds: the initial transfer-cold debug fit contains the
   departure, the transfer arc, the arrival endpoint, and the relevant
   source/target geometry, and does not require including the distant moonlet
    merely because body 2 exists.
    Evidence: `test_transfer_cold_camera_fit_contains_route` passes.
+  Covers:
+    - M06-R20-04
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V05 Cost accounting: the displayed COLD solver propagation count
   continues to represent solver cost; extra pure display propagation is not
    reported as part of the COLD search cost.
    Evidence: `test_transfer_cold_display_cost_not_reported` passes.
+  Covers:
+    - M06-R20-05
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V06 Mode isolation: the visualization/camera behavior appears only
   in transfer-cold debug mode; normal gameplay and the other subsystem fixtures
   are unchanged. Full `ctest` returns to the 11/12 baseline (sole red the
@@ -545,6 +746,16 @@ ID per visualization experiment.
    `ctest` returned 11/12 with the sole failure `lander_landing_tests`
    (`V14-C` perturbed/independent-seed cross-body soft-land timeout).
 
+  Covers:
+    - M06-R20-01
+    - M06-R20-06
+    - M06-R20-F01-08
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 ### M06-R20 human verification
 
 - [x] M06-R20-H01 Transfer-cold visual-inspection gate.
@@ -565,6 +776,13 @@ ID per visualization experiment.
   cell is human-accepted; transfer-warm may be started only as a separately
   requested scope.
 
+  Covers:
+    - M06-R20-03
+    - M06-R20-04
+    - M06-R20-F01-05
+  Gate: HUMAN
+  Human-Decision: ACCEPTED
+  Decision-Source: records/M06-schema1-live-TASKS.snapshot.md (explicit human PASS recorded 2026-10-08)
 ### M06-R20 derived implementation tasks
 
 - [x] M06-R20-D01 Paused transfer-cold debug start + `PAUSED FOR COLD TRANSFER
@@ -600,6 +818,8 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   defect was C/D/E: the old fit included full body extents and the scene mixed
   current-time bodies with the temporal references, compressing the short route
   into an ambiguous cluster.
+  Verified-By:
+    - M06-R20-V08
 - [x] M06-R20-F01-02 Rebuild the transfer-cold debug scene as an explicit
   WORLD/INERTIAL temporal inspection scene: render `PRIMARY @ T0` from
   `solve_epoch` and `COMPANION @ T+<actual TOF>` from `arrival_epoch` as the two
@@ -609,6 +829,8 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   `target_outline`, `source_rotation` / `target_rotation`, and labelled
   `@ T0` / `@ T+<TOF>` body references; the GUI draws those temporal bodies
   instead of implying a single shared instant.
+  Verified-By:
+    - M06-R20-V07
 - [x] M06-R20-F01-03 In transfer-cold debug mode only, suppress or clearly
   de-emphasize/label the ordinary current-time bodies so they cannot be
   confused with the departure/arrival temporal bodies. The unrelated outer
@@ -617,6 +839,8 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   Evidence: `gui.cpp` skips the ordinary current-time `draw_body` calls only
   when `debug_mode == TransferCold`; all other modes still draw current-time
   bodies normally.
+  Verified-By:
+    - M06-R20-V11
 - [x] M06-R20-F01-04 Make the transfer-cold debug camera fit depend only on the
   accepted arc, source body outline at `solve_epoch`, target body outline at
   `arrival_epoch`, DEP, and ARR. Preserve aspect ratio, add screen margin,
@@ -626,12 +850,16 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   arc, local source/target outlines, DEP, ARR, and the solver arrival shell
   only; body centres and body 2 are excluded, the fit adds a 1.18 margin, and
   V09 asserts the dominant relevant extent occupies 70-90% of the viewport.
+  Verified-By:
+    - M06-R20-V09
 - [x] M06-R20-F01-05 Make the arc readable as a route: clear DEP/ARR markers,
   a visible COLD ARC polyline, source/target temporal-body outlines, and sparse
   presentation-only time markers along the arc (for example 25/50/75% or
   elapsed times) without clutter.
   Evidence: the overlay draws enlarged DEP/ARR markers, a 2.5px COLD ARC
   polyline, 25/50/75% time ticks, and epoch-labelled temporal bodies.
+  Verified-By:
+    - M06-R20-H01
 - [x] M06-R20-F01-06 Keep the arrival relationship truthful. Draw a
   `TARGET` marker and short `ARR -> TARGET` miss segment only if both endpoints
   are exactly the quantities used by the accepted solver and `achieved_miss`;
@@ -642,6 +870,8 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   at `arrival_epoch`) without changing the solver; the overlay draws TARGET and
   the ARR -> TARGET segment only when that exact point is available, and V08
   asserts equality with the solver goal.
+  Verified-By:
+    - M06-R20-V08
 - [x] M06-R20-F01-07 Extend the headless R20 regressions to cover temporal
   source/target epochs, inertial arc consistency, first/last parity, exclusion
   of body 2 from the fit, aspect preservation, viewport margins, meaningful
@@ -652,6 +882,8 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   reworked fit test add deterministic checks for temporal outlines, inertial
   parity, body-2 exclusion, aspect/margin/extent, and a DEP-ARR screen-distance
   regression that fails if the route collapses below 60px.
+  Verified-By:
+    - M06-R20-V10
 - [x] M06-R20-F01-08 Re-run focused transfer/debug/render/camera tests,
   `lander_transfer_warm_tests`, `lander_debug_subsystem_tests`,
   `lander_flight_computer_tests`, `lander_predictor_tests`, full `ctest`
@@ -664,6 +896,8 @@ iteration under the same R20 request and same H01 gate; it is not R21.
 
 Derived implementation follow-up:
 
+  Verified-By:
+    - M06-R20-V06
 - [x] M06-R20-D07 Instrument / diagnose the first presentation and record the
   causal conclusion.
 - [x] M06-R20-D08 Rebuild the transfer-cold display/camera helpers as a
@@ -680,17 +914,58 @@ Additional automated verification for F01:
 
 - [x] M06-R20-V07 The displayed source geometry uses `solve_epoch` and the
   displayed target geometry uses `arrival_epoch`.
+  Covers:
+    - M06-R20-F01-02
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V08 The arc samples, DEP, ARR, and body references are all in one
   consistent world/inertial presentation frame, with first/last parity.
+  Covers:
+    - M06-R20-F01-01
+    - M06-R20-F01-06
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V09 The debug fit excludes body 2 and arbitrary system bounds,
   preserves aspect ratio, respects viewport margins, and makes the dominant
   relevant extent occupy a meaningful fraction of the viewport.
+  Covers:
+    - M06-R20-F01-04
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V10 DEP and ARR screen points are not collapsed by an
   epoch/frame mismatch; the route occupies non-degenerate viewport space in the
   actual transfer-cold fixture.
+  Covers:
+    - M06-R20-F01-07
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R20-V11 The normal `Simulation` remains unmodified by the F01
   presentation changes.
 
+  Covers:
+    - M06-R20-F01-03
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 ## M06-R21 — transfer-warm visual observability
 
 Source: USER (2026-10-08), after R20 PASS and commit `7215861`. The user ran
@@ -721,32 +996,52 @@ human-accepted.
   `TERMINAL MISS [m]`, `CORR DV [m/s]`, and `RETARGET THRESH [m/s]`
   separately; `test_r21_telemetry_semantics` verifies the retarget decision
   uses the same correction-delta-v magnitude.
+  Verified-By:
+    - M06-R21-V01
 - [ ] M06-R21-02 In transfer-warm debug mode, draw the original COLD seed route
   dimly and labelled `COLD SEED`, reusing the accepted R20 temporal-display
   machinery where appropriate. Do not recompute the COLD solve.
+  Verified-By:
+    - M06-R21-V02
+    - M06-R21-H01
 - [ ] M06-R21-03 Build and draw the current accepted WARM route from
   `TransferMidcourse::cache()` as a read-only display arc using the same
   canonical fixed-step zero-thrust propagation rules as R20. Label it
   prominently `WARM PLAN`. Rebuild this display geometry only when the WARM
   cache meaningfully changes / a replan produces a new accepted cache, not every
   rendered frame.
+  Verified-By:
+    - M06-R21-V02
+    - M06-R21-V06
+    - M06-R21-H01
 - [ ] M06-R21-04 Render the actual authoritative spacecraft clearly and label
   it `LIVE`. Do not replace its position with a planned position.
+  Verified-By:
+    - M06-R21-V04
+    - M06-R21-H01
 - [ ] M06-R21-05 At the LIVE craft, show the actual fast-executor correction
   state: `ACT` for the actual thrust axis, `VGO` for the exact current fast
   executor `dv_remaining()`, and compact state such as `ALIGN`, `BURN`,
   `COMPLETE`. Use actual internal state/input only; do not independently
   recalculate guidance. Add narrow const/read-only accessors on
   `TransferMidcourse` if needed.
+  Verified-By:
+    - M06-R21-V05
+    - M06-R21-H01
 - [ ] M06-R21-06 For the current WARM cache, show the future target geometry
   using `BinarySystem::position(target, cache.arrival_epoch)` and label it
   `COMPANION @ WARM ARRIVAL` with an explicit `T+<remaining/TOF as appropriate>`
   temporal meaning.
+  Verified-By:
+    - M06-R21-V03
+    - M06-R21-H01
 - [ ] M06-R21-07 When a successful WARM replan is accepted, show a brief
   debug-only banner or event marker for roughly 1-2 presentation seconds with
   `WARM REPLAN #N`, `CORR DV X.XX M/S`, `NEWTON N`, `PROP N`, and
   `RETARGET YES/NO`. Do not pause the simulation automatically on every replan
   and do not create an on-screen event log.
+  Verified-By:
+    - M06-R21-H01
 - [ ] M06-R21-08 Use a transfer-warm debug-only camera/view that keeps the LIVE
   ship, current WARM route, target-at-arrival, and relevant body geometry
   legible. It may reuse R20 transfer-fit logic, but it must update when the
@@ -755,6 +1050,8 @@ human-accepted.
   temporal view that loses the live craft, and do not independently scale
   different objects. If a full-route view makes the live craft too small,
   prefer a minimal debug toggle between `WARM ROUTE` and `LIVE DETAIL`.
+  Verified-By:
+    - M06-R21-H01
 - [ ] M06-R21-09 Clean up the existing transfer-warm panel. Retain useful
   telemetry (WARM active, COLD seed validity, cache validity, TOF, Newton
   iterations, fallback COLD, propagations last/total, replan count, retarget
@@ -762,6 +1059,8 @@ human-accepted.
   [m/s]` and `RETARGET THRESH [m/s]`. Do not label the correction threshold as
   miss tolerance. Also expose the fast executor state and remaining VGO
   magnitude, e.g. `FAST ALIGN/BURN/COMPLETE`, `VGO x.xx m/s`, `THR x.xx`.
+  Verified-By:
+    - M06-R21-H01
 - [ ] M06-R21-10 The finished mode must let a human understand without reading
   code: this was the original COLD route; this is the current WARM-corrected
   route; this is where the real ship is; this is the correction the physical
@@ -769,6 +1068,8 @@ human-accepted.
   companion will be at planned arrival; and whether the WARM controller is
   converging toward the target rather than merely incrementing counters.
 
+  Verified-By:
+    - M06-R21-H01
 ### M06-R21 preservation constraints
 
 - [x] M06-R21-P01 Do not alter the WARM differential-correction mathematics,
@@ -778,6 +1079,8 @@ human-accepted.
   normal gameplay, normal camera, landing/autoland, TFD-1/TFD-2, or M07.
   Evidence: only read-only telemetry, display state, and debug presentation
   were changed; existing solver/guidance tests remain green.
+  Verified-By:
+    - M06-R21-V06
 - [x] M06-R21-P02 Preserve the COLD seed + WARM bounded correction
   architecture, no solver in the 120 Hz HOT path, WARM bounded cadence,
   ordinary physical VGO/node execution, R19 continuous alignment safety, no
@@ -786,20 +1089,29 @@ human-accepted.
   Evidence: the transfer-warm mode still calls the existing bounded-rate
   `maybe_replan` path and the ordinary HOT fast executor; no new solver or
   force was added.
+  Verified-By:
+    - M06-R21-V06
 - [x] M06-R21-P03 Visualization code must be read-only with respect to the
   live simulation and must not invoke additional transfer solves or report
   display propagation as solver cost.
   Evidence: `test_transfer_warm_display_no_mutation` and
   `test_transfer_warm_display_cost_not_reported` pass.
-- [x] M06-R21-P04 Do not create further request IDs for individual
+  Verified-By:
+    - M06-R21-V04
+    - M06-R21-V07
+- [~] M06-R21-P04 Do not create further request IDs for individual
   visualization experiments inside R21.
   Evidence: all R21 work remains under the existing `M06-R21-*` IDs.
-- [x] M06-R21-P05 If investigation uncovers an actual controller defect, stop
+  Verified-By:
+    - M06-R21-H01
+- [~] M06-R21-P05 If investigation uncovers an actual controller defect, stop
   and report it rather than changing behavior under this observability request.
   Evidence: the initial R21 work found only presentation/telemetry semantics;
   the later `M06-R21-H01` human run exposed a real controller defect. That
   defect was stopped out of R21 and persisted as `M06-R22`.
 
+  Verified-By:
+    - M06-R21-H01
 ### M06-R21 derived implementation tasks
 
 - [x] M06-R21-D01 Verify the `maybe_replan()` threshold semantics from source
@@ -859,32 +1171,92 @@ human-accepted.
   asserts that a valid cached route is re-aimed through the WARM correction
   (`last_warm_used()`), giving the panel a reliable WARM/COLD fallback
   signal.
+  Covers:
+    - M06-R21-01
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R21-V02 COLD vs WARM display: COLD display is built from the original
   cold cache, WARM display is built from the current warm cache, and changing
   the WARM cache changes only the WARM display, not the COLD seed.
   Evidence: `test_transfer_warm_display_preserves_seed_and_advances_warm`
   passes.
+  Covers:
+    - M06-R21-02
+    - M06-R21-03
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R21-V03 Temporal target: the WARM arrival target uses
   `cache.arrival_epoch`.
   Evidence: `test_transfer_warm_display_arrival_target_future` passes.
+  Covers:
+    - M06-R21-06
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R21-V04 Live state: display construction does not mutate the live
   simulation.
   Evidence: `test_transfer_warm_display_no_mutation` passes.
+  Covers:
+    - M06-R21-04
+    - M06-R21-P03
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R21-V05 Fast executor overlay: ACT uses the actual state angle, VGO
   uses the exact `TransferMidcourse` fast-executor remaining VGO, zero VGO hides
   the ray, and the state is read-only.
   Evidence: `test_transfer_warm_fast_executor_overlay` passes.
+  Covers:
+    - M06-R21-05
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R21-V06 Replan cadence: existing bounded-rate tests remain green and
   no visualization code invokes additional transfer solves.
   Evidence: `lander_transfer_warm_tests` passes, including
   `test_two_level_bounded_rate`; the new display builders call only
   `transfer_cold_display` / `predict_zero_thrust`, never a transfer solver.
+  Covers:
+    - M06-R21-03
+    - M06-R21-P01
+    - M06-R21-P02
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R21-V07 Cost: display-arc propagation is not counted/reported as
   solver propagation cost.
   Evidence: `test_transfer_warm_display_cost_not_reported` and
   `test_transfer_warm_display_no_mutation` assert the propagation counter is
   unchanged by display construction.
 
+  Covers:
+    - M06-R21-P03
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 ### M06-R21 human verification
 
 - [H] M06-R21-H01 Transfer-warm visual-inspection gate.
@@ -921,6 +1293,24 @@ human-accepted.
    Do not self-complete this gate. Do not proceed to autoland-primary until
    explicit human acceptance.
 
+  Covers:
+    - M06-R21-02
+    - M06-R21-03
+    - M06-R21-04
+    - M06-R21-05
+    - M06-R21-06
+    - M06-R21-07
+    - M06-R21-08
+    - M06-R21-09
+    - M06-R21-10
+    - M06-R21-P04
+    - M06-R21-P05
+    - M06-R21-F01-01
+    - M06-R21-F01-02
+    - M06-R21-F01-03
+    - M06-R21-F01-04
+    - M06-R21-F01-05
+  Gate: HUMAN
 ### M06-R21-F01 bounded presentation follow-up after the first H01 FAIL
 
 Source: USER (2026-10-08) `M06-R21-H01` FAIL. These are R21 presentation
@@ -928,7 +1318,7 @@ defects observed in the same human run. They must be fixed without mixing
 them into R22 control math. R21 remains unresolved until both the R22
 functional correction and this presentation follow-up pass human review.
 
-- [x] M06-R21-F01-01 Camera scale pumping: make the transfer-warm debug
+- [~] M06-R21-F01-01 Camera scale pumping: make the transfer-warm debug
   camera temporally stable (bounded smoothing / hysteresis / minimum context
   extent). No large frame-to-frame zoom jumps from ordinary replans; retain
   LIVE + relevant route + arrival-target context; normal camera unchanged;
@@ -936,7 +1326,10 @@ functional correction and this presentation follow-up pass human review.
   DONE (2026-10-08): added presentation-only `TransferDebugCameraState` and
   `update_transfer_debug_camera`; center is eased and per-frame zoom ratio is
   bounded, with a minimum context extent for the target body.
-- [H] M06-R21-F01-02 Temporal/current ambiguity: explicitly distinguish
+  Verified-By:
+    - M06-R21-H01
+    - M06-R21-F01-V01
+- [ ] M06-R21-F01-02 Temporal/current ambiguity: explicitly distinguish
   current-time COMPANION from `COMPANION @ WARM ARRIVAL`. A temporal arc may
   cross the body's position at a different epoch without being presented as a
   terrain intersection. Current-time geometry should be visibly CURRENT /
@@ -944,7 +1337,10 @@ functional correction and this presentation follow-up pass human review.
   IMPLEMENTED (2026-10-08): the scene now draws a distinct `CUR <TARGET>`
   current-time marker and keeps the `@ WARM ARRIVAL` outline at the planned
   future epoch. Human visual confirmation remains pending.
-- [H] M06-R21-F01-03 Plan origin: if the cached WARM plan's departure point is
+  Verified-By:
+    - M06-R21-H01
+    - M06-R21-F01-V02
+- [ ] M06-R21-F01-03 Plan origin: if the cached WARM plan's departure point is
   no longer exactly LIVE because the ship advanced since the last replan, show
   `PLAN DEP`, `LIVE`, and `PLAN AGE <...>` (or equivalent minimal truth). Do
   not draw a fake connector. If they should coincide at the same epoch but do
@@ -952,13 +1348,18 @@ functional correction and this presentation follow-up pass human review.
   IMPLEMENTED (2026-10-08): the warm label is `PLAN DEP`, the live craft label
   is `LIVE`, and `PLAN AGE <s>` is shown next to the plan origin. No connector
   is drawn. Human visual confirmation remains pending.
-- [H] M06-R21-F01-04 Label clutter: use deterministic offsets / collision
+  Verified-By:
+    - M06-R21-H01
+- [ ] M06-R21-F01-04 Label clutter: use deterministic offsets / collision
   avoidance so LIVE, ACT/VGO, WARM ARR, COMPANION @ WARM ARRIVAL, route
   labels, and the panel remain readable near arrival. Do not build a general
   layout framework.
   IMPLEMENTED (2026-10-08): deterministic per-label offsets were added to the
   transfer-warm scene. Human readability confirmation remains pending.
-- [H] M06-R21-F01-05 Replan banner: make the WARM replan banner compact and
+  Verified-By:
+    - M06-R21-H01
+    - M06-R21-F01-V03
+- [ ] M06-R21-F01-05 Replan banner: make the WARM replan banner compact and
   non-obscuring (small event line near the panel/top edge, short lifetime,
   same truthful information).
   IMPLEMENTED (2026-10-08): the banner is a compact top-center one-line event
@@ -966,6 +1367,9 @@ functional correction and this presentation follow-up pass human review.
 
 Derived R21-F01 tasks:
 
+  Verified-By:
+    - M06-R21-H01
+    - M06-R21-F01-V03
 - [x] M06-R21-F01-D01 Implement the R21-F01 camera-stability strategy.
   DONE (2026-10-08): `src/debug_subsystem.cpp` provides the bounded stabiliser
   used by the transfer-warm debug camera.
@@ -989,13 +1393,28 @@ Additional R21-F01 automated verification:
   frame-to-frame zoom jumps from ordinary bounded replans, while retaining the
   live/route/arrival context.
   Evidence: `test_transfer_debug_camera_stability` passes.
-- [H] M06-R21-F01-V02 The transfer-warm scene preserves truthful epoch
+  Covers:
+    - M06-R21-F01-01
+  Gate: PRESENTATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
+- [ ] M06-R21-F01-V02 The transfer-warm scene preserves truthful epoch
   distinction between current-time and arrival-time body geometry.
   Implementation is in place; human visual confirmation remains pending.
-- [H] M06-R21-F01-V03 Near-arrival labels and the replan banner remain
+  Covers:
+    - M06-R21-F01-02
+  Gate: PRESENTATION
+- [ ] M06-R21-F01-V03 Near-arrival labels and the replan banner remain
   readable / non-obscuring in the deterministic transfer-warm fixture.
   Implementation is in place; human visual confirmation remains pending.
 
+  Covers:
+    - M06-R21-F01-04
+    - M06-R21-F01-05
+  Gate: PRESENTATION
 ## M06-R22 — full-range node-executor alignment safety / WARM burn stability
 
 Source: USER (2026-10-08), `M06-R21-H01` HUMAN VERIFICATION: FAIL. The human
@@ -1038,12 +1457,16 @@ passes. Do not proceed to autoland-primary.
   the maximum angle/rate violation, and measure whether WARM replanning during
   ALIGN moves the target faster than attitude can settle. Keep raw traces in a
   diagnostic artifact, not `TASKS.md`.
+  Verified-By:
+    - M06-R22-V01
 - [x] M06-R22-02 Enforce the physical invariant across the ENTIRE VGO range:
   for every authoritative physics step, if applied `main_throttle > 0`, the
   spacecraft must be inside the canonical safe burn-alignment envelope.
   Preserve the established envelope unless evidence demands a separately
   approved change: angle error <= 0.05 rad and |omega| <= 0.1 rad/s. No regime
   may intentionally maintain full thrust while materially misaligned.
+  Verified-By:
+    - M06-R22-V02
 - [x] M06-R22-03 Apply the narrow preferred NodeExecutor correction: every BURN
   step continuously evaluates alignment. If aligned, ordinary physical burn is
   permitted. If materially misaligned, throttle = 0, ordinary bang-bang
@@ -1054,13 +1477,17 @@ passes. Do not proceed to autoland-primary.
   acceptable only if strict enter/exit equality causes numerical chatter and
   every thrust-enabled state remains physically close to the canonical
   alignment envelope. Do not create a wide "approximately pointing" band.
+  Verified-By:
+    - M06-R22-V01
 - [x] M06-R22-04 Do not solve the failure by spinning while burning, averaging
   thrust direction over rotations, projecting off-axis impulse onto desired
   VGO, pretending off-axis impulse was on-axis, direct velocity assignment,
   direct attitude snapping, hidden forces, loosening the alignment gate to
   recover transfer performance, changing gravity, or changing main
   acceleration.
-- [x] M06-R22-05 After full-range burn gating, measure the interaction between
+  Verified-By:
+    - M06-R22-V03
+- [~] M06-R22-05 After full-range burn gating, measure the interaction between
   WARM replan cadence, retarget cadence, and the fast-executor ALIGN/BURN
   lifecycle. If frequent replans during ALIGN repeatedly move the VGO target
   before attitude can settle and that materially contributes, apply the
@@ -1068,6 +1495,8 @@ passes. Do not proceed to autoland-primary.
   settle before replacing its target. If it does not materially contribute, do
   not change it. Do not disable WARM replanning generally and do not move a
   solver into the HOT path.
+  Verified-By:
+    - M06-R22-H01
 - [x] M06-R22-06 Add deterministic regressions for the actual failure. A
   whole-run invariant must verify that for every authoritative physics step,
   if applied `main_throttle > 0`, executor alignment safety is satisfied. This
@@ -1081,6 +1510,8 @@ passes. Do not proceed to autoland-primary.
   across WARM retarget events. Preserve final partial throttle, clean abort, no
   latent thrust, the R19 exact small-vector regression, and no direct state
   mutation.
+  Verified-By:
+    - M06-R22-V02
 - [x] M06-R22-07 Re-run R5/R21 closed-loop transfer tests after the safety
   fix. If stronger physical safety worsens an old transfer-distance proxy, do
   NOT relax the safety invariant. Diagnose whether WARM retarget scheduling,
@@ -1088,24 +1519,35 @@ passes. Do not proceed to autoland-primary.
   old derived proxy is the problem. Any acceptance-threshold change requires
   explicit evidence and durable supersession bookkeeping. Do not repeat the
   prior strategy of weakening burn alignment to buy back transfer performance.
-- [x] M06-R22-08 Preserve the R21 graphical defects as R21-F01 presentation
+  Verified-By:
+    - M06-R22-V03
+    - M06-R22-V05
+- [~] M06-R22-08 Preserve the R21 graphical defects as R21-F01 presentation
   work, not R22 guidance semantics: camera scale pumping, temporal/current
   geometry ambiguity, plan origin/age, label clutter, and the oversized replan
   banner. Address them after/alongside the functional correction without
   mixing them into control math.
-- [x] M06-R22-09 The deterministic human transfer-warm fixture must reach/pass
+  Verified-By:
+    - M06-R22-V06
+    - M06-R22-H01
+- [~] M06-R22-09 The deterministic human transfer-warm fixture must reach/pass
   through the intended target region and remain non-crashed through the planned
   arrival encounter. It may fly past afterward; landing/capture is not required
   by this cell. Record closest target distance, state at planned arrival, fuel,
   replan count, retarget count, maximum thrust-enabled attitude error, and
   maximum thrust-enabled |omega|.
-- [x] M06-R22-10 When R22 and the R21-F01 automated verification are complete,
+  Verified-By:
+    - M06-R22-V04
+    - M06-R22-H01
+- [~] M06-R22-10 When R22 and the R21-F01 automated verification are complete,
   set `Phase: HUMAN_VERIFICATION` and `Active-Request: M06-R22`. Keep both
   `M06-R21-H01` and `M06-R22-H01` explicit and unresolved. Human command:
   `./build/lander_gui --debug-subsystem transfer-warm`. Do not self-complete
   either gate and do not proceed to autoland-primary before explicit human
   acceptance.
 
+  Verified-By:
+    - M06-R22-H01
 ### M06-R22 preservation constraints
 
 - [ ] M06-R22-P01 Preserve authoritative gravity/ephemerides, main acceleration,
@@ -1188,32 +1630,78 @@ passes. Do not proceed to autoland-primary.
   magnitude-gated logic and passes under the new full-range gate.
   Evidence: `lander_flight_computer_tests` passes, including the full-range
   alignment safety regression.
+  Covers:
+    - M06-R22-01
+    - M06-R22-03
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R22-V02 Whole-run invariant: in the deterministic transfer-warm
   fixture and relevant node-executor tests, every step with applied
   `main_throttle > 0` satisfies the canonical burn-alignment envelope.
   Evidence: `lander_transfer_warm_tests` and `lander_flight_computer_tests`
   pass with the throttle => alignment checks enabled.
+  Covers:
+    - M06-R22-02
+    - M06-R22-06
+  Gate: INVARIANT
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R22-V03 Existing node-executor / flight-computer / transfer-warm /
   debug-subsystem / predictor / render-camera tests pass, including the R19
   exact small-vector regression, final partial throttle, clean abort, and no
   latent-thrust checks.
   Evidence: full `ctest` passes all non-landing test binaries.
+  Covers:
+    - M06-R22-04
+    - M06-R22-07
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R22-V04 Deterministic transfer-warm fixture reaches/passes the
   intended target region non-crashed through the planned arrival encounter and
   records closest target distance, arrival state, fuel, replan/retarget counts,
   max thrust-enabled angle error, and max thrust-enabled |omega|.
   Evidence: `test_r22_transfer_warm_no_crash_through_arrival` passes and
   records the required metrics in its `[R22-V04]` output.
+  Covers:
+    - M06-R22-09
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R22-V05 Non-landing `ctest` passes; full `ctest` returns to the known
   baseline with only the unrelated V14-C landing timeout red.
   Evidence: full `ctest` shows 11/12 test binaries passing; the only failure
   is `lander_landing_tests` V14-C.
-- [H] M06-R22-V06 R21-F01 presentation checks pass where automatable (camera
+  Covers:
+    - M06-R22-07
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
+- [ ] M06-R22-V06 R21-F01 presentation checks pass where automatable (camera
   zoom stability, truthful epoch distinction, readable near-arrival labels,
   compact banner).
   Automatable camera-stability check passes; the visual truthfulness/readability
   portions remain human verification.
 
+  Covers:
+    - M06-R22-08
+  Gate: PRESENTATION
 ### M06-R22 human verification
 
 - [H] M06-R22-H01 Corrected full-range alignment-safety / WARM burn-stability
@@ -1241,6 +1729,12 @@ passes. Do not proceed to autoland-primary.
    Do not self-complete this gate. Do not proceed to autoland-primary before
    explicit human acceptance of both R21-H01 and R22-H01.
 
+  Covers:
+    - M06-R22-05
+    - M06-R22-08
+    - M06-R22-09
+    - M06-R22-10
+  Gate: HUMAN
 ## M06-R23 — WARM rendezvous-epoch correctness, retarget stability, and physical correction convergence
 
 Source: USER (2026-10-09), after `M06-R21-H01` and `M06-R22-H01` both FAILED
@@ -1299,7 +1793,9 @@ remain deferred follow-ups; the three human gates stay unresolved.
   trajectory uses the correct departure state, arrival epoch, and coordinate
   frame. Do not infer a geometry bug merely from current-time and future-time
   paths visually crossing.
-- [x] M06-R23-02 Investigate retarget churn. Record retarget acceptance time,
+  Verified-By:
+    - M06-R23-V01
+- [~] M06-R23-02 Investigate retarget churn. Record retarget acceptance time,
   previous and replacement VGO vectors, correction magnitude, target angular
   displacement, spacecraft angle, angular velocity, executor-state transition,
   throttle, actual delivered delta-v, remaining VGO, and estimated time to
@@ -1310,7 +1806,10 @@ remain deferred follow-ups; the three human gates stay unresolved.
   acceptance hysteresis, and retargeting at safe executor boundaries. Do not
   blindly add delays or disable WARM replanning, and preserve emergency
   correction and abort behavior.
-- [x] M06-R23-03 Investigate the terminal-miss metric. The HUD repeatedly
+  Verified-By:
+    - M06-R23-V02
+    - M06-R23-H01
+- [~] M06-R23-03 Investigate the terminal-miss metric. The HUD repeatedly
   alternated between approximately `BEFORE 1.1 m / AFTER 5.4 m` and `BEFORE
   5.4 m / AFTER 1.1 m`, sometimes within 0.2 s while throttle was zero. Trace
   exactly how BEFORE and AFTER are computed. Verify same or explicitly
@@ -1321,6 +1820,9 @@ remain deferred follow-ups; the three human gates stay unresolved.
   different epochs produce an apparently improved distance. Do not alter the
   acceptance objective until its existing meaning and implementation have been
   verified.
+  Verified-By:
+    - M06-R23-V03
+    - M06-R23-H01
 - [x] M06-R23-04 Preserve the R22 physical executor invariant. Applied main
   thrust requires physically valid alignment; do not reintroduce off-axis
   full-throttle spinning, thrust-vector averaging, hidden forces, velocity
@@ -1330,6 +1832,8 @@ remain deferred follow-ups; the three human gates stay unresolved.
   partial-throttle physics step displayed after the state transition or actual
   thrust applied after completion. Check authoritative physics-step ordering
   and do not classify it as a defect without evidence.
+  Verified-By:
+    - M06-R23-V04
 - [x] M06-R23-05 Create a deterministic full-encounter regression. It must
   establish the absolute target arrival epoch, actual closest companion
   approach, closest-approach simulation time, target-relative speed,
@@ -1342,6 +1846,8 @@ remain deferred follow-ups; the three human gates stay unresolved.
   not count an indefinitely receding predicted encounter as success. Landing or
   capture is not required. Do not change gravitational constants,
   accelerations, or acceptance thresholds to make the test pass.
+  Verified-By:
+    - M06-R23-V05
 - [~] M06-R23-06 Keep the R21 presentation follow-up unresolved while adding
   the human-observed stability defects: camera scale changes dramatically,
   route context repeatedly disappears, plan annotations change too quickly to
@@ -1350,6 +1856,9 @@ remain deferred follow-ups; the three human gates stay unresolved.
   and event timestamps, and use stable camera framing with bounded temporal
   smoothing. Do not freeze simulation physics or guidance merely to improve
   presentation.
+  Verified-By:
+    - M06-R23-V06
+    - M06-R23-H01
 - [~] M06-R23-07 Re-run the complete relevant automated suite, preserve the
   established V14-C landing-timeout baseline, produce a headless deterministic
   trace and concise comparative measurements, and keep large traces in
@@ -1357,20 +1866,35 @@ remain deferred follow-ups; the three human gates stay unresolved.
   complete, return to `HUMAN_VERIFICATION` with `M06-R21-H01`,
   `M06-R22-H01`, and the new `M06-R23-H01` gate explicit and unresolved.
 
+  Verified-By:
+    - M06-R23-V07
+    - M06-R23-H01
 ### M06-R23 preservation constraints
 
 - [ ] M06-R23-P01 Preserve the R22 full-range alignment-safety invariant and
   the demonstrated removal of full-throttle spinning / thrust-vector averaging.
+  Verified-By:
+    - M06-R23-V04
 - [ ] M06-R23-P02 Keep all transfer solving out of the 120 Hz HOT path; the
   fast executor remains O(1) per step.
+  Verified-By:
+    - M06-R23-V05
 - [ ] M06-R23-P03 Preserve emergency correction and abort behavior.
+  Verified-By:
+    - M06-R23-H01
 - [ ] M06-R23-P04 Do not change gravitational constants, main acceleration, or
   acceptance thresholds merely to make WARM converge.
+  Verified-By:
+    - M06-R23-V05
 - [ ] M06-R23-P05 Keep R21 ownership of graphical defects and do not freeze
   simulation physics or guidance for presentation purposes.
+  Verified-By:
+    - M06-R23-V06
 - [ ] M06-R23-P06 Do not commit, do not self-accept human gates, and do not
   advance to autoland-primary.
 
+  Verified-By:
+    - M06-R23-H01
 ### M06-R23 derived implementation tasks
 
 - [x] M06-R23-D01 Add a headless WARM plan/epoch trace that records the
@@ -1400,24 +1924,69 @@ remain deferred follow-ups; the three human gates stay unresolved.
   marker and displayed trajectory use the correct absolute arrival epoch,
   departure state, and coordinate frame; any rolling arrival horizon is
   intentional, documented, and bounded toward finite convergence.
+  Covers:
+    - M06-R23-01
+  Gate: INVARIANT
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [~] M06-R23-V02 The retarget-lifecycle trace bounds interrupted active
   corrections and distinguishes candidate generation, trajectory acceptance,
   and active-correction replacement.
+  Covers:
+    - M06-R23-02
+  Gate: INTEGRATION
 - [~] M06-R23-V03 The BEFORE/AFTER terminal-miss tests verify the same
   explicitly identified epoch and frame and reject stale or mixed-epoch
   acceptance logic.
+  Covers:
+    - M06-R23-03
+  Gate: INVARIANT
 - [x] M06-R23-V04 The R22 full-range alignment invariant and existing
   node-executor / flight-computer / transfer-warm / predictor / debug-subsystem
   / camera tests remain green.
+  Covers:
+    - M06-R23-04
+    - M06-R23-P01
+  Gate: INVARIANT
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [x] M06-R23-V05 The deterministic full-encounter regression independently
   establishes physical closest approach and target-region passage against the
   COLD baseline, rather than relying on a predicted miss.
+  Covers:
+    - M06-R23-05
+    - M06-R23-P02
+    - M06-R23-P04
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 - [ ] M06-R23-V06 Presentation-stability checks pass where automatable,
   including bounded camera framing and decoupling of display update cadence
   from planner cadence.
+  Covers:
+    - M06-R23-06
+    - M06-R23-P05
+  Gate: PRESENTATION
 - [x] M06-R23-V07 Full `ctest` returns to the known baseline with only the
   unrelated V14-C landing timeout red.
 
+  Covers:
+    - M06-R23-07
+  Gate: INTEGRATION
+  Evidence-Mode: HISTORICAL_RECORDED
+  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
+  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Limitations:
+    - Historical recorded outcome only; exact invocation and independent current applicability not established
 ### M06-R23 human verification
 
 - [H] M06-R23-H01 WARM rendezvous convergence, retarget stability, and
@@ -1437,6 +2006,14 @@ remain deferred follow-ups; the three human gates stay unresolved.
   Do not self-complete this gate. Do not proceed to autoland-primary before
   explicit human acceptance of R21-H01, R22-H01, and R23-H01.
 
+  Covers:
+    - M06-R23-02
+    - M06-R23-03
+    - M06-R23-06
+    - M06-R23-07
+    - M06-R23-P03
+    - M06-R23-P06
+  Gate: HUMAN
 ## Inherited unresolved human gates
 
 These remain unresolved and must not be inferred complete from later automated
@@ -1445,13 +2022,29 @@ TRANSFER-WARM / M06-R21, active follow-up M06-R23).
 
 - [H] M06-R11-H01 Trustworthy-diagnostics visual pass: confirm corrected
   labels/units/body-relative readouts in the debug harness.
+  Covers:
+    - M06-R11-05-04
+  Gate: HUMAN
+  Coverage-Source: records/M06-pre-experience-TASKS.snapshot.md
 - [H] M06-R12-H01 Static prediction-frame visual pass: fixed frames, legend,
   debug-panel frame/readout coherence.
+  Covers:
+    - M06-R12-05-01
+  Gate: HUMAN
+  Coverage-Source: records/M06-pre-experience-TASKS.snapshot.md
 - [H] M06-R12-H02 AUTO prediction-frame visual pass: segmented reference-frame
   path, transition markers, and no cross-frame connector.
+  Covers:
+    - M06-R12-04-01
+  Gate: HUMAN
+  Coverage-Source: records/M06-pre-experience-TASKS.snapshot.md
 - [H] M06-R7-H01 Consolidated M06 MVP playtest. This remains the overall
   milestone human-acceptance gate after subsystem cells are ready.
 
+  Covers:
+    - M06-R7-01
+  Gate: HUMAN
+  Coverage-Source: records/M06-pre-experience-TASKS.snapshot.md
 ## Known unresolved / deferred issues
 
 - `M06-R6-V14` remains incomplete because the V14-C cross-body soft-land case
