@@ -12,3 +12,7 @@ cmake-build-*/
 .experience-index/
 experience-index.sqlite
 experience-vectors.bin
+
+# Bytecode under the vendored framework is generated cache, never source.
+/.durable-state/framework/__pycache__/
+/.durable-state/framework/*.pyc
