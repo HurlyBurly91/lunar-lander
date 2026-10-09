@@ -40,6 +40,22 @@ Projects record the installed release in:
 The manifest also records the upstream source commit and a deterministic payload
 hash. The updater refuses to overwrite locally modified framework files.
 
+## Schema 2 executable semantics
+
+Schema 2 preserves the bounded state model and adds three mechanically supported
+semantics. Framework 1.1.1 additionally recognizes historical follow-up IDs
+and provenance-bound legacy evidence when migrating existing repositories:
+
+```text
+typed decision-shaping conclusions
+explicit bidirectional requirement-to-evidence coverage
+deterministic state/evidence validation
+```
+
+`validator.py` is part of the versioned payload. It checks mechanically decidable
+state and evidence relationships without executing application commands or
+replacing human judgment.
+
 ## Project integration
 
 A managed project root contains these markers:
@@ -64,11 +80,18 @@ From a checkout of `durable-state-machine`:
 ./bin/durable-state status /path/to/project
 ./bin/durable-state install /path/to/project
 ./bin/durable-state update /path/to/project
+./bin/durable-state migrate --dry-run /path/to/project
+./bin/durable-state validate /path/to/project
+./bin/durable-state validate --strict /path/to/project
+./bin/durable-state validate --json /path/to/project
+./bin/durable-state fingerprint /path/to/project
 ./bin/durable-state scan /path/containing/repos
 ```
 
-`install` and `update` only manage `.durable-state/framework/` and
-`.durable-state/MANIFST`. They do not rewrite project-owned state.
+`install`, `update`, and `migrate` manage only `.durable-state/framework/` and
+`.durable-state/MANIFEST`. They do not rewrite project-owned state. `migrate`
+will finalize only the reviewed schema-1 to schema-2 migration and only after the
+current validator accepts the project-owned files in strict mode.
 
 Update the central checkout first:
 
@@ -76,5 +99,5 @@ Update the central checkout first:
 git -C /path/to/durable-state-machine pull --ff-only
 ```
 
-Then inspect status and apply compatible framework updates. Schema migrations
-are deliberately refused until a migration exists and is reviewed.
+Then inspect status and apply compatible framework updates. Follow the reviewed
+migration guide when `status` reports `MIGRATION_REQUIRED`.

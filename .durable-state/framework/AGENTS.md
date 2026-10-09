@@ -112,13 +112,13 @@ Recommended IDs are:
 ```text
 M01-R1-01   explicit user requirement
 M01-R1-P01  preservation constraint
-M01-R1-D01  derived implementation work
+M01-R1-D01  derived implementation or investigation work
 M01-R1-V01  automated verification
 M01-R1-H01  human verification
 ```
 
 IDs never silently change meaning. Preserve superseded IDs with
-`Superseded-By:`.
+`Superseded-By:` and the replacement with the reverse `Supersedes:` link.
 
 If human feedback creates distinct implementation or automated work:
 
@@ -141,8 +141,9 @@ For substantive work:
 3. read only relevant canonical and evidence material;
 4. implement the highest-priority non-blocked work;
 5. run risk-proportionate verification;
-6. attach concise actual evidence;
-7. stop at required human judgment or a genuine blocker.
+6. attach concise actual evidence and explicit coverage links;
+7. run deterministic state validation;
+8. stop at required human judgment or a genuine blocker.
 
 One bounded investigation may contain many captures, measurements, parameter
 sweeps, analyzer runs, failures, and candidate implementations under one request
@@ -156,31 +157,124 @@ uncertainty, and next direction.
 Checkpoint when losing a decision would be expensive to reconstruct: a changed
 requirement, causal conclusion, accepted/rejected strategy, blocker, human gate,
 long interruption/handoff, or risky operation. Pair task state with repository
-state—prefer a commit; otherwise record HEAD plus sufficient dirty-diff identity.
+state—prefer a commit; otherwise record HEAD plus a material dirty-diff identity.
 Context growth and ordinary trials are not checkpoint boundaries.
 
 After repeated materially identical failures, normally three, change strategy,
 reduce to a reproducer, or persist a precise blocker.
 
-## Verification
+## Decision-shaping conclusions
 
-Record actual commands, results, limitations, repository state, and oracle class
-where material. Distinguish:
+Durable prose can become a failure surface when a provisional observation is
+later treated as a verified fact. Type a conclusion when it materially shapes
+later decisions, including when it:
+
+- rules out a strategy or subsystem;
+- claims a search space is exhausted;
+- establishes a blocker or causal diagnosis;
+- suppresses future investigation;
+- becomes an assumption for later implementation.
+
+Keep the conclusion on its existing `Dxx`; do not create a separate claims
+ledger. Record:
 
 ```text
-independent existing regression
-property or invariant
-integration or end-to-end behavior
-static analysis
-same-change generated test
-external reference comparison
-human observation
+Conclusion
+Conclusion-Status: OBSERVED | DERIVED | VERIFIED | HUMAN_ACCEPTED | UNKNOWN
+Conclusion-Scope
+Conclusion-Evidence
+Conclusion-Limitations
+Conclusion-Recheck-On
+```
+
+A negative computational result normally means “not observed under this scope,
+budget, implementation, and repository state,” not “impossible.” Use `VERIFIED`
+only when current independent evidence establishes the claim. Use
+`HUMAN_ACCEPTED` only when a recorded human decision establishes it. Revalidate
+or narrow a conclusion when its scope, evidence, bindings, or assumptions
+change.
+
+## Verification and evidence coverage
+
+Functional success does not imply that preservation, architectural,
+presentation, integration, or human constraints were satisfied. Every material
+`Rxx` and `Pxx` item marked `[x]` must identify its evidence through
+`Verified-By:`. Every referenced `Vxx` or `Hxx` item must identify the exact
+requirements it establishes through `Covers:`. These links are bidirectional and
+must agree.
+
+Each evidence task records one gate class:
+
+```text
+FUNCTIONAL
+CONSTRAINT
+INVARIANT
+INTEGRATION
+PRESENTATION
+HUMAN
+```
+
+A verified automated item records the actual command, expected result, actual
+PASS result, oracle class, limitations, and repository state. During the
+one-time schema-1 migration, explicitly flagged HISTORICAL_RECORDED evidence
+preserves old PASS claims without asserting current execution or fabricating
+lost commands; it never replaces current automated evidence. A verified human
+item records `Human-Decision: ACCEPTED` and its human source. Passing tests do
+not authorize completion of an uncovered requirement or an unresolved human
+gate.
+
+Distinguish oracle classes:
+
+```text
+independent-existing-regression
+property-or-invariant
+integration-or-end-to-end
+static-analysis
+same-change-generated-test
+external-reference-comparison
+human-observation
 ```
 
 A same-agent generated test is evidence, not automatically independent proof.
 Use independent or human validation proportionate to risk. Never weaken, delete,
 rewrite, or over-mock an oracle merely to pass. Trace legitimate test
 corrections. Unavailable verification is pending or blocked, never passing.
+
+Repository evidence is recorded as either:
+
+```text
+HEAD=<commit>; WORKTREE=CLEAN
+HEAD=<commit>; DIFF-SHA256=<material-worktree fingerprint>
+```
+
+The framework fingerprint excludes only live ledger/provenance and vendored framework-management files whose own
+recording would otherwise be self-referential. Changes to implementation, tests,
+canonical docs, sources, configuration, or other material files can stale the
+evidence and require review or rerun.
+
+## Deterministic validation
+
+Agent assertions do not determine whether state is internally consistent. Run:
+
+```bash
+/path/to/durable-state-machine/bin/durable-state validate .
+```
+
+Use `--strict` before closeout or schema migration. The validator checks only
+mechanically decidable claims, including:
+
+- `STATUS.md` / `TASKS.md` agreement and legal state/phase combinations;
+- stable-ID uniqueness, request ownership, references, and supersession links;
+- explicit bidirectional requirement-to-evidence coverage;
+- required evidence fields and explicit human acceptance;
+- typed decision-shaping conclusion completeness;
+- referenced canonical documents and implementation paths;
+- repository-state applicability warnings;
+- absence of unresolved work in a `COMPLETE` milestone.
+
+The validator does not execute project commands, determine mathematical truth,
+or replace human judgment. A clean validator result proves schema consistency,
+not application correctness.
 
 ## Experience memory
 
@@ -223,12 +317,13 @@ Invalidate or rerun stale evidence on resume.
 
 A milestone is `COMPLETE` only after all required IDs and acceptance criteria,
 automated and human gates, canonical reconciliation, relevant source integrity,
-closeout records, and repository-specific commit/push requirements are
-satisfied.
+closeout records, repository-specific commit/push requirements, and strict
+deterministic validation are satisfied.
 
 Records summarize causal boundaries, bindings, oracle provenance, repository
-revision, human results, and limitations—not every trial. Retain experience only
-when warranted, then reset `TASKS.md` to bounded next-milestone state.
+revision, human results, typed decision-shaping conclusions, and
+limitations—not every trial. Retain experience only when warranted, then reset
+`TASKS.md` to bounded next-milestone state.
 
 Files under `.durable-state/framework/` and `.durable-state/MANIFEST` are owned
 by the framework updater. Project work must not edit them. Framework updates
