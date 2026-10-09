@@ -893,11 +893,10 @@ iteration under the same R20 request and same H01 gate; it is not R21.
   `lander_landing_tests` shows only the pre-existing V14-C failure; all 12
   `--debug-subsystem` headless smokes exit 0; transfer-cold and normal PPM
   artifacts were generated for human inspection.
-
-Derived implementation follow-up:
-
   Verified-By:
     - M06-R20-V06
+
+Derived implementation follow-up:
 - [x] M06-R20-D07 Instrument / diagnose the first presentation and record the
   causal conclusion.
 - [x] M06-R20-D08 Rebuild the transfer-cold display/camera helpers as a
@@ -1364,12 +1363,11 @@ functional correction and this presentation follow-up pass human review.
   same truthful information).
   IMPLEMENTED (2026-10-08): the banner is a compact top-center one-line event
   with a short lifetime. Human non-obscuring confirmation remains pending.
-
-Derived R21-F01 tasks:
-
   Verified-By:
     - M06-R21-H01
     - M06-R21-F01-V03
+
+Derived R21-F01 tasks:
 - [x] M06-R21-F01-D01 Implement the R21-F01 camera-stability strategy.
   DONE (2026-10-08): `src/debug_subsystem.cpp` provides the bounded stabiliser
   used by the transfer-warm debug camera.
