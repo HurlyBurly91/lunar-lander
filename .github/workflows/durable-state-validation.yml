@@ -1,0 +1,14 @@
+name: Durable-state schema validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  schema-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate durable state
+        run: python3 .durable-state/framework/validator.py --strict .
