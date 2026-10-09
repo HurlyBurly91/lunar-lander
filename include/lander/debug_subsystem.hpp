@@ -408,6 +408,11 @@ struct TransferDebugCameraState {
     bool initialized = false;
     Vec2 center{};
     double zoom = 0.0;
+    // M06-R23-06: once set by the presentation layer, the stabiliser keeps
+    // easing the centre but no longer approaches the requested zoom, so the
+    // camera scale stops tracking the planner's re-fit cadence (only the user
+    // wheel still changes the held zoom).
+    bool zoom_held = false;
 };
 
 TransferColdDisplay transfer_cold_display(const BinarySystem& bin,
@@ -422,13 +427,17 @@ TransferCameraFit transfer_cold_camera_fit(
 // Presentation-only temporal stabiliser for the live transfer-warm debug
 // frame. It applies a minimum context extent to the requested fit, then
 // eases the stored centre / zoom toward that fit with a bounded per-frame
-// zoom ratio, so ordinary bounded re-plans cannot pump the zoom. The state
-// is presentation-only and never feeds back into the simulation or solver.
+// zoom ratio, so ordinary bounded re-plans cannot pump the zoom. With
+// `ease_zoom = false` (M06-R23-06) the centre still eases, but the stored
+// zoom is held: the requested fit no longer drives the camera scale, so the
+// framing stays stable across re-plans until the presentation layer (or the
+// user wheel) changes the held zoom. The state is presentation-only and
+// never feeds back into the simulation or solver.
 TransferCameraFit update_transfer_debug_camera(
     TransferDebugCameraState& state, const Vec2& target_center,
     const Vec2& target_half, double window_width, double window_height,
     double base_scale, double min_zoom, double max_zoom,
-    double min_half_extent = 0.0);
+    double min_half_extent = 0.0, bool ease_zoom = true);
 
 // END CANONICAL ALGORITHM: inter-moon transfer cold display geometry
 

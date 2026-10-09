@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 namespace {
 
@@ -40,6 +41,7 @@ using lander::companion_seed;
 using lander::compute_node_basis;
 using lander::default_node;
 using lander::differential_correction;
+using lander::executor_state_name;
 using lander::kPi;
 using lander::plan_transfer;
 using lander::propagate_ballistic;
@@ -664,7 +666,7 @@ MidcourseRun run_midcourse(const BinarySystem& seed_bin, const Config& cfg,
         }
 
         sim.step_once(input);
-        mc.after_step(before, sim.state(), input, sim.sim_time(), cfg);
+        mc.after_step(before, sim.state(), bin, input, sim.sim_time(), cfg);
 
         const State& after = sim.state();
         const Vec2 tpos = bin.position(seed.target, sim.sim_time());
@@ -954,7 +956,7 @@ void test_r22_transfer_warm_no_crash_through_arrival() {
         }
 
         sim.step_once(input);
-        mc.after_step(before, sim.state(), input, sim.sim_time(), cfg);
+        mc.after_step(before, sim.state(), bin, input, sim.sim_time(), cfg);
 
         if (trace) {
             const lander::ExecutorState post_state = mc.fast().state();
@@ -1050,14 +1052,33 @@ struct FullEncounter {
     int epoch_changes = 0;
     bool crashed = false;
     bool landed = false;
+    // M06-R23 / P2 (full-encounter oracle): terminal-completion and
+    // post-completion passage metrics.
+    bool completed = false;
+    int completed_step = -1;
+    double completion_time = -1.0;
+    int retargets_at_completion = 0;
+    int retargets_after_completion = 0;
+    double fuel_at_completion = 0.0;
+    double fuel_after_completion = 0.0;
+    int post_completion_thrust_steps = 0;
+    double shell_entry_time = -1.0;
+    double min_terrain_clearance = 1.0e30;
+    double final_dist = 0.0;
+    double safe_exit = 0.0;
 };
 
 // Run the 1007 human fixture through one full transfer encounter. When
 // `with_replan` is true the bounded WARM replan runs at the 0.1 s / 0.25 m/s
 // policy; when false the controller is armed with the initial COLD solution
 // and never re-plans (the uncorrected baseline). The window runs a fixed
-// generous span well past the (possibly re-targeted) arrival epoch and stops
-// early only on land/crash, matching the 200 s human recording's horizon.
+// generous span well past the (possibly re-targeted) arrival epoch. The
+// guided run continues the authoritative physics past the terminal
+// completion -- through closest approach, past the companion, to a safe
+// distance (2x the arrival shell) or land/crash -- so the test verifies a
+// real, bounded, completed passage rather than equating arrival-shell entry
+// with survival. The uncorrected baseline never completes and runs the full
+// window.
 FullEncounter run_full_encounter(const Config& cfg, bool with_replan) {
     FullEncounter r{};
     Simulation sim;
@@ -1110,6 +1131,10 @@ FullEncounter run_full_encounter(const Config& cfg, bool with_replan) {
     const Vec2 target0 = bin.position(1, t0);
     r.start_dist = std::hypot(st.x - target0.x, st.y - target0.y);
     r.min_dist = r.start_dist;
+
+    const double arrival_shell =
+        bin.body(1).terrain.max_surface_radius() + 15.0;
+    r.safe_exit = 2.0 * arrival_shell;
 
     bool in_burn_segment = false;
     double segment_start_vgo = 0.0;
@@ -1189,7 +1214,7 @@ FullEncounter run_full_encounter(const Config& cfg, bool with_replan) {
         was_burning = burning;
 
         sim.step_once(input);
-        mc.after_step(before, sim.state(), input, sim.sim_time(), cfg);
+        mc.after_step(before, sim.state(), bin, input, sim.sim_time(), cfg);
 
         const State& after = sim.state();
         const Vec2 tpos = bin.position(1, sim.sim_time());
@@ -1201,13 +1226,53 @@ FullEncounter run_full_encounter(const Config& cfg, bool with_replan) {
             r.rel_speed_at_closest =
                 std::hypot(after.vx - tvel.x, after.vy - tvel.y);
         }
-        if (!mc.active()) {
-            break;  // landed or crashed: the encounter is over
+        // Minimum radial terrain clearance over all bodies, using the same
+        // body-local surface the sim's own crash check uses.
+        for (int k = 0; k < 3; ++k) {
+            const Vec2 c = bin.position(k, sim.sim_time());
+            const double clearance =
+                lander::radial_distance(after, c) -
+                lander::surface_radius_at(bin.body(k).terrain, after, c,
+                                          bin.body_rotation(k, sim.sim_time()));
+            if (clearance < r.min_terrain_clearance) {
+                r.min_terrain_clearance = clearance;
+            }
+        }
+        if (r.shell_entry_time < 0.0 && d <= arrival_shell) {
+            r.shell_entry_time = sim.sim_time();
+        }
+        if (r.completed_step < 0 && !mc.active() && !after.crashed &&
+            !after.landed) {
+            r.completed = true;
+            r.completed_step = i;
+            r.completion_time = sim.sim_time();
+            r.retargets_at_completion = mc.retargets();
+            r.fuel_at_completion = after.fuel;
+        } else if (r.completed_step >= 0 &&
+                   mc.retargets() > r.retargets_at_completion) {
+            r.retargets_after_completion =
+                mc.retargets() - r.retargets_at_completion;
+        }
+        if (r.completed_step >= 0 && i > r.completed_step &&
+            input.main_throttle > 0.0) {
+            ++r.post_completion_thrust_steps;
+        }
+        if (after.crashed || after.landed) {
+            break;  // the encounter is over
+        }
+        if (r.completed && d > r.safe_exit) {
+            break;  // the guided craft is safely past the encounter region
         }
     }
 
     r.ticks_run = sim.sim_time() / cfg.fixed_dt;
+    r.final_dist = std::hypot(
+        sim.state().x - bin.position(1, sim.sim_time()).x,
+        sim.state().y - bin.position(1, sim.sim_time()).y);
     r.fuel_consumed = cfg.fuel - sim.state().fuel;
+    if (r.completed) {
+        r.fuel_after_completion = r.fuel_at_completion - sim.state().fuel;
+    }
     r.crashed = sim.state().crashed;
     r.landed = sim.state().landed;
     return r;
@@ -1241,6 +1306,17 @@ void test_r23_full_encounter() {
         cold.rel_speed_at_closest, cold.retargets, cold.epoch_changes,
         cold.slow_plans, cold.burn_cycles, cold.initial_epoch,
         cold.max_latest_epoch, cold.fuel_consumed, cold.crashed ? 1 : 0);
+    std::printf(
+        "  [R23-05] WARM-P2  complete=%d  entry@%.2f  completed@%.2f  "
+        "post_thrust=%d  post_fuel=%.3f  post_retargets=%d  final_dist=%.1f "
+        "safe_exit=%.1f  min_clearance=%.2f\n",
+        warm.completed ? 1 : 0, warm.shell_entry_time, warm.completion_time,
+        warm.post_completion_thrust_steps, warm.fuel_after_completion,
+        warm.retargets_after_completion, warm.final_dist, warm.safe_exit,
+        warm.min_terrain_clearance);
+    std::printf(
+        "  [R23-05] COLD-P2  complete=%d  final_dist=%.1f  min_clearance=%.2f\n",
+        cold.completed ? 1 : 0, cold.final_dist, cold.min_terrain_clearance);
 
     check(warm.min_dist > 0.0, "R23-05: the guided encounter was simulated");
     check(!warm.crashed,
@@ -1275,6 +1351,578 @@ void test_r23_full_encounter() {
           "(R22 full-range invariant preserved)");
     check(warm.max_vgo_regression <= 1.0e-6,
           "R23-05: uninterrupted burn segments reduce the tracked VGO");
+    // P2: the guided run actually completed the transfer at the destination
+    // clearance shell -- a terminal event, not merely a small predicted miss.
+    check(warm.completed,
+          "R23-05: the guided transfer completed at the destination clearance "
+          "shell (terminal completion, not just a near miss)");
+    check(warm.shell_entry_time >= 0.0 &&
+              std::fabs(warm.shell_entry_time - warm.completion_time) <
+                  1.0e-9,
+          "R23-05: completion fired on exactly the first post-step shell "
+          "entry (per-step HOT invariant, no replan-tick preemption)");
+    check(warm.post_completion_thrust_steps == 0,
+          "R23-05: no thrust is commanded after completion");
+    check(warm.fuel_after_completion < 1.0e-9,
+          "R23-05: no fuel is consumed after completion");
+    check(warm.retargets_after_completion == 0,
+          "R23-05: no new retarget after completion (the finite arrival "
+          "epoch held through the passage)");
+    check(warm.closest_time >= warm.completion_time - cfg.fixed_dt,
+          "R23-05: the closest approach is after disengagement");
+    check(warm.final_dist > warm.safe_exit,
+          "R23-05: the guided craft departed the encounter region (safely "
+          "past the companion)");
+    check(warm.min_terrain_clearance > 0.0,
+          "R23-05: the minimum terrain clearance stayed positive through the "
+          "passage (no surface contact)");
+    // The uncorrected baseline is the negative control: it never reaches the
+    // shell, so it never completes, yet it still stays out of the ground.
+    check(!cold.completed,
+          "R23-05: the uncorrected COLD baseline never completed (it never "
+          "reaches the arrival shell)");
+    check(cold.min_terrain_clearance > 0.0,
+          "R23-05: the COLD baseline also stayed clear of every surface");
+}
+
+// ---- M06-R23 / D02 (P3): retarget lifecycle trace.
+//
+// The R21-era defect was an *infinite* retarget loop: at every reached epoch
+// the warm solver could not target a past epoch, the cold fallback picked the
+// next later one, and the re-aim (sometimes a degenerate ~36 m/s impulse)
+// interrupted the correction that had already delivered most of its dv. The
+// R23 fix (bounded retarget persistence + the per-step terminal completion)
+// must make the lifecycle *bounded*, and the evidence must distinguish the
+// classes of event rather than depend on a fixed retarget count:
+//
+//   GENERATE   a bounded-rate slow solve ran (past the cadence gate);
+//   ACCEPT     the solve produced a valid solution (warm or cold fallback);
+//   HOLD       the correction is within tolerance: the on-board node is kept
+//              and the ship holds the planned arc (no re-arm);
+//   RETARGET   the correction exceeds tolerance: the fast node is re-armed
+//              with the corrected node;
+//   INTERRUPTED a RETARGET that replaced a correction whose executor had
+//              already started delivering it (an ALIGN pause of a partially
+//              delivered burn): the delivered dv is superseded by the new
+//              solution;
+//   REAIM      a RETARGET of a not-yet-delivered node (WAIT, an undelivered
+//              ALIGN swing, or a completed previous node): a refresh, not an
+//              interruption;
+//   FAILED     the solve found no solution this cycle: the current node is
+//              held.
+//
+// The R19 guard forbids a RETARGET while the executor is actively in a BURN
+// (it may pause into ALIGN, which is where INTERRUPTED lives); the trace
+// asserts that never happens. Per-event detail goes to stderr only under
+// LL_LIFECYCLE_TRACE; the test always asserts the summary accounting.
+struct LifecycleCounts {
+    int generates = 0;        // bounded-rate solves issued
+    int failed = 0;           // solves that yielded no valid solution
+    int hold = 0;             // valid solve within tolerance (no re-arm)
+    int retargets = 0;        // valid solves that re-armed the executor
+    int interrupted = 0;      // re-arms that replaced unspent node dv
+    int reaim = 0;            // re-arms with no unspent dv on the old node
+    int burn_blocked = 0;     // planner calls short-circuited by the R19 gate
+    int rearm_violations = 0; // re-arms not installing the full correction
+    int epoch_changes = 0;
+    int post_completion_activity = 0;
+    double completion_time = -1.0;
+    int ticks_run = 0;
+    int crashed = 0;
+    int crashed_body = -1;
+    int landed = 0;
+    double crash_time = -1.0;
+};
+
+LifecycleCounts run_lifecycle_trace(const Config& cfg) {
+    LifecycleCounts c{};
+    Simulation sim;
+    sim.reset(1007ULL);
+    const BinarySystem& bin = sim.binary();
+
+    const lander::Body& b = bin.body(0);
+    const double r0 = b.terrain.max_surface_radius() + 20.0;
+    const Vec2 p0 = bin.position(0, 0.0);
+    const Vec2 v0 = bin.velocity(0, 0.0);
+    const double speed = std::sqrt(b.mu / r0);
+    State orbit{};
+    orbit.x = p0.x;
+    orbit.y = p0.y + r0;
+    orbit.vx = v0.x + speed;
+    orbit.vy = v0.y;
+    orbit.angle = 0.0;
+    orbit.fuel = cfg.fuel;
+    sim.set_state(orbit);
+
+    const double t0 = sim.sim_time();
+    const State st = sim.state();
+    Vec2 v_out{};
+    TransferSolution cold{};
+    if (!solve_transfer_velocity(bin, cfg.fixed_dt, {st.x, st.y}, 0, 1, t0,
+                                 v_out, &cold)) {
+        return c;
+    }
+    TransferMidcourse mc;
+    ManeuverNode arm_node{};
+    arm_node.time = t0;
+    arm_node.frame_body = 0;
+    const NodeBasis basis0 =
+        compute_node_basis(bin, t0, 0, {st.x, st.y}, {st.vx, st.vy});
+    mc.arm(arm_node, cold, 0, basis0, t0, cfg);
+
+    const bool trace = std::getenv("LL_LIFECYCLE_TRACE") != nullptr;
+    const int ticks = (int)std::llround(120.0 / cfg.fixed_dt);
+    double last_epoch = cold.arrival_epoch;
+    // Harness bookkeeping: the total world dv of the node currently armed
+    // in the fast executor, so a replacement can be classified by how much
+    // of the old node was still unspent when it was replaced. The fixture
+    // arms a zero-dv placeholder node (the R23-05 convention), so the
+    // executor starts Complete with nothing armed; the first WARM retarget
+    // arms the first real correction.
+    double armed_dv = 0.0;
+    State final_state{};
+
+    for (int i = 0; i < ticks; ++i) {
+        const State before = sim.state();
+        const double now = sim.sim_time();
+        const lander::ExecutorState prev_state = mc.fast().state();
+        const Vec2 prev_rem = mc.fast().dv_remaining();
+        const int plans_before = mc.slow_plans();
+        const int retargets_before = mc.retargets();
+
+        mc.maybe_replan(bin, cfg, before, now, 0.1, 0.25);
+
+        if (prev_state == lander::ExecutorState::Burn) {
+            // The R19 guard: an actively burning correction blocks the
+            // bounded-rate planner entirely (no solve, no re-arm) until the
+            // burn completes.
+            ++c.burn_blocked;
+        }
+
+        const bool generated = mc.slow_plans() > plans_before;
+        const bool retargeted = mc.retargets() > retargets_before;
+        if (generated) {
+            ++c.generates;
+            if (!mc.last_slow_valid()) {
+                ++c.failed;
+            } else if (retargeted) {
+                ++c.retargets;
+                const double prev_rem_mag = std::hypot(prev_rem.x, prev_rem.y);
+                // The align executor holds the armed VGO (remaining equals
+                // the last armed correction and only changes on re-arm),
+                // while a burn consumes dv. A re-arm therefore interrupts
+                // the previous node only when that node still had unspent
+                // dv strictly below what was armed; remaining at or above
+                // the armed value is a benign re-aim, and zero remaining is
+                // a completed node.
+                if (prev_rem_mag > 1.0e-6 && prev_rem_mag < armed_dv - 1.0e-6) {
+                    ++c.interrupted;
+                } else {
+                    ++c.reaim;
+                }
+                // Bookkeeping invariant: a retarget installs the full solver
+                // correction. The armed node's world dv must equal the
+                // solver's requested correction magnitude (the prograde /
+                // radial node basis is orthonormal, so the world magnitude of
+                // the correction is exactly last_corr_dv) -- never a stale
+                // partial remainder of the previous node.
+                const Vec2 new_world_dv = mc.fast().dv_remaining();
+                const double new_node_dv =
+                    std::hypot(new_world_dv.x, new_world_dv.y);
+                if (std::fabs(new_node_dv - mc.last_corr_dv()) > 1.0e-6) {
+                    ++c.rearm_violations;
+                }
+                if (trace) {
+                    const double ang_before =
+                        std::atan2(-prev_rem.x, prev_rem.y);
+                    const double ang_after =
+                        std::atan2(-new_world_dv.x, new_world_dv.y);
+                    std::fprintf(
+                        stderr,
+                        "L %.3f RETARGET(%s) %s->%s armed=%.3f "
+                        "remaining=%.3f ang %.3f->%.3f corr=%.3f warm=%d\n",
+                        now, executor_state_name(prev_state),
+                        executor_state_name(prev_state),
+                        executor_state_name(mc.fast().state()), armed_dv,
+                        prev_rem_mag, ang_before, ang_after,
+                        mc.last_corr_dv(), mc.last_warm_used() ? 1 : 0);
+                }
+                armed_dv = new_node_dv;
+            } else {
+                ++c.hold;
+                if (trace) {
+                    std::fprintf(stderr, "L %.3f HOLD corr=%.3f warm=%d\n",
+                                 now, mc.last_corr_dv(),
+                                 mc.last_warm_used() ? 1 : 0);
+                }
+            }
+        }
+        if (retargeted) {
+            const double ep = mc.cache().arrival_epoch;
+            if (std::fabs(ep - last_epoch) > 0.5) {
+                ++c.epoch_changes;
+                last_epoch = ep;
+            }
+        }
+
+        const Input input =
+            mc.make_input(before, now, cfg, /*manual_left=*/false,
+                          /*manual_right=*/false);
+        sim.step_once(input);
+        const State after = sim.state();
+        mc.after_step(before, after, bin, input, sim.sim_time(), cfg);
+        final_state = after;
+
+        if (c.completion_time < 0.0 && !mc.active() && !after.crashed &&
+            !after.landed) {
+            c.completion_time = sim.sim_time();
+        }
+        if (c.completion_time >= 0.0 && (generated || retargeted)) {
+            ++c.post_completion_activity;
+        }
+        if (c.crash_time < 0.0 && after.crashed) {
+            c.crash_time = sim.sim_time();
+            c.crashed = 1;
+            c.crashed_body = after.crash_body;
+        }
+        c.ticks_run = i + 1;
+    }
+    c.landed = final_state.landed ? 1 : 0;
+    return c;
+}
+
+void test_r23_retarget_lifecycle() {
+    Config cfg{};
+    const LifecycleCounts c = run_lifecycle_trace(cfg);
+    std::fprintf(
+        stdout,
+        "  [R23-02L] WARM  ticks_run=%d  completion@%.2f  landed=%d  "
+        "(window end: crashed=%d body=%d @%.2f)\n",
+        c.ticks_run, c.completion_time, c.landed, c.crashed,
+        c.crashed_body, c.crash_time);
+    std::fprintf(
+        stdout,
+        "  [R23-02L] generates=%d  failed=%d  hold=%d  retarget=%d  "
+        "(failed+hold+retarget=%d)\n",
+        c.generates, c.failed, c.hold, c.retargets,
+        c.failed + c.hold + c.retargets);
+    std::fprintf(
+        stdout,
+        "  [R23-02L] interrupted=%d  reaim=%d  (interrupted+reaim=%d)  "
+        "burn_blocked=%d  rearm_viol=%d  epoch_changes=%d  "
+        "post_activity=%d  retarget/generate=%.3f\n",
+        c.interrupted, c.reaim, c.interrupted + c.reaim, c.burn_blocked,
+        c.rearm_violations, c.epoch_changes, c.post_completion_activity,
+        c.generates > 0 ? (double)c.retargets / (double)c.generates : 0.0);
+
+    // Accounting identities: every generated solve ends in exactly one of
+    // failed / hold / retarget, and every retarget is either an
+    // interruption of unspent node dv or a benign re-aim.
+    check(c.generates == c.failed + c.hold + c.retargets,
+          "R23-02L: every generated solve is accounted for "
+          "(failed + hold + retarget = generates)");
+    check(c.retargets == c.interrupted + c.reaim,
+          "R23-02L: every retarget is accounted for "
+          "(interrupted + reaim = retargets)");
+    // The full window ran (no silent early stop in the harness).
+    check(c.ticks_run == (int)std::llround(120.0 / cfg.fixed_dt),
+          "R23-02L: the full 120 s window ran to completion");
+    // The WARM path is alive and the guidance actually corrects.
+    check(c.generates > 0,
+          "R23-02L: the bounded-rate WARM planner generated slow solutions");
+    check(c.retargets > 0,
+          "R23-02L: the guidance applied real corrections (retargets exist)");
+    // Bounded, not a loop: a retarget is a minority of the generated
+    // solves -- the R21 infinite loop re-aimed at every reached epoch, so
+    // every generated solve became a new retarget.
+    check(c.retargets < c.generates,
+          "R23-02L: retargets are bounded (a strict minority of generated "
+          "solves, not an every-cycle re-aim loop)");
+    // Interrupting a correction that still had unspent dv is the rarer
+    // sub-case of retargeting (the R21 defect's signature), not the
+    // common path.
+    check(c.interrupted < c.retargets,
+          "R23-02L: interrupting an unspent correction is bounded (strictly "
+          "fewer than the total retargets)");
+    // R19 guard territory was actually exercised: the planner was called
+    // while a correction was burning, and the gate short-circuits before
+    // any solve, so no retarget can ever replace an active burn.
+    check(c.burn_blocked > 0,
+          "R23-02L: the planner was blocked while corrections burned (R19 "
+          "guard exercised)");
+    // Bookkeeping: re-arms always install the full corrected node.
+    check(c.rearm_violations == 0,
+          "R23-02L: every retarget re-armed the full corrected node (no "
+          "stale partial dv bookkeeping)");
+    // The arrival epoch does not churn forward (consistent with R23-05).
+    check(c.epoch_changes <= 3,
+          "R23-02L: the arrival epoch did not churn forward (bounded "
+          "retarget persistence)");
+    // Once the per-step terminal completion fires, the whole lifecycle is
+    // quiescent: no further solves, holds, or re-targets. Completion is
+    // recorded only on a step that is neither crashed nor landed, so a
+    // valid completion_time (with no landing anywhere in the run) is the
+    // clean-completion evidence. What the uncommanded craft does afterwards
+    // is plain ballistics outside the lifecycle's scope: the R23-05 flyby
+    // returns on the primary's return orbit and impacts it late in the
+    // window (window-end crash provenance above); terrain clearance of the
+    // post-completion flight is covered by R23-05's safe-exit window.
+    check(c.completion_time >= 0.0 && c.landed == 0,
+          "R23-02L: the transfer completed cleanly (recorded only on a "
+          "non-crashed, non-landed step, and no landing ever occurred)");
+    check(c.post_completion_activity == 0,
+          "R23-02L: no lifecycle activity after terminal completion");
+}
+
+// ---- M06-R23 / D05 (P1): terminal completion is a per-step HOT evaluation,
+// not a property of the bounded-rate WARM replan. These scenarios arm the
+// two-level controller outside the destination clearance shell and drive real
+// physics WITHOUT calling maybe_replan at all, so the only path left that
+// could complete the transfer is the per-step check in after_step. The old
+// defect: completion lived inside maybe_replan, behind a burn-state gate and
+// a 0.1 s cadence, so a craft crossing the shell mid-burn, mid-align-swing,
+// or while coasting passed the target region and only completed at a later
+// replan tick (or never, while the burn-state gate held). Each scenario
+// asserts that completion fires on exactly the first fixed step whose
+// post-step state is inside the shell, in the expected executor state, and
+// that the controller then holds zero thrust / zero rotation while the ship
+// coasts.
+void test_r23_terminal_completion_per_step() {
+    Config cfg{};
+    Simulation sim;
+    sim.reset(1007ULL);
+    const BinarySystem& bin = sim.binary();
+
+    const int target = 1;
+    const double shell =
+        bin.body(target).terrain.max_surface_radius() + 15.0;
+    const double dt = cfg.fixed_dt;
+    const int max_steps = 1200;  // 10 s of search
+
+    // Route record only: these scenarios never call maybe_replan, so the
+    // seed merely supplies the source/target route (target_body()).
+    TransferSolution seed{};
+    seed.valid = true;
+    seed.source = 0;
+    seed.target = target;
+
+    auto dot = [](const Vec2& a, const Vec2& b) {
+        return a.x * b.x + a.y * b.y;
+    };
+
+    // Approach tangent to the destination's orbit: a finite grazing passage
+    // through the shell, not a radial dive into the surface.
+    const Vec2 pc = bin.position(target, 0.0);
+    const Vec2 vc = bin.velocity(target, 0.0);
+    const double vc_mag = std::hypot(vc.x, vc.y);
+    const Vec2 tang =
+        (vc_mag > 1.0e-12)
+            ? Vec2{vc.x / vc_mag, vc.y / vc_mag}
+            : Vec2{-pc.y / std::hypot(pc.x, pc.y), pc.x / std::hypot(pc.x, pc.y)};
+
+    struct ScenarioResult {
+        bool started_outside{false};
+        bool engaged_at_start{false};
+        int crossing_step{-1};
+        int completed_step{-1};
+        lander::ExecutorState state_at_crossing{lander::ExecutorState::Idle};
+        double dv_remaining_at_crossing{0.0};
+        bool crashed{false};
+        bool landed{false};
+        int post_completion_thrust_steps{0};
+        double angle_at_completion{0.0};
+        double omega_at_completion{0.0};
+        double angle_after{0.0};
+        int steps_after_completion{0};
+        int steps_run{0};
+    };
+
+    auto run_scenario = [&](const char* tag, double nose_offset_rad,
+                            double dv_total, double gap, double v_approach) {
+        ScenarioResult r{};
+
+        const Vec2 p0 = pc - tang * (shell + gap);
+        const Vec2 v0 = vc + tang * v_approach;
+
+        // World-frame VGO the correction must deliver: along the approach
+        // direction, with the nose pre-set to it (or offset, for ALIGN).
+        const Vec2 w = tang * dv_total;
+        const NodeBasis basis = compute_node_basis(bin, 0.0, 0, p0, v0);
+        ManeuverNode node{};
+        node.time = 0.0;
+        node.frame_body = 0;
+        if (dv_total > 0.0) {
+            node.dv_prograde = dot(w, basis.prograde);
+            node.dv_radial = dot(w, basis.radial_out);
+        }
+
+        State st0{};
+        st0.x = p0.x;
+        st0.y = p0.y;
+        st0.vx = v0.x;
+        st0.vy = v0.y;
+        const double nose = std::atan2(-tang.x, tang.y) + nose_offset_rad;
+        st0.angle = nose;
+        st0.omega = 0.0;
+        st0.fuel = 1000.0;
+
+        sim.set_state(st0);
+
+        TransferMidcourse mc;
+        const NodeBasis arm_basis = compute_node_basis(
+            bin, 0.0, 0, {st0.x, st0.y}, {st0.vx, st0.vy});
+        mc.arm(node, seed, 0, arm_basis, 0.0, cfg);
+
+        const double d0 = std::hypot(st0.x - pc.x, st0.y - pc.y);
+        r.started_outside = d0 > shell;
+        r.engaged_at_start = mc.active();
+
+        for (int i = 0; i < max_steps; ++i) {
+            const State before = sim.state();
+            const double now = sim.sim_time();
+            // No maybe_replan on purpose: completion must not depend on the
+            // bounded-rate WARM cadence (the R21/R22 defect).
+            const Input input =
+                mc.make_input(before, now, cfg, false, false);
+            const lander::ExecutorState pre_state = mc.fast().state();
+
+            sim.step_once(input);
+            mc.after_step(before, sim.state(), bin, input, sim.sim_time(), cfg);
+            const State& after = sim.state();
+            r.steps_run = i + 1;
+
+            const Vec2 tp = bin.position(target, sim.sim_time());
+            const double d = std::hypot(after.x - tp.x, after.y - tp.y);
+
+            if (r.crossing_step < 0 && d <= shell) {
+                r.crossing_step = i;
+                r.state_at_crossing = pre_state;
+                r.dv_remaining_at_crossing =
+                    std::hypot(mc.fast().dv_remaining().x,
+                               mc.fast().dv_remaining().y);
+                r.angle_at_completion = after.angle;
+                r.omega_at_completion = after.omega;
+            }
+            if (r.completed_step < 0 && !mc.active()) {
+                r.completed_step = i;
+            }
+            if (r.completed_step >= 0 && i >= r.completed_step + 1 &&
+                (input.main_throttle > 0.0 || input.rotate_left ||
+                 input.rotate_right)) {
+                ++r.post_completion_thrust_steps;
+            }
+            if (after.crashed) {
+                r.crashed = true;
+            }
+            if (after.landed) {
+                r.landed = true;
+            }
+            if (r.completed_step >= 0 && i - r.completed_step >= 10) {
+                r.angle_after = sim.state().angle;
+                r.steps_after_completion = i - r.completed_step;
+                break;
+            }
+        }
+
+        std::printf("  [R23-04/%s] crossing@step %d (t=%.3f s)  "
+                    "completed@step %d  state=%s  dv_rem=%.3f  "
+                    "post_thrust=%d  crashed=%d landed=%d steps=%d\n",
+                    tag, r.crossing_step,
+                    r.crossing_step >= 0 ? (r.crossing_step + 1) * dt : -1.0,
+                    r.completed_step,
+                    executor_state_name(r.state_at_crossing),
+                    r.dv_remaining_at_crossing, r.post_completion_thrust_steps,
+                    r.crashed ? 1 : 0, r.landed ? 1 : 0, r.steps_run);
+
+        const char* full = tag;
+        check(r.started_outside, (std::string(full) +
+                                      ": the craft starts outside the shell")
+                                     .c_str());
+        check(r.engaged_at_start,
+              (std::string(full) + ": the controller is engaged at start")
+                  .c_str());
+        check(r.crossing_step >= 0,
+              (std::string(full) + ": the craft reaches the shell")
+                  .c_str());
+        if (r.crossing_step >= 0) {
+            check(r.completed_step == r.crossing_step,
+                  (std::string(full) +
+                   ": completion fires on exactly the first post-step entry "
+                   "into the shell")
+                      .c_str());
+        }
+        check(r.completed_step >= 0,
+              (std::string(full) + ": the transfer completes")
+                  .c_str());
+        check(!r.crashed, (std::string(full) + ": no crash").c_str());
+        check(!r.landed, (std::string(full) + ": no landing").c_str());
+        check(r.post_completion_thrust_steps == 0,
+              (std::string(full) +
+               ": no thrust or rotation is commanded after completion")
+                  .c_str());
+        if (r.completed_step >= 0 && r.steps_after_completion > 0) {
+            // No rotation is commanded after completion, so the residual
+            // angular rate at completion (left by the last alignment swing)
+            // is constant and the attitude drifts ballistically at exactly
+            // that rate.
+            double drift = std::fmod(
+                r.angle_after - r.angle_at_completion + lander::kPi,
+                lander::kTwoPi);
+            if (drift < 0.0) {
+                drift += lander::kTwoPi;
+            }
+            drift -= lander::kPi;
+            const double expected =
+                r.omega_at_completion * r.steps_after_completion * dt;
+            check_close(drift, expected, 1.0e-9,
+                        (std::string(full) +
+                         ": the ship coasts without rotation after "
+                         "completion (residual-rate ballistic drift)")
+                            .c_str());
+        }
+        return r;
+    };
+
+    // S1: the crossing happens mid-burn. The old burn-state gate in
+    // maybe_replan could not complete while a correction burn was in
+    // progress; the per-step check must.
+    {
+        ScenarioResult r =
+            run_scenario("BURN", /*nose_offset=*/0.0, /*dv_total=*/8.0,
+                         /*gap=*/1.5, /*v_approach=*/3.0);
+        check(r.state_at_crossing == lander::ExecutorState::Burn,
+              "R23-04/BURN: the crossing happens while the correction is "
+              "burning");
+        check(r.dv_remaining_at_crossing > 0.5 &&
+                  r.dv_remaining_at_crossing < 8.0,
+              "R23-04/BURN: the correction was in progress (partially "
+              "delivered) at the crossing");
+    }
+
+    // S2: the crossing happens during an ALIGN swing (throttle held at zero
+    // by the pre-ignition/alignment semantics). The approach is fast enough
+    // that the shell is reached before the ~1.7 s bang-bang align completes.
+    {
+        ScenarioResult r =
+            run_scenario("ALIGN", /*nose_offset=*/0.9, /*dv_total=*/8.0,
+                         /*gap=*/5.0, /*v_approach=*/20.0);
+        check(r.state_at_crossing == lander::ExecutorState::Align,
+              "R23-04/ALIGN: the crossing happens during an align swing");
+        check(r.dv_remaining_at_crossing > 7.5,
+              "R23-04/ALIGN: no impulse had been delivered at the crossing");
+    }
+
+    // S3: the craft never burns (zero-delta-v node: the executor is
+    // Complete, the controller coasts) and still must complete at the shell.
+    {
+        ScenarioResult r =
+            run_scenario("COAST", /*nose_offset=*/0.0, /*dv_total=*/0.0,
+                         /*gap=*/3.0, /*v_approach=*/10.0);
+        check(r.state_at_crossing == lander::ExecutorState::Complete,
+              "R23-04/COAST: the crossing happens while coasting");
+        check_close(r.dv_remaining_at_crossing, 0.0, 1.0e-12,
+                    "R23-04/COAST: there was no correction to deliver");
+    }
 }
 
 // ---- M06-R21-V01: the bounded midcourse's retarget telemetry reports the
@@ -1379,6 +2027,8 @@ int main() {
     test_two_level_closed_loop();
     test_r22_transfer_warm_no_crash_through_arrival();
     test_r23_full_encounter();
+    test_r23_retarget_lifecycle();
+    test_r23_terminal_completion_per_step();
     test_r21_telemetry_semantics();
 
     if (failures == 0) {

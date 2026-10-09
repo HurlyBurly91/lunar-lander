@@ -39,6 +39,12 @@ constexpr double kAlignOmegaBand = 0.1;
 // still applies on every step of a continuing burn.
 constexpr double kContinuationAngleBand = 0.05;
 
+// Clearance above the destination body's maximum surface radius that
+// terminates the transfer (M06-R23 / D05): identical to the transfer solver's
+// arrival-shell clearance (kTransferClearance in src/ballistic.cpp), i.e. the
+// target region the planner flies to.
+constexpr double kArrivalShellClearance = 15.0;
+
 // FLIGHT-COMPUTER TIER: HOT
 // BEGIN CANONICAL ALGORITHM: bang-bang attitude control
 // Reference:
@@ -381,6 +387,8 @@ void TransferMidcourse::arm(const ManeuverNode& node,
     last_retargeted_ = false;
     last_slow_valid_ = false;
     last_warm_used_ = false;
+    shell_body_ = -1;
+    shell_radius_ = 0.0;
 }
 
 void TransferMidcourse::abort() {
@@ -400,12 +408,47 @@ Input TransferMidcourse::make_input(const State& state, double now,
 }
 
 void TransferMidcourse::after_step(const State& before, const State& after,
-                                   const Input& input, double now,
-                                   const Config& config) {
+                                   const BinarySystem& bin, const Input& input,
+                                   double now, const Config& config) {
     fast_.after_step(before, after, input, now, config);
     // The arc is done once the ship lands or crashes; stop re-aiming.
     if (after.landed || after.crashed) {
         engaged_ = false;
+        return;
+    }
+    if (!engaged_) {
+        return;
+    }
+    // M06-R23 / D05 (bounded retarget persistence / safe-boundary
+    // retargeting), now evaluated on every 1/120 s physics step at the HOT
+    // tier: once the guided craft reaches the destination's clearance shell
+    // the transfer objective -- a finite passage through the target region --
+    // is achieved. Completing here means the bounded-rate replan interval and
+    // the burn-state gate can no longer preempt it (the defect that crashed
+    // the R21/R22 run: at each reached epoch the craft sat inside the shell,
+    // the warm solver could not target a now-past epoch, the cold fallback
+    // picked the next later one, and the repeated re-aims -- the last a
+    // degenerate ~36 m/s impulse -- drove the craft into the companion). The
+    // check is O(1): the companion position is a closed-form Keplerian
+    // evaluation and the shell radius is cached per destination body, so the
+    // 120 Hz loop never touches the O(samples) terrain scan. Completion
+    // commands no thrust, so it cannot violate the R22 alignment invariant.
+    const int target = target_body();
+    if (shell_body_ != target) {
+        shell_body_ = target;
+        shell_radius_ =
+            bin.body(target).terrain.max_surface_radius() +
+            kArrivalShellClearance;
+    }
+    const Vec2 tpos = bin.position(target, now);
+    const double dst = std::hypot(after.x - tpos.x, after.y - tpos.y);
+    if (dst <= shell_radius_) {
+        engaged_ = false;
+        fast_.abort();
+        last_corr_dv_ = 0.0;
+        last_retargeted_ = false;
+        last_slow_valid_ = false;
+        last_warm_used_ = false;
     }
 }
 
@@ -432,36 +475,11 @@ bool TransferMidcourse::maybe_replan(const BinarySystem& bin,
     last_replan_ = now;
 
     const int source = cache_.source >= 0 ? cache_.source : reference_body_;
-    const int target = 1 - source;
 
-    // M06-R23 / D05 (bounded retarget persistence / safe-boundary
-    // retargeting): once the guided craft reaches the destination's clearance
-    // shell the transfer objective -- a finite passage through the target
-    // region -- is achieved. Complete here: disengage the slow planner and the
-    // fast correction so the craft coasts through, instead of letting the cold
-    // fallback drag a passed arrival epoch forward to a later one. The R21/R22
-    // defect was exactly this: at each reached epoch the craft sat inside the
-    // shell, the warm solver could not target a now-past epoch, the cold
-    // fallback picked the next later epoch, and the repeated re-aims (the last
-    // a degenerate ~36 m/s impulse) drove the craft into the companion.
-    // Checking before the slow solve means a burn-state gate cannot preempt
-    // completion, and the coast cannot violate the R22 alignment invariant
-    // because no thrust is commanded.
-    {
-        const Vec2 tpos = bin.position(target, now);
-        const double dst = std::hypot(state.x - tpos.x, state.y - tpos.y);
-        const double shell =
-            bin.body(target).terrain.max_surface_radius() + 15.0;
-        if (dst <= shell) {
-            engaged_ = false;
-            fast_.abort();
-            last_corr_dv_ = 0.0;
-            last_retargeted_ = false;
-            last_slow_valid_ = false;
-            last_warm_used_ = false;
-            return true;
-        }
-    }
+    // Terminal completion (the destination's clearance shell) is not decided
+    // here (M06-R23 / D05): it is evaluated on every fixed step by
+    // after_step at the 120 Hz physics cadence, so neither this bounded-rate
+    // interval nor the burn-state gate above can preempt it.
 
     // WARM slow planner: re-aim a midcourse correction from the current time.
     // plan_transfer is warm-first (bounded differential correction reusing the

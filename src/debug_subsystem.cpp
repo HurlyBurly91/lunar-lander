@@ -409,11 +409,17 @@ void setup_debug_scenario(DebugSubsystem mode, DebugSubsystems& s,
 // warm-starting-and-bounded-replanning.md (the accepted COLD solution being
 // displayed); docs/physics-model-gravity.md (the arc stays WORLD/INERTIAL).
 //
-// M06-R20-F01: the display is an explicit temporal inspection scene. The
-// camera fit is driven by the accepted inertial arc, by local source/target
-// surface outlines at their respective epochs, and by the solver's arrival
-// shell when available. Full body centres are intentionally excluded from the
-// fit bounds so an unrelated large body cannot compress the route.
+ // M06-R20-F01: the display is an explicit temporal inspection scene. The
+ // camera fit is driven by the accepted inertial arc, by local source/target
+ // surface outlines at their respective epochs, and by the solver's arrival
+ // shell when available. Full body centres are intentionally excluded from the
+ // fit bounds so an unrelated large body cannot compress the route.
+ //
+ // M06-R23-06: the live transfer-warm presentation layer may additionally
+ // request a held zoom (`ease_zoom = false` on update_transfer_debug_camera):
+ // the centre still eases toward the moving fit, but the requested fit no
+ // longer drives the scale, decoupling camera framing from the planner's
+ // re-fit cadence. The fit derivation above is unchanged.
 
 namespace {
 
@@ -567,7 +573,7 @@ TransferCameraFit update_transfer_debug_camera(
     TransferDebugCameraState& state, const Vec2& target_center,
     const Vec2& target_half, double window_width, double window_height,
     double base_scale, double min_zoom, double max_zoom,
-    double min_half_extent) {
+    double min_half_extent, bool ease_zoom) {
     Vec2 half = target_half;
     if (min_half_extent > 0.0) {
         half.x = std::max(half.x, min_half_extent);
@@ -594,9 +600,16 @@ TransferCameraFit update_transfer_debug_camera(
         state.center.x + kAlpha * (target.center.x - state.center.x);
     const double center_y =
         state.center.y + kAlpha * (target.center.y - state.center.y);
-    double ratio = target.zoom / state.zoom;
-    ratio = std::clamp(ratio, 1.0 / kMaxZoomStep, kMaxZoomStep);
-    const double zoom = std::clamp(state.zoom * ratio, floor_zoom, ceiling);
+    // M06-R23-06: with a held zoom the requested fit no longer drives the
+    // camera scale; only the centre keeps easing toward the moving context.
+    double zoom = state.zoom;
+    if (ease_zoom) {
+        double ratio = target.zoom / state.zoom;
+        ratio = std::clamp(ratio, 1.0 / kMaxZoomStep, kMaxZoomStep);
+        zoom = std::clamp(state.zoom * ratio, floor_zoom, ceiling);
+    } else {
+        zoom = std::clamp(zoom, floor_zoom, ceiling);
+    }
 
     state.center = {center_x, center_y};
     state.zoom = zoom;

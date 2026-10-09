@@ -130,19 +130,24 @@ public:
     // or rotation while the ship is coasting between corrections.
     Input make_input(const State& state, double now, const Config& config,
                      bool manual_left, bool manual_right) const;
-
-    // Advance the fast executor after one authoritative fixed step; disengage
-    // when the ship lands or crashes.
+    // HOT (O(1), every 1/120 s): advance the fast executor after one
+    // authoritative fixed step and evaluate the destination clearance-shell
+    // terminal completion at the same physics cadence, so neither the
+    // executor state nor a not-yet-due replan interval can preempt it.
+    // Disengage when the ship lands or crashes.
     void after_step(const State& before, const State& after,
-                    const Input& input, double now, const Config& config);
+                    const BinarySystem& bin, const Input& input, double now,
+                    const Config& config);
 
     // WARM (bounded rate): re-aim the arc from the current state via
     // plan_transfer (warm-first / cold-fallback) at most once per
     // `replan_interval`; never on every fixed step. When the re-aim reports a
     // required correction larger than `miss_tolerance` (a miss beyond
     // tolerance), the fast executor re-targets with the corrected node.
-    // Returns true when a slow solve ran on this call (callers use this to
-    // count bounded-rate replans, M06-R5-V05).
+    // Terminal completion (the destination clearance shell) is never decided
+    // here; it runs on every fixed step in after_step. Returns true when a
+    // slow solve ran on this call (callers use this to count bounded-rate
+    // replans, M06-R5-V05).
     bool maybe_replan(const BinarySystem& bin, const Config& config,
                       const State& state, double now,
                       double replan_interval = 0.1,
@@ -175,6 +180,18 @@ private:
     bool last_retargeted_{false};
     bool last_slow_valid_{false};
     bool last_warm_used_{false};
+    // Per-target cached arrival shell (M06-R23 / D05): Terrain::
+    // max_surface_radius() is an O(samples) scan, so it is computed once per
+    // arming cycle and reused by the O(1) per-step completion check. Reset in
+    // arm() whenever the warm-start seed (and thus the target body) changes.
+    int shell_body_{-1};
+    double shell_radius_{0.0};
+
+    int target_body() const noexcept {
+        const int source =
+            cache_.source >= 0 ? cache_.source : reference_body_;
+        return 1 - source;
+    }
 };
 
 }  // namespace lander

@@ -80,6 +80,16 @@ constexpr int kPredictBudget = 240;
 // required correction delta-v exceeds the threshold below.
 constexpr double kMidcourseReplanSec = 0.1;
 constexpr double kMidcourseCorrectionDvThreshold = 0.25;
+// M06-R23-06: presentation cadence for the live transfer-warm debug view.
+// The route display, its banner, and the warm numbers panel publish on this
+// rate-limited cadence instead of on every planner re-plan, so annotations
+// stay readable and the numbers stay visually stable. The replaced route is
+// kept on screen (faded) for a minimum lifetime, and the camera scale is
+// held after the initial fit (the wheel still zooms). Presentation-only:
+// the planner, the solver, and the physics are untouched.
+constexpr double kWarmDisplayRefreshSec = 2.5;
+constexpr double kWarmBannerVisibleSec = 3.0;
+constexpr double kWarmPrevRouteSec = 8.0;
 
 struct Vec2 {
     double x{};
@@ -2097,10 +2107,11 @@ static void draw_node_executor_debug_axes(
 static void draw_transfer_warm_debug(
     SDL_Renderer* renderer, const lander::Camera& cam,
     const lander::TransferColdDisplay& seed,
-    const lander::TransferColdDisplay& warm, const lander::State& ship,
-    const lander::TransferMidcourse& mc, const lander::BinarySystem& bin,
-    const char* target_label, double t_now, bool banner_visible,
-    const std::string& banner) {
+    const lander::TransferColdDisplay& warm,
+    const lander::TransferColdDisplay& prev, double prev_time,
+    const lander::State& ship, const lander::TransferMidcourse& mc,
+    const lander::BinarySystem& bin, const char* target_label, double t_now,
+    bool banner_visible, const std::string& banner) {
     auto draw_outline = [&](const std::vector<lander::Vec2>& outline,
                             Color color, Uint8 alpha) {
         for (std::size_t i = 0; i + 1 < outline.size(); ++i) {
@@ -2148,6 +2159,25 @@ static void draw_transfer_warm_debug(
         }
         marker(seed.dep, "COLD DEP", seed_c, 150, 10.0, -5.0);
         marker(seed.arr, "COLD ARR", seed_c, 150, -64.0, -5.0);
+    }
+
+    // M06-R23-06: the route replaced by the last publish stays on screen,
+    // faded, for a minimum on-screen lifetime so the context does not
+    // disappear on every re-plan.
+    if (prev.valid && prev_time >= 0.0 &&
+        t_now - prev_time <= kWarmPrevRouteSec) {
+        const Color prev_c = make_color(70, 130, 95);
+        draw_outline(prev.source_outline, prev_c, 60);
+        draw_outline(prev.target_outline, prev_c, 60);
+        draw_arc(prev, prev_c, 80);
+        if (prev.arc.size() >= 2) {
+            const lander::Vec2& mid = prev.arc[prev.arc.size() / 2].p;
+            const Vec2 sp = to_screen(mid.x, mid.y, cam);
+            draw_text(renderer, "PREV PLAN", static_cast<int>(sp.x) + 7,
+                      static_cast<int>(sp.y) - 6, 1, prev_c);
+        }
+        marker(prev.dep, "OLD DEP", prev_c, 90, 10.0, -5.0);
+        marker(prev.arr, "OLD ARR", prev_c, 90, 10.0, -5.0);
     }
 
     if (warm.valid) {
@@ -3374,10 +3404,20 @@ int main(int argc, char** argv) {
     double transfer_cold_debug_zoom = 0.0;
     lander::TransferColdDisplay transfer_warm_display{};
     lander::TransferColdDisplay transfer_warm_seed_display{};
+    // M06-R23-06: the route replaced by the last publish is kept on screen,
+    // faded, for a minimum on-screen lifetime so the route context does not
+    // disappear on every re-plan.
+    lander::TransferColdDisplay transfer_warm_prev_display{};
+    double transfer_warm_prev_time = -1.0;
     bool transfer_warm_frame_locked = false;
     lander::TransferDebugCameraState transfer_warm_debug_camera{};
     std::string transfer_warm_banner;
     double transfer_warm_banner_time = 0.0;
+    // M06-R23-06: rate-limited publish state for the warm display / banner /
+    // numbers. A re-plan only sets the pending flag; the display and the
+    // numbers publish at most once per kWarmDisplayRefreshSec.
+    double transfer_warm_publish_time = -1.0;
+    bool transfer_warm_publish_pending = false;
 
     lander::AttitudeMode attitude_mode = lander::AttitudeMode::Off;
     // M06-R5: last inter-body transfer solution, used to warm-start the next
@@ -3546,10 +3586,14 @@ int main(int argc, char** argv) {
             transfer_cold_debug_zoom = 0.0;
             transfer_warm_display = lander::TransferColdDisplay{};
             transfer_warm_seed_display = lander::TransferColdDisplay{};
+            transfer_warm_prev_display = lander::TransferColdDisplay{};
+            transfer_warm_prev_time = -1.0;
             transfer_warm_frame_locked = false;
             transfer_warm_debug_camera = lander::TransferDebugCameraState{};
             transfer_warm_banner.clear();
             transfer_warm_banner_time = 0.0;
+            transfer_warm_publish_time = -1.0;
+            transfer_warm_publish_pending = false;
             if (debug_mode == lander::DebugSubsystem::TransferCold) {
                 paused = true;
                 transfer_cold_display = lander::transfer_cold_display(
@@ -3575,6 +3619,7 @@ int main(int argc, char** argv) {
                     transfer_warm_display = lander::transfer_cold_display(
                         sim.binary(), transfer_mc.cache(),
                         sim.config().fixed_dt, 256);
+                    transfer_warm_publish_time = sim.sim_time();
                 }
                 if (transfer_warm_display.valid ||
                     transfer_warm_seed_display.valid) {
@@ -3608,6 +3653,24 @@ int main(int argc, char** argv) {
         maxx = std::max(maxx, live.x);
         miny = std::min(miny, live.y);
         maxy = std::max(maxy, live.y);
+        // M06-R23-06: while the replaced route is still on screen (faded),
+        // keep its extent in the framing union so the camera does not drop it.
+        if (transfer_warm_prev_display.valid &&
+            transfer_warm_prev_time >= 0.0 &&
+            sim.sim_time() - transfer_warm_prev_time <= kWarmPrevRouteSec) {
+            minx = std::min(minx,
+                            transfer_warm_prev_display.fit_center.x -
+                                transfer_warm_prev_display.fit_half.x);
+            maxx = std::max(maxx,
+                            transfer_warm_prev_display.fit_center.x +
+                                transfer_warm_prev_display.fit_half.x);
+            miny = std::min(miny,
+                            transfer_warm_prev_display.fit_center.y -
+                                transfer_warm_prev_display.fit_half.y);
+            maxy = std::max(maxy,
+                            transfer_warm_prev_display.fit_center.y +
+                                transfer_warm_prev_display.fit_half.y);
+        }
         const lander::CameraParams& p = cam.params();
         const lander::BinarySystem& bin = sim.binary();
         const bool target_known =
@@ -3616,13 +3679,21 @@ int main(int argc, char** argv) {
             target_known ? bin.body(d->target).terrain.reference_radius()
                          : 0.0;
         const double min_half = std::max(120.0, 0.9 * target_ref);
+        const bool was_initialized = transfer_warm_debug_camera.initialized;
         const lander::TransferCameraFit fit = lander::update_transfer_debug_camera(
             transfer_warm_debug_camera,
             {0.5 * (minx + maxx), 0.5 * (miny + maxy)},
             {0.5 * std::max(maxx - minx, 0.0),
              0.5 * std::max(maxy - miny, 0.0)},
             p.window_width, p.window_height, p.base_scale, 1.0e-3,
-            p.zoom_max, min_half);
+            p.zoom_max, min_half,
+            !transfer_warm_debug_camera.zoom_held);
+        // M06-R23-06: after the initial fit the camera scale is held; the
+        // per-frame re-fit from the replaced route no longer drives the zoom
+        // (the user wheel still multiplies the held zoom directly).
+        if (!was_initialized && transfer_warm_debug_camera.initialized) {
+            transfer_warm_debug_camera.zoom_held = true;
+        }
         cam.set_debug_frame(fit.center.x, fit.center.y, 0.0, fit.zoom);
     };
     start_mission();
@@ -4198,6 +4269,20 @@ int main(int argc, char** argv) {
                         sim.binary(), sim.config(), before, now,
                         kMidcourseReplanSec, kMidcourseCorrectionDvThreshold);
                     if (warm_dbg && replanned) {
+                        // M06-R23-06: a re-plan marks the publish pending, but
+                        // the display, banner, and numbers only update when
+                        // the rate-limited window opens, decoupling the
+                        // presentation cadence from the planner cadence. The
+                        // published values always carry the event's own
+                        // simulation timestamp (warm_replan_time).
+                        transfer_warm_publish_pending = true;
+                    }
+                    if (warm_dbg && transfer_warm_publish_pending &&
+                        (transfer_warm_publish_time < 0.0 ||
+                         now - transfer_warm_publish_time >=
+                             kWarmDisplayRefreshSec)) {
+                        transfer_warm_publish_time = now;
+                        transfer_warm_publish_pending = false;
                         transfer_debug.warm_miss_before = miss_before;
                         transfer_debug.warm_miss_after =
                             transfer_mc.cache().achieved_miss;
@@ -4222,6 +4307,13 @@ int main(int argc, char** argv) {
                             transfer_mc.last_slow_valid();
                         if (transfer_debug.warm_slow_valid_last &&
                             transfer_mc.cache().valid) {
+                            // M06-R23-06: keep the replaced route on screen,
+                            // faded, for a minimum on-screen lifetime.
+                            if (transfer_warm_display.valid) {
+                                transfer_warm_prev_display =
+                                    transfer_warm_display;
+                                transfer_warm_prev_time = now;
+                            }
                             transfer_warm_display =
                                 lander::transfer_cold_display(
                                     sim.binary(), transfer_mc.cache(),
@@ -4235,7 +4327,7 @@ int main(int argc, char** argv) {
                                 transfer_debug.warm_corr_dv,
                                 transfer_debug.warm_retarget_last ? "Y" : "N");
                             transfer_warm_banner = banner_buf;
-                            transfer_warm_banner_time = 0.8;
+                            transfer_warm_banner_time = kWarmBannerVisibleSec;
                         }
                     }
                     // HOT (O(1), every fixed step): the fast VGO drives
@@ -4299,8 +4391,9 @@ int main(int argc, char** argv) {
                     landing_ap.after_step(before, sim.state(), sim.binary(),
                                           sim.config(), sim.sim_time());
                 } else if (mc_active) {
-                    transfer_mc.after_step(before, sim.state(), step_input,
-                                           sim.sim_time(), sim.config());
+                    transfer_mc.after_step(before, sim.state(), sim.binary(),
+                                           step_input, sim.sim_time(),
+                                           sim.config());
                 } else {
                     node_executor.after_step(before, sim.state(), step_input,
                                              sim.sim_time(), sim.config());
@@ -4817,10 +4910,16 @@ int main(int argc, char** argv) {
                 transfer_warm_display = lander::TransferColdDisplay{};
                 transfer_warm_banner.clear();
                 transfer_warm_banner_time = 0.0;
+                // M06-R23-06: the transfer is over; drop the publish clock so
+                // a stale pending cannot fire on a later re-arm. The last
+                // replaced route (prev) is left to expire on its own lifetime.
+                transfer_warm_publish_time = -1.0;
+                transfer_warm_publish_pending = false;
             }
             draw_transfer_warm_debug(
                 renderer, cam, transfer_warm_seed_display,
-                transfer_warm_display, render_state, transfer_mc,
+                transfer_warm_display, transfer_warm_prev_display,
+                transfer_warm_prev_time, render_state, transfer_mc,
                 sim.binary(), body_name(transfer_debug.target),
                 sim.sim_time(), transfer_warm_banner_time > 0.0,
                 transfer_warm_banner);

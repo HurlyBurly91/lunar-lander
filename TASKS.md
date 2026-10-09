@@ -30,7 +30,10 @@ M06 is active in HUMAN_VERIFICATION on the new `M06-R23` WARM rendezvous-epoch
 correctness, retarget stability, and physical correction convergence request.
 `M06-R21-H01` and `M06-R22-H01` both FAILED on 2026-10-09; R22's spinning fix
 must be preserved, while WARM convergence and presentation stability remain
-open. `M06-R21-H01` FAILED on
+open. R23's automated follow-up work (D02/D06, the per-step completion
+refinement, the full-encounter oracle, and the 12/12 battery) is complete as
+of 2026-10-09 but uncommitted on top of provisional checkpoint f1c2449; the
+three human gates remain unresolved. `M06-R21-H01` FAILED on
 2026-10-08: the human watched the complete transfer-warm run and observed
 full-throttle, materially misaligned / approximately orthogonal ACT/VGO burn
 segments, a powered spin that averaged thrust, and a terminal crash at the
@@ -1769,9 +1772,29 @@ correction), then holds; `crash=0`; `min_dist` 53.1 m (clean passage inside the
 R23-02 churn and the R23-03/R23-04 "incompatible terminal states" / "FAST
 COMPLETE with stale THR" symptoms, which were all driven by the receding
 epoch. The R22 full-throttle invariant is preserved (whole-run
-`max_align_err` 0, `max_abs_omega` 0 in the transfer-warm suite). D02
-(full retarget-lifecycle trace) and D06 (presentation decoupling, R21's domain)
-remain deferred follow-ups; the three human gates stay unresolved.
+`max_align_err` 0, `max_abs_omega` 0 in the transfer-warm suite). The
+2026-10-09 follow-up work (uncommitted on top of provisional checkpoint
+f1c2449) then completed D02, D06, and the battery: D05's terminal-completion
+check moved from `maybe_replan` into an O(1) per-step check in
+`TransferMidcourse::after_step` (the arrival-shell crossing is detected at the
+crossing step and completion preempts any COLD fallback, keeping the solver
+out of the 120 Hz HOT path). D02's headless lifecycle trace verifies the full
+120 s window (V02): 584 candidate generations = 428 holds + 156 retargets
+(8 interrupted active corrections, 148 benign re-aims), 1445 planner
+invocations short-circuited by the R19 burn-boundary guard, 1 epoch change
+(54.23 -> 78.15), clean completion at t=73.81 s with no landing; the crash at
+t=98.26 s occurs only in the uncommanded return-orbit phase after completion,
+outside the transfer lifecycle. D06's presentation decoupling is implemented
+(V06): the route display, banner, and numeric readout publish at most every
+2.5 s of simulation time (banner shown 3.0 s; the replaced route stays on
+screen faded for 8 s; the debug camera holds its scale after the initial fit
+so the planner's re-fit cadence no longer drives the zoom). P2 reworked
+R23-05 into a full-encounter oracle: WARM completes at t=73.81 s in an
+84.1 s window, closest approach 42.1 m, minimum clearance 4.49 m, 14 burns,
+fuel 96/1000, no crash; the uncorrected COLD baseline never completes
+(closest 235.1 m, minimum clearance 17.40 m). The verification battery
+returns 12/12 ctest (V14-C did not reproduce; see Known unresolved / deferred
+issues). The three human gates stay unresolved.
 
 ### M06-R23 explicit requirements
 
@@ -1898,7 +1921,7 @@ remain deferred follow-ups; the three human gates stay unresolved.
 - [x] M06-R23-D01 Add a headless WARM plan/epoch trace that records the
   arrival-epoch, departure-state, predicted-terminal, and fuel-cost fields for
   every accepted WARM plan.
-- [~] M06-R23-D02 Add a headless retarget-lifecycle trace that distinguishes
+- [x] M06-R23-D02 Add a headless retarget-lifecycle trace that distinguishes
   candidate generation, cache acceptance, and replacement of an active
   physical correction, and measures interrupted corrections.
 - [x] M06-R23-D03 Audit the BEFORE/AFTER terminal-miss computation and apply
@@ -1908,11 +1931,11 @@ remain deferred follow-ups; the three human gates stay unresolved.
   proven.
 - [x] M06-R23-D05 Implement only an evidence-supported bounded retarget
   persistence / acceptance-hysteresis / safe-boundary retargeting rule.
-- [ ] M06-R23-D06 Implement presentation-stability decoupling from planner
+- [x] M06-R23-D06 Implement presentation-stability decoupling from planner
   cadence while preserving truthful current values and event timestamps.
 - [x] M06-R23-D07 Add the deterministic full-encounter closed-loop regression
   comparing the WARM physical trajectory against the COLD baseline.
-- [~] M06-R23-D08 Run the R23 verification battery and update durable state to
+- [x] M06-R23-D08 Run the R23 verification battery and update durable state to
   `ACTIVE / HUMAN_VERIFICATION / M06-R23`, leaving R21-H01, R22-H01, and
   R23-H01 unresolved.
 
@@ -1930,18 +1953,32 @@ remain deferred follow-ups; the three human gates stay unresolved.
   Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
   Limitations:
     - Historical recorded outcome only; exact invocation and independent current applicability not established
-- [~] M06-R23-V02 The retarget-lifecycle trace bounds interrupted active
+- [x] M06-R23-V02 The retarget-lifecycle trace bounds interrupted active
   corrections and distinguishes candidate generation, trajectory acceptance,
   and active-correction replacement.
   Covers:
     - M06-R23-02
   Gate: INTEGRATION
-- [~] M06-R23-V03 The BEFORE/AFTER terminal-miss tests verify the same
+  Command: ./build/lander_transfer_warm_tests
+  Oracle: integration-or-end-to-end
+  Expected: PASS with the lifecycle identities: total generations = holds + retargets; retargets = interrupted + re-aims; clean completion at the R23-05 entry epoch; no post-completion planner activity; interrupted corrections bounded; a single epoch change.
+  Result: PASS (2026-10-09): 14400 fixed-step ticks (120 s window); completion at t=73.81 s (matches the R23-05 entry; landed=0); 584 candidate generations = 428 holds + 156 retargets (8 interrupted active corrections + 148 benign re-aims); 1445 planner invocations short-circuited by the R19 burn-boundary guard; 1 epoch change (54.23 -> 78.15); 0 post-completion activity; retarget/generation ratio 0.267; the window-end crash at t=98.26 s occurs only in the uncommanded return-orbit phase after completion, outside the transfer-lifecycle scope (the R23-05 safe-exit window covers terrain clearance to 84.1 s).
+  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Limitations:
+    - Single deterministic fixture window; interrupted/re-aim classification relies on the harness' armed-VGO bookkeeping rather than an independent observer
+- [x] M06-R23-V03 The BEFORE/AFTER terminal-miss tests verify the same
   explicitly identified epoch and frame and reject stale or mixed-epoch
   acceptance logic.
   Covers:
     - M06-R23-03
   Gate: INVARIANT
+  Command: ./build/lander_transfer_warm_tests
+  Oracle: independent-existing-regression
+  Expected: The R21 telemetry-semantics checks pass (the reported correction delta-v matches the solver node recomputed at the same identified state; a below-threshold correction does not re-target) and the per-plan trace reports the achieved miss at the arrival epoch identified by each accepted plan.
+  Result: PASS (2026-10-09): lander_transfer_warm_tests fully green, including test_r21_telemetry_semantics and the per-plan epoch/miss trace (each accepted WARM plan records its arrival epoch and achieved miss; no stale or mixed-epoch acceptance observed in the run).
+  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Limitations:
+    - Headless arithmetic-identity and epoch-identification checks; visual BEFORE/AFTER observation remains with M06-R23-H01
 - [x] M06-R23-V04 The R22 full-range alignment invariant and existing
   node-executor / flight-computer / transfer-warm / predictor / debug-subsystem
   / camera tests remain green.
@@ -1962,29 +1999,40 @@ remain deferred follow-ups; the three human gates stay unresolved.
     - M06-R23-P02
     - M06-R23-P04
   Gate: INTEGRATION
-  Evidence-Mode: HISTORICAL_RECORDED
-  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
-  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Command: ./build/lander_transfer_warm_tests
+  Oracle: integration-or-end-to-end
+  Expected: The WARM full-encounter run independently establishes physical closest approach, target-region passage, and finite completion against the uncorrected COLD baseline, with no threshold or physics change.
+  Result: PASS (2026-10-09, reworked full-encounter oracle): WARM ticks 10090 (84.1 s window); completes at t=73.81 s (entry == completion, no landing); closest approach 42.1 m at t=76.38 s (relative speed 14.73 m/s); minimum clearance 4.49 m; safe exit 106.5; 156 retargets; 14 burns; 1 epoch change (54.23 -> 78.15); fuel 96/1000; no crash. COLD baseline (14400 ticks) never completes: closest 235.1 m, minimum clearance 17.40 m.
+  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
   Limitations:
-    - Historical recorded outcome only; exact invocation and independent current applicability not established
-- [ ] M06-R23-V06 Presentation-stability checks pass where automatable,
+    - Single deterministic fixture seed; the per-step shell-completion invariant is verified within the same binary (test_r23_terminal_completion_per_step, PASS)
+    - The schema-1 historical record remains in records/M06-schema1-live-TASKS.snapshot.md
+- [x] M06-R23-V06 Presentation-stability checks pass where automatable,
   including bounded camera framing and decoupling of display update cadence
   from planner cadence.
   Covers:
     - M06-R23-06
     - M06-R23-P05
   Gate: PRESENTATION
+  Command: ./build/lander_debug_subsystem_tests
+  Oracle: same-change-generated-test
+  Expected: Held-zoom stabilisation: repeated aggressive re-plan target changes leave the camera zoom exactly unchanged while the centre keeps easing; the existing per-frame zoom ratio bound (1.35) still applies while easing is enabled; all values remain finite.
+  Result: PASS (2026-10-09): the new test_transfer_debug_camera_zoom_hold (60 churn frames; zoom invariant; centre moving; finite) and the pre-existing test_transfer_debug_camera_stability both pass; the GUI now publishes the route display, banner, and numeric readout at most every 2.5 s of simulation time (banner shown 3.0 s; replaced route kept on screen faded for 8 s; camera scale held after the initial fit so the planner's re-fit cadence no longer drives the zoom) — presentation only, no physics or guidance change.
+  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
+  Limitations:
+    - Headless verification of the pure presentation helper; on-screen visual stability during a live encounter remains with M06-R23-H01
 - [x] M06-R23-V07 Full `ctest` returns to the known baseline with only the
   unrelated V14-C landing timeout red.
-
   Covers:
     - M06-R23-07
   Gate: INTEGRATION
-  Evidence-Mode: HISTORICAL_RECORDED
-  Evidence-Source: records/M06-schema1-live-TASKS.snapshot.md
-  Result: PASS as previously recorded in the schema-1 task ledger; not rerun by this migration
+  Command: ctest --test-dir build
+  Oracle: independent-existing-regression
+  Expected: The full automated suite is green, or returns to the established baseline (the V14-C landing timeout is the only known watch item).
+  Result: PASS (2026-10-09): 12/12 ctest green, including lander_landing_tests (V14-C did not reproduce; see Known unresolved / deferred issues); total wall time ~220 s.
+  Repository-State: HEAD=730c41dbdbabe40dec85e78c893fa3a31b2e3b52; DIFF-SHA256=9f84d91c47c8d43f988b11867883aae85848e262e934796565ba78f12373a243
   Limitations:
-    - Historical recorded outcome only; exact invocation and independent current applicability not established
+    - V14-C is flaky, so a 12/12 result does not prove closure of M06-R6-V14; it remains a designated watch item
 ### M06-R23 human verification
 
 - [H] M06-R23-H01 WARM rendezvous convergence, retarget stability, and
@@ -2049,9 +2097,12 @@ TRANSFER-WARM / M06-R21, active follow-up M06-R23).
   is the sole designated `ctest` baseline watch-item (11/12 nominal baseline).
   Do not hide or weaken it; decide/fix it in the appropriate landing cell before
   M06 closeout. In the R23 verification run (2026-10-09) the full `ctest`
-  returned **12/12** (including `lander_landing_tests`), i.e. V14-C did not
-  reproduce as a failure in that run (likely timing/flaky); confirm during human
-  re-verification rather than assuming it closed.
+   returned **12/12** (including `lander_landing_tests`), i.e. V14-C did not
+   reproduce as a failure in that run (likely timing/flaky). The 2026-10-09
+   R23 D02/D06 follow-up battery also returned **12/12**, with
+   `lander_landing_tests` green in both the full run and a standalone
+   re-run, so the non-reproduction has now been observed twice; confirm
+   during human re-verification rather than assuming it closed.
 - `PRED-01..PRED-08`, `SIM-COLL-01`, `TFD-1`, and `TFD-2` remain open in
   `docs/m06-predictor-physics-issues.md`. They are not silently closed by R18.
 - Deferred camera/UI polish: SYSTEM-view auto-fit can zoom too far out after

@@ -1705,6 +1705,56 @@ void test_transfer_debug_camera_stability() {
           "R21-F01 V01: ordinary re-plans cannot produce unbounded zoom jumps");
 }
 
+// M06-R23-06: with a held zoom (the presentation layer's decoupled framing),
+// aggressive re-plan target changes must not move the camera scale at all --
+// only the centre keeps easing toward the moving context. This proves the
+// "camera scale changes dramatically" defect is decoupled from the planner
+// cadence by a pure presentation change.
+void test_transfer_debug_camera_zoom_hold() {
+    TransferDebugCameraState state{};
+    const CameraParams p{};
+
+    // Initial frame adopts the requested fit, then the presentation layer
+    // holds the scale (zoom_held) for the rest of the session.
+    TransferCameraFit fit = update_transfer_debug_camera(
+        state, Vec2{0.0, 0.0}, Vec2{700.0, 500.0}, p.window_width,
+        p.window_height, p.base_scale, 1.0e-3, p.zoom_max, 200.0);
+    state.zoom_held = true;
+    const double held_zoom = fit.zoom;
+
+    bool zoom_stable = true;
+    bool center_moves = false;
+    bool finite_ok = true;
+    Vec2 prev_center = fit.center;
+    for (int i = 0; i < 60; ++i) {
+        // Aggressive, alternating wide/tight re-plan targets with a moving
+        // centre, exactly the churn the live debug view sees on re-plans.
+        const bool wide = (i % 2) == 0;
+        const Vec2 center{10.0 * std::sin(i * 0.31), 8.0 * std::cos(i * 0.17)};
+        const Vec2 half{wide ? 750.0 : 130.0, wide ? 550.0 : 130.0};
+        const TransferCameraFit next = update_transfer_debug_camera(
+            state, center, half, p.window_width, p.window_height,
+            p.base_scale, 1.0e-3, p.zoom_max, 200.0, /*ease_zoom=*/false);
+        if (!std::isfinite(next.center.x) || !std::isfinite(next.center.y) ||
+            !std::isfinite(next.zoom) || next.zoom <= 0.0) {
+            finite_ok = false;
+        }
+        if (next.zoom != held_zoom) {
+            zoom_stable = false;
+        }
+        if (next.center != prev_center) {
+            center_moves = true;
+        }
+        prev_center = next.center;
+        fit = next;
+    }
+    check(finite_ok, "R23-06: the held-zoom debug camera stays finite");
+    check(zoom_stable,
+          "R23-06: re-plans do not move the held camera scale");
+    check(center_moves,
+          "R23-06: the camera centre still follows the moving context");
+}
+
 }  // namespace
 
 int main() {
@@ -1739,6 +1789,7 @@ int main() {
     test_transfer_warm_display_cost_not_reported();
     test_transfer_warm_fast_executor_overlay();
     test_transfer_debug_camera_stability();
+    test_transfer_debug_camera_zoom_hold();
 
     if (failures == 0) {
         std::printf("All lander_debug_subsystem_tests passed\n");

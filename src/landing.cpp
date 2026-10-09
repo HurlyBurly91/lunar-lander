@@ -1004,7 +1004,7 @@ void LandingAutopilot::update_transfer(const State& before, const State& after,
     // WARM replan (one step of lag versus the GUI's pre-step replan).
     const Input applied =
         transfer_mc_.make_input(before, now_pre, config, false, false);
-    transfer_mc_.after_step(before, after, applied, now, config);
+    transfer_mc_.after_step(before, after, bin, applied, now, config);
     transfer_mc_.maybe_replan(bin, config, before, now_pre,
                               config_.transfer_replan_interval,
                               config_.transfer_miss_tolerance);

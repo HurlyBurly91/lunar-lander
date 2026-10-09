@@ -283,9 +283,17 @@ coasts through, and it does not run another cold fallback that would drag the
 arrival epoch forward to a later one. Without this rule the cold fallback
 reselects a later epoch at every reached epoch, the arrival recedes
 indefinitely, and the repeated re-aims (the last a degenerate large impulse)
-drive the craft into the companion. The rule runs before the slow solve so a
-burn-state gate cannot preempt completion, and because it commands no thrust it
-cannot violate the full-range alignment-safety invariant.
+drive the craft into the companion.
+
+The rule is a HOT evaluation on every 1/120 s fixed physics step, not part of
+the bounded-rate WARM replan: it compares the post-step ship state against the
+companion's closed-form position at the post-step time and against a
+per-destination cached clearance shell (the terrain's maximum-surface-radius
+scan is O(samples) and is run at most once per arming cycle, never in the
+120 Hz loop). Per-step evaluation means neither a burn-state gate nor a
+not-yet-due replan interval can preempt completion, and because the completion
+commands no thrust it cannot violate the full-range alignment-safety
+invariant.
 
 Ordinary warm replanning should be:
 
