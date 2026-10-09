@@ -15,7 +15,7 @@ jobs:
       - name: Initialize pinned SDL3 source
         run: git submodule update --init --depth 1 third_party/SDL
       - name: Configure headless regressions
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSDL_UNIX_CONSOLE_BUILD=ON
       - name: Build headless test targets
         run: |
           cmake --build build --parallel 4 --target \
