@@ -32,8 +32,8 @@ correctness, retarget stability, and physical correction convergence request.
 must be preserved, while WARM convergence and presentation stability remain
 open. R23's automated follow-up work (D02/D06, the per-step completion
 refinement, the full-encounter oracle, and the 12/12 battery) is complete as
-of 2026-10-09 but uncommitted on top of provisional checkpoint f1c2449; the
-three human gates remain unresolved. `M06-R21-H01` FAILED on
+of 2026-10-09 and was provisionally published in commit 45b8049; that
+checkpoint does not accept any human gate. The three gates remain unresolved. `M06-R21-H01` FAILED on
 2026-10-08: the human watched the complete transfer-warm run and observed
 full-throttle, materially misaligned / approximately orthogonal ACT/VGO burn
 segments, a powered spin that averaged thrust, and a terminal crash at the
@@ -1773,8 +1773,8 @@ R23-02 churn and the R23-03/R23-04 "incompatible terminal states" / "FAST
 COMPLETE with stale THR" symptoms, which were all driven by the receding
 epoch. The R22 full-throttle invariant is preserved (whole-run
 `max_align_err` 0, `max_abs_omega` 0 in the transfer-warm suite). The
-2026-10-09 follow-up work (uncommitted on top of provisional checkpoint
-f1c2449) then completed D02, D06, and the battery: D05's terminal-completion
+2026-10-09 follow-up work (provisionally published in commit 45b8049,
+not human-accepted) then completed D02, D06, and the battery: D05's terminal-completion
 check moved from `maybe_replan` into an O(1) per-step check in
 `TransferMidcourse::after_step` (the arrival-shell crossing is detected at the
 crossing step and completion preempts any COLD fallback, keeping the solver
@@ -2052,6 +2052,11 @@ issues). The three human gates stay unresolved.
   Do not self-complete this gate. Do not proceed to autoland-primary before
   explicit human acceptance of R21-H01, R22-H01, and R23-H01.
 
+  Requires:
+    - M06-R23-D08
+    - M06-R23-V05
+    - M06-R23-V06
+    - M06-R23-V07
   Covers:
     - M06-R23-02
     - M06-R23-03
