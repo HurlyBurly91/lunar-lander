@@ -11,6 +11,7 @@ Detailed generic schemas and transition contracts are in:
 
 ```text
 .durable-state/framework/SCHEMAS.md
+.durable-state/framework/ASYNC_EXTERNAL_VERIFICATION.md
 .durable-state/framework/HUMAN_GATE_READINESS.md
 ```
 
@@ -166,6 +167,54 @@ publication should normally use a `Vxx` item recording actual revision and
 remote/deployment equality. Prose such as “publication finishing” is not
 completion evidence.
 
+## Asynchronous external verification
+
+Read `.durable-state/framework/ASYNC_EXTERNAL_VERIFICATION.md` when required
+verification runs in an external system that continues independently of the
+coding-agent process.
+
+Keep the existing `ACTIVE / AUTOMATED_VERIFICATION` phase and the existing
+`Vxx` task states. Represent a live wait as `[~]` with:
+
+```text
+Verification-Mode: EXTERNAL_ASYNC
+External-Provider
+External-Run-ID
+Target-Identity
+Required-Checks
+External-Status: QUEUED | IN_PROGRESS
+Resume-Mechanism: MANUAL | SCHEDULED | EVENT
+Command
+Oracle
+Expected
+Suspension-Checkpoint
+Limitations
+```
+
+A pending run is not PASS evidence. After one immediate bounded status query, if
+an externally owned run remains non-terminal and completion is not imminent,
+do not hold a long-running agent/tool call solely to sleep and poll. Persist the
+exact wait contract, run deterministic validation, checkpoint according to
+repository policy, and yield execution.
+
+On resume, query the exact recorded execution, verify provider/project, target
+identity, workflow/check identity, and the complete required-check set. Handle
+duplicate resumes idempotently. Do not substitute “latest CI,” another commit,
+or an unrecorded rerun.
+
+Mark the `Vxx` `[x]` only after the external execution is terminal, its normalized
+`External-Conclusion` is `SUCCESS`, all required checks have permitted successful
+conclusions, and the result applies to the recorded target. Preserve terminal
+failure, cancellation, timeout, action-required, staleness, or identity mismatch
+as non-PASS evidence and return to `FOLLOW_UP` or `IMPLEMENTATION` when repair is
+required.
+
+Scheduling, webhooks, timers, credentials, notifications, and process restart
+belong to the orchestration layer. CI topology, caching, parallel jobs, and test
+selection remain project-owned. The durable-state framework owns only the wait
+contract, checkpoint/yield semantics, applicability checks, and state
+transitions.
+
 ## Execution and checkpoint granularity
 
 For substantive work:
@@ -177,7 +226,8 @@ For substantive work:
 5. run risk-proportionate verification;
 6. attach concise actual evidence and explicit coverage links;
 7. run deterministic state validation;
-8. stop at required human judgment or a genuine blocker.
+8. stop at required human judgment, a durable external wait, or a genuine
+   blocker.
 
 One bounded investigation may contain many captures, measurements, parameter
 sweeps, analyzer runs, failures, and candidate implementations under one request
@@ -190,9 +240,10 @@ uncertainty, and next direction.
 
 Checkpoint when losing a decision would be expensive to reconstruct: a changed
 requirement, causal conclusion, accepted/rejected strategy, blocker, human gate,
-long interruption/handoff, or risky operation. Pair task state with repository
-state—prefer a commit; otherwise record HEAD plus a material dirty-diff identity.
-Context growth and ordinary trials are not checkpoint boundaries.
+durable external wait, long interruption/handoff, or risky operation. Pair task
+state with repository state—prefer a commit; otherwise record HEAD plus a
+material dirty-diff identity. Context growth and ordinary trials are not
+checkpoint boundaries.
 
 After repeated materially identical failures, normally three, change strategy,
 reduce to a reproducer, or persist a precise blocker.
@@ -303,6 +354,7 @@ mechanically decidable claims, including:
 - explicit bidirectional requirement-to-evidence coverage;
 - required evidence fields and explicit human acceptance;
 - typed decision-shaping conclusion completeness;
+- pending external-verification identity, phase, resume, and checkpoint fields;
 - human-gate selection, active-request alignment, prerequisite closure, and
   absence of unresolved pre-gate work;
 - referenced canonical documents and implementation paths;
@@ -310,10 +362,10 @@ mechanically decidable claims, including:
 - absence of unresolved work in a `COMPLETE` milestone.
 
 The validator does not execute project commands, determine mathematical truth,
-infer whether publication is required, or replace human judgment. Repository
-policy must express publication/checkpoint requirements as tasks and dependency
-links. A clean validator result proves schema consistency, not application
-correctness.
+infer whether external waiting or publication is required, operate a scheduler,
+or replace human judgment. Repository policy must express external verification,
+publication, and checkpoint requirements as tasks and dependency links. A clean
+validator result proves schema consistency, not application correctness.
 
 ## Experience memory
 
@@ -322,8 +374,8 @@ routine inner-loop retrieval once strategy is established.
 
 Code-dependent experiences bind to repository revision and material files,
 symbols, tests, docs, sources, configuration, or data. Validate those bindings
-before reuse. Changed or unverifiable conditions prevent automatic reuse:
-reread current artifacts, rerun evidence, or mark the experience stale.
+before reuse. Changed or unverifiable evidence is not automatically reusable;
+reread current artifacts, rerun verification, or mark the experience stale.
 
 Adapt precedent into a bounded current guide by comparing similarities,
 differences, assumptions, and lifecycle. Never blindly replay old actions.
@@ -350,19 +402,22 @@ writers require isolated branches/worktrees, explicit dependencies, one
 integration owner, and verification after merge.
 
 A recovery point is valid only when durable state and repository state agree.
-Invalidate or rerun stale evidence on resume.
+Invalidate or rerun stale evidence on resume. External completion notifications
+may be delivered more than once; resume handling must be idempotent and bound to
+recorded execution identities.
 
 ## Closeout and framework ownership
 
 A milestone is `COMPLETE` only after all required IDs and acceptance criteria,
-automated and human gates, canonical reconciliation, relevant source integrity,
-closeout records, repository-specific commit/push requirements, and strict
-deterministic validation are satisfied.
+automated and human gates, required external checks, canonical reconciliation,
+relevant source integrity, closeout records, repository-specific commit/push
+requirements, and strict deterministic validation are satisfied.
 
-Records summarize causal boundaries, bindings, oracle provenance, repository
-revision, human results, typed decision-shaping conclusions, and
-limitations—not every trial. Retain experience only when warranted, then reset
-`TASKS.md` to bounded next-milestone state.
+Records summarize causal boundaries, bindings, oracle provenance, external run
+identities and conclusions when material, repository revision, human results,
+typed decision-shaping conclusions, and limitations—not every trial. Retain
+experience only when warranted, then reset `TASKS.md` to bounded next-milestone
+state.
 
 Files under `.durable-state/framework/` and `.durable-state/MANIFEST` are owned
 by the framework updater. Project work must not edit them. Framework updates
