@@ -17,8 +17,9 @@ Resume autonomous development from durable repository state.
 
 6. Read the active milestone specification and `TASKS.md`. Reconstruct unresolved
    requirements, preservation constraints, dependencies, evidence coverage,
-   current tasks, blockers, pending human items, supersession links, typed
-   conclusions, material evidence, and the current investigative question.
+   current tasks, blockers, pending external verification, pending human items,
+   supersession links, typed conclusions, material evidence, and the current
+   investigative question.
 
 7. Run deterministic validation before relying on restored state:
 
@@ -112,17 +113,59 @@ Resume autonomous development from durable repository state.
     usefulness, and resulting outcome. Adapt precedent rather than replaying it.
 
 24. Resume the highest-priority non-blocked task consistent with dependencies.
+    When that task is a pending `EXTERNAL_ASYNC` `Vxx`, read
+    `.durable-state/framework/ASYNC_EXTERNAL_VERIFICATION.md` and query only the
+    exact recorded provider execution.
 
 25. After repeated materially identical failures, normally three, change
     strategy, reduce to a reproducer, or persist a precise blocker.
 
-26. At an expensive-to-reconstruct boundary, checkpoint task and repository
-    state together: preferably a commit; otherwise HEAD plus a material
-    dirty-worktree identity from `durable-state fingerprint`.
+26. At an expensive-to-reconstruct boundary, including suspension for external
+    verification, checkpoint task and repository state together: preferably a
+    commit; otherwise HEAD plus a material dirty-worktree identity from
+    `durable-state fingerprint`.
 
 27. Run risk-proportionate verification. Record actual commands, results,
     limitations, repository state, gate, oracle class, and exact covered
     requirement IDs when material.
+
+27a. When required verification executes in an external system that continues
+     without this process, keep `ACTIVE / AUTOMATED_VERIFICATION` and represent
+     the wait on the existing `[~] Vxx` with `Verification-Mode:
+     EXTERNAL_ASYNC`.
+
+27b. Record exact provider, stable run ID, immutable target identity, complete
+     required-check set, provider status, resume mechanism, bounded query
+     command, expected terminal condition, suspension checkpoint, and
+     limitations. Pending execution is not PASS evidence.
+
+27c. One immediate bounded status query is reasonable. If the run remains
+     non-terminal and completion is not imminent, do not maintain a long-running
+     sleep/poll tool call solely to wait. Run deterministic validation,
+     checkpoint/publish durable state as required, and yield execution.
+
+27d. Scheduling belongs to an external timer, webhook, queue, or agent
+     scheduler. The framework does not keep a worker alive and does not require
+     a universal scheduler.
+
+27e. On resume, query the exact recorded execution and verify provider/project,
+     target identity, workflow/check identity, and required checks. Treat
+     duplicate resumes idempotently. Do not substitute latest-by-branch state,
+     another commit, or an unrecorded rerun.
+
+27f. If still pending, update only material wait metadata when useful and yield
+     again. If terminal success applies to the target, record
+     `External-Status: COMPLETED`, `External-Conclusion: SUCCESS`, actual PASS
+     evidence, and mark the `Vxx` `[x]`.
+
+27g. On failure, cancellation, timeout, action-required, staleness, unavailable
+     evidence, or identity mismatch, preserve the actual non-PASS result, keep
+     the `Vxx` unresolved, and transition to `FOLLOW_UP` or `IMPLEMENTATION`
+     when correction is required.
+
+27h. Required external verification remains a prerequisite of any dependent
+     human gate, merge, deployment, publication, release claim, or milestone
+     closeout.
 
 28. Do not mark an `Rxx` or `Pxx` item `[x]` until all of its `Verified-By`
     evidence is complete and reverse `Covers` links agree.
@@ -149,9 +192,10 @@ Resume autonomous development from durable repository state.
 35. Read historical records selectively. Historical evidence is not
     automatically current.
 
-36. Before closeout, verify required IDs and acceptance criteria, complete human
-    gates, reconcile accepted docs, validate relevant source/research
-    provenance, write the record with repository revision, gate/oracle
+36. Before closeout, verify required IDs and acceptance criteria, complete
+    required external and human gates, reconcile accepted docs, validate
+    relevant source/research provenance, write the record with repository
+    revision, external-run identity/conclusion where material, gate/oracle
     provenance, evidence coverage, and typed conclusions, and satisfy
     repository-specific commit/push rules.
 

@@ -53,25 +53,29 @@ human-gate readiness and prerequisite closure
 ```
 
 Framework 1.1.1 added historical follow-up IDs and provenance-bound legacy
-evidence for migrations. Framework 1.1.3 adds established-state enforcement for
-`HUMAN_VERIFICATION`, including selected-gate disambiguation, active-request
+evidence for migrations. Framework 1.1.3 added established-state enforcement
+for `HUMAN_VERIFICATION`, including selected-gate disambiguation, active-request
 alignment, transitive prerequisite checks, and rejection of unresolved pre-gate
-machine work. Framework 1.1.4 excludes Python-generated `__pycache__/` and
+machine work. Framework 1.1.4 excluded Python-generated `__pycache__/` and
 `.pyc` files from payload checksums and installed snapshots, preventing
 validator execution from invalidating its own immutable source-payload hash.
+Framework 1.1.5 adds asynchronous external-verification contracts so an agent
+can record an exact provider run and target, checkpoint, yield, and later resume
+without occupying a long-running polling call.
 
 Relevant framework-owned contracts:
 
 ```text
 AGENTS.md
 SCHEMAS.md
+ASYNC_EXTERNAL_VERIFICATION.md
 HUMAN_GATE_READINESS.md
 RUN_PROMPT.txt
 ```
 
 `validator.py` is part of the versioned payload. It checks mechanically decidable
-state and evidence relationships without executing application commands or
-replacing human judgment.
+state and evidence relationships without executing application commands,
+operating a scheduler, or replacing human judgment.
 
 ## Project integration
 
