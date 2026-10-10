@@ -56,7 +56,7 @@ Framework 1.1.1 added historical follow-up IDs and provenance-bound legacy
 evidence for migrations. Framework 1.1.3 adds established-state enforcement for
 `HUMAN_VERIFICATION`, including selected-gate disambiguation, active-request
 alignment, transitive prerequisite checks, and rejection of unresolved pre-gate
-machine work. Framework 1.1.3 excludes Python-generated `__pycache__/` and
+machine work. Framework 1.1.4 excludes Python-generated `__pycache__/` and
 `.pyc` files from payload checksums and installed snapshots, preventing
 validator execution from invalidating its own immutable source-payload hash.
 
